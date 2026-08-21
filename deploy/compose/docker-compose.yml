@@ -1,0 +1,43 @@
+# 本地开发与 CI 的运行时验证用。
+# 关键点是 migrate 与 server 的启动顺序：server 的版本门禁会在迁移没跑完时拒绝启动，
+# 所以这里用 service_completed_successfully 显式表达这个依赖。
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD: danshi
+      POSTGRES_DB: danshi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d danshi"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports: ["5432:5432"]
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: migrate
+    command: ["-cmd", "up"]
+    environment: &dbenv
+      DATABASE_URL: postgres://postgres:danshi@postgres:5432/danshi?sslmode=disable&TimeZone=UTC
+      JWT_SECRET_KEY: local-dev-secret-please-change-0123456789
+      EMAIL_VERIFICATION_SECRET: local-dev-secret-please-change-0123456789
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: server
+    environment:
+      <<: *dbenv
+      APP_PROFILE: dev
+      PORT: "8000"
+      CORS_ALLOW_ORIGINS: http://localhost:3000
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate:  {condition: service_completed_successfully}

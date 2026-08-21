@@ -1,0 +1,85 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - depguard      # 分层纪律，见下方 rules
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - funlen
+    - gocritic
+    - nestif
+    - nilerr
+    - noctx
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+
+  settings:
+    funlen:
+      lines: 100
+      statements: 60
+    nestif:
+      min-complexity: 4
+    errorlint:
+      errorf: true
+
+    # 分层纪律靠工具强制，不靠自觉。
+    # router → handler → service → repository → model
+    depguard:
+      rules:
+        # handler 只做绑定/校验/组装，不许直接碰 ORM
+        handler-no-orm:
+          files:
+            - "**/internal/handler/**"
+          deny:
+            - pkg: gorm.io/gorm
+              desc: handler 不得直接使用 GORM，数据访问必须经 repository
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/repository
+              desc: handler 不得直接调 repository，必须经 service
+
+        # service 是纯业务逻辑，不该知道自己跑在 HTTP 里
+        service-no-http:
+          files:
+            - "**/internal/service/**"
+          deny:
+            - pkg: github.com/cloudwego/hertz
+              desc: service 不得依赖 hertz，否则无法脱离 HTTP 单测
+
+        # repository 只管数据，不许反向依赖上层
+        repository-no-upper:
+          files:
+            - "**/internal/repository/**"
+          deny:
+            - pkg: github.com/cloudwego/hertz
+              desc: repository 不得依赖 hertz
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/service
+              desc: repository 不得反向依赖 service
+
+        # model 是最底层，不许依赖任何上层
+        model-is-leaf:
+          files:
+            - "**/internal/model/**"
+          deny:
+            - pkg: github.com/cloudwego/hertz
+              desc: model 不得依赖 hertz
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/repository
+              desc: model 不得依赖 repository
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/service
+              desc: model 不得依赖 service
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [funlen, gocritic]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports

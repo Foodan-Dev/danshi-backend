@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push: {branches: [main]}
+  pull_request:
+
+env:
+  GO_VERSION: "1.25"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - name: gofmt 检查
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化："; echo "$unformatted"; exit 1
+          fi
+      - uses: golangci/golangci-lint-action@v6
+        with: {version: v2.1.0}
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: go test -race -count=1 ./...
+
+  # schema 回归跑两条独立链路。不能串成一条：
+  # smoke 会留下引用字典表的提议行，而那个外键是 RESTRICT，种子回滚会正确地失败。
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: schema 回归（数据 / 结构 / 可失败性）
+        run: bash scripts/schema_test.sh
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: make build
+      - name: 体积门禁
+        run: |
+          server=$(stat -c%s bin/danshi-server)
+          migrate=$(stat -c%s bin/danshi-migrate)
+          echo "server=$((server/1024/1024))MB migrate=$((migrate/1024/1024))MB"
+          # 阈值见 docs/go-rewrite-plan.md P1.8（按实测设定，超了要么优化要么改文档）
+          [ "$server"  -le $((25*1024*1024)) ] || { echo "danshi-server 二进制超过 25MB"; exit 1; }
+          [ "$migrate" -le $((15*1024*1024)) ] || { echo "danshi-migrate 二进制超过 15MB"; exit 1; }
+      - uses: docker/setup-buildx-action@v3
+      - name: 构建两个镜像
+        run: |
+          docker build -f deploy/docker/Dockerfile --target server  -t danshi-server:ci  .
+          docker build -f deploy/docker/Dockerfile --target migrate -t danshi-migrate:ci .
+
+  # 运行时验证：起真实 PG + 两个容器，验证迁移与版本门禁的启动顺序
+  runtime:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose 起全栈并打探针
+        run: |
+          cd deploy/compose
+          docker compose up -d --build --wait server
+          curl -fsS http://localhost:8000/health | tee /dev/stderr | grep -q healthy
+          curl -fsS http://localhost:8000/ready  | tee /dev/stderr | grep -q ready
+          # 404 必须走统一错误体而不是纯文本
+          curl -sS http://localhost:8000/api/v2/nope | grep -q '"code":404'
+      - name: 收集日志
+        if: always()
+        run: cd deploy/compose && docker compose logs --no-color | tail -100
+      - if: always()
+        run: cd deploy/compose && docker compose down -v

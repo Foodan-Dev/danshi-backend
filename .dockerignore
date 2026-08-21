@@ -1,0 +1,7 @@
+bin/
+.git/
+.github/
+*.md
+coverage.out
+deploy/grafana/
+test/perf/
