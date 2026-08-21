@@ -21,13 +21,17 @@ func Recovery(log *slog.Logger) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		defer func() {
 			if r := recover(); r != nil {
+				// 先建错误再打日志：error_id 要同时出现在日志和响应体里，
+				// 用户报这个 id 就能定位到下面这条 stack。
+				e := apierr.Internal(fmt.Errorf("panic: %v", r))
 				log.ErrorContext(ctx, "请求处理 panic",
 					slog.Any("panic", r),
+					slog.String("error_id", e.ErrorID),
 					slog.String("path", string(c.Path())),
 					slog.String("stack", string(debug.Stack())),
 				)
 				// panic 的细节只进日志。响应体固定文案，不泄露内部结构。
-				status, body := envelope.FromError(apierr.Internal(fmt.Errorf("panic: %v", r)))
+				status, body := envelope.FromError(e)
 				c.AbortWithStatusJSON(status, body)
 			}
 		}()

@@ -46,13 +46,13 @@ func parseOne(raw, field string, defaultValue, minimum, maximum int) (int, error
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, apierr.InvalidField(field, apierr.CodeInvalidFormat, "%s 必须是整数", field)
+		return 0, apierr.InvalidField(field, apierr.FieldInvalidFormat, "%s 必须是整数", field)
 	}
 	if v < minimum {
-		return 0, apierr.InvalidField(field, apierr.CodeOutOfRange, "%s 不能小于 %d", field, minimum)
+		return 0, apierr.InvalidField(field, apierr.FieldOutOfRange, "%s 不能小于 %d", field, minimum)
 	}
 	if maximum > 0 && v > maximum {
-		return 0, apierr.InvalidField(field, apierr.CodeOutOfRange, "%s 不能大于 %d", field, maximum)
+		return 0, apierr.InvalidField(field, apierr.FieldOutOfRange, "%s 不能大于 %d", field, maximum)
 	}
 	return v, nil
 }

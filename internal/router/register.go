@@ -91,11 +91,15 @@ func corsMiddleware(cfg config.Config) app.HandlerFunc {
 // Hertz 默认返回纯文本，那会让前端的错误处理出现一个不走 envelope 的分支。
 func registerFallbacks(h *server.Hertz) {
 	h.NoRoute(func(_ context.Context, c *app.RequestContext) {
-		status, body := envelope.FromError(apierr.NotFound("接口"))
+		status, body := envelope.FromError(apierr.NotFound(apierr.BizNotFound, "接口"))
 		c.JSON(status, body)
 	})
 	h.NoMethod(func(_ context.Context, c *app.RequestContext) {
-		e := &apierr.Error{Status: consts.StatusMethodNotAllowed, Message: "请求方法不被允许"}
+		e := &apierr.Error{
+			Status:  consts.StatusMethodNotAllowed,
+			Code:    apierr.BizMethodNotAllowed,
+			Message: "请求方法不被允许",
+		}
 		status, body := envelope.FromError(e)
 		c.JSON(status, body)
 	})

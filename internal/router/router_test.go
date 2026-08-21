@@ -44,7 +44,7 @@ func TestErrorHandlerRendersEnvelope(t *testing.T) {
 	h := newTestEngine(t)
 	h.Use(middleware.ErrorHandler(discardLogger()))
 	h.GET("/boom", func(ctx context.Context, c *app.RequestContext) {
-		middleware.Fail(ctx, c, apierr.Forbidden("没有权限执行该操作"))
+		middleware.Fail(ctx, c, apierr.Forbidden(apierr.BizNotOwner, "没有权限执行该操作"))
 	})
 
 	w := ut.PerformRequest(h.Engine, http.MethodGet, "/boom", nil)
@@ -65,7 +65,7 @@ func TestValidationErrorCarriesFields(t *testing.T) {
 	h := newTestEngine(t)
 	h.Use(middleware.ErrorHandler(discardLogger()))
 	h.GET("/v", func(ctx context.Context, c *app.RequestContext) {
-		middleware.Fail(ctx, c, apierr.InvalidField("page", apierr.CodeOutOfRange, "page 不能小于 1"))
+		middleware.Fail(ctx, c, apierr.InvalidField("page", apierr.FieldOutOfRange, "page 不能小于 1"))
 	})
 
 	resp := ut.PerformRequest(h.Engine, http.MethodGet, "/v", nil).Result()

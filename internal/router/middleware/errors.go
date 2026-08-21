@@ -38,8 +38,13 @@ func ErrorHandler(log *slog.Logger) app.HandlerFunc {
 		// 5xx 才记 error 级别；4xx 是客户端问题，记 info 即可，否则日志会被刷爆
 		attrs := []any{
 			slog.Int("status", e.Status),
+			slog.String("error_code", string(e.Code)),
 			slog.String("path", string(c.Path())),
 			slog.String("method", string(c.Method())),
+		}
+		// error_id 是用户报障时能提供的唯一线索，必须同时出现在日志和响应体里。
+		if e.ErrorID != "" {
+			attrs = append(attrs, slog.String("error_id", e.ErrorID))
 		}
 		if e.Status >= 500 {
 			log.ErrorContext(ctx, e.Error(), attrs...)
