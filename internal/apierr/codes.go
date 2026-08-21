@@ -45,12 +45,13 @@ type BizCode string
 const (
 	// 通用
 
-	BizInternal         BizCode = "internal_error"     // 500，具体原因只进日志
-	BizNotFound         BizCode = "not_found"          // 泛化的资源不存在
-	BizMethodNotAllowed BizCode = "method_not_allowed" // 路径存在但方法不对
-	BizValidation       BizCode = "validation_failed"  // 422 的顶层码
-	BizRateLimited      BizCode = "rate_limited"       // 触发频率限制
-	BizUnauthorized     BizCode = "unauthorized"       // 未登录或登录已失效（401 一律用这一个）
+	BizInternal           BizCode = "internal_error"      // 500，具体原因只进日志
+	BizNotFound           BizCode = "not_found"           // 泛化的资源不存在
+	BizMethodNotAllowed   BizCode = "method_not_allowed"  // 路径存在但方法不对
+	BizValidation         BizCode = "validation_failed"   // 422 的顶层码
+	BizRateLimited        BizCode = "rate_limited"        // 触发频率限制
+	BizUnauthorized       BizCode = "unauthorized"        // 未登录或登录已失效（401 一律用这一个）
+	BizServiceUnavailable BizCode = "service_unavailable" // 下游服务暂时不可用，客户端应稍后重试（503）
 
 	// 账号与会话
 
@@ -115,6 +116,8 @@ func defaultBizCode(status int) BizCode {
 		return BizConflict
 	case status == 422:
 		return BizValidation
+	case status == 503:
+		return BizServiceUnavailable
 	case status >= 500:
 		return BizInternal
 	default:

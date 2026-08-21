@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/ut"
@@ -34,6 +35,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
 	"github.com/jingyijun/danshi_backend_go/internal/repository"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
+	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -95,16 +97,25 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	sender := newCaptureEmailSender()
 	engine := authTestEngine(cfg, database, sender)
 
+	t.Run("auth route inventory", func(t *testing.T) {
+		testAuthRouteInventory(t, engine)
+	})
+
 	t.Run("repository base", func(t *testing.T) {
 		testRepositoryBase(t, database, gdb)
+	})
+
+	t.Run("commit error cannot commit 5xx", func(t *testing.T) {
+		testCommitError5xxRollback(t, database, gdb)
 	})
 
 	t.Run("verification failure rolls back", func(t *testing.T) {
 		failingEngine := authTestEngine(cfg, database, failingEmailSender{})
 		status, response, _ := performJSON(t, failingEngine, http.MethodPost,
-			"/api/v2/auth/send-verification-code", map[string]any{"email": "delivery-fail@fdueat.com"}, "")
-		require.Equal(t, http.StatusInternalServerError, status)
-		require.Equal(t, apierr.BizInternal, response.ErrorCode)
+			"/api/v2/auth/email-verification-codes", map[string]any{"email": "delivery-fail@fdueat.com"}, "")
+		require.Equal(t, http.StatusServiceUnavailable, status)
+		require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+		require.Equal(t, "验证码暂时无法发送，请稍后再试", response.Message)
 
 		var count int64
 		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
@@ -118,6 +129,14 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		register := registerUser(t, engine, sender, email, "注册设备")
 		require.NotEmpty(t, register.Token)
 		require.NotEmpty(t, register.RefreshToken)
+		status, response, _ := performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, register.Token)
+		require.Equal(t, http.StatusOK, status)
+		require.Equal(t, "请求成功", response.Message)
+		var me struct {
+			User service.UserView `json:"user"`
+		}
+		decodeData(t, response, &me)
+		require.Equal(t, register.User, me.User)
 
 		var sessionCount int64
 		require.NoError(t, gdb.Model(&model.UserSession{}).Count(&sessionCount).Error)
@@ -135,7 +154,7 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		require.NotEqual(t, register.RefreshToken, registeredSession.RefreshTokenDigest)
 
 		login := loginUser(t, engine, "登录设备 A")
-		status, response, _ := performJSON(t, engine, http.MethodPost,
+		status, response, _ = performJSON(t, engine, http.MethodPost,
 			"/api/v2/auth/refresh", map[string]any{"refresh_token": login.RefreshToken}, "")
 		require.Equal(t, http.StatusOK, status)
 		var refreshed service.TokenResult
@@ -189,8 +208,56 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		testDomainRejection(t, engine)
 		testBannedLogin(t, engine, gdb)
 		testSendRateLimit(t, engine, sender)
+		testRegisteredEmailRateLimit(t, engine, sender, gdb)
 		testFailedAttemptPersistence(t, engine, sender, gdb)
 	})
+}
+
+func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
+	t.Helper()
+	var operations []string
+	for _, route := range engine.Routes() {
+		if strings.HasPrefix(route.Path, "/api/v2/auth/") {
+			operations = append(operations, route.Method+" "+route.Path)
+		}
+	}
+	require.ElementsMatch(t, []string{
+		"POST /api/v2/auth/email-verification-codes",
+		"POST /api/v2/auth/register",
+		"POST /api/v2/auth/login",
+		"POST /api/v2/auth/refresh",
+		"GET /api/v2/auth/me",
+		"POST /api/v2/auth/logout",
+		"POST /api/v2/auth/logout-all",
+		"GET /api/v2/auth/sessions",
+		"DELETE /api/v2/auth/sessions/:id",
+	}, operations)
+}
+
+func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
+	t.Helper()
+	engine := server.New(hertzconfig.Option{F: func(_ *hertzconfig.Options) {}})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine.Use(routermiddleware.ErrorHandler(log))
+	engine.Use(routermiddleware.UnitOfWork(database, log))
+	email := "commit-error-500@fdueat.com"
+	engine.POST("/commit-error-500", func(ctx context.Context, c *app.RequestContext) {
+		user := &model.User{
+			Email: email, PasswordHash: "$2b$12$test", Name: "rollback", Role: model.UserRoleUser,
+		}
+		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
+			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			return
+		}
+		routermiddleware.CommitError(c)
+		routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("forced failure after write")))
+	})
+
+	status, _, _ := performJSON(t, engine, http.MethodPost, "/commit-error-500", nil, "")
+	require.Equal(t, http.StatusInternalServerError, status)
+	var count int64
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Count(&count).Error)
+	require.Zero(t, count, "即使置了 CommitError，5xx 也必须回滚事务")
 }
 
 func testRepositoryBase(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
@@ -278,11 +345,40 @@ func testSendRateLimit(t *testing.T, engine *server.Hertz, sender *captureEmailS
 	email := "rate-limit@fdueat.com"
 	sendCode(t, engine, email)
 	status, response, raw := performJSON(t, engine, http.MethodPost,
-		"/api/v2/auth/send-verification-code", map[string]any{"email": email}, "")
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
 	require.Equal(t, http.StatusTooManyRequests, status)
 	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
 	require.NotEmpty(t, raw.Header().Peek("Retry-After"))
 	require.Equal(t, 1, sender.sends(email))
+}
+
+func testRegisteredEmailRateLimit(
+	t *testing.T,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	email := "registered-rate-limit@fdueat.com"
+	require.NoError(t, gdb.Create(&model.User{
+		Email: email, PasswordHash: "$2b$12$test", Name: "registered", Role: model.UserRoleUser,
+	}).Error)
+
+	status, _, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
+	require.Equal(t, http.StatusOK, status)
+	status, response, raw := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
+	require.Equal(t, http.StatusTooManyRequests, status)
+	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
+	require.NotEmpty(t, raw.Header().Peek("Retry-After"))
+	require.Zero(t, sender.sends(email), "已注册邮箱绝不能收到验证码投递")
+
+	var challenge model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
+	require.EqualValues(t, 1, challenge.SendCount)
+	require.Len(t, challenge.CodeDigest, 64)
+	require.NotEqual(t, strings.Repeat("0", 64), challenge.CodeDigest)
 }
 
 func testFailedAttemptPersistence(
@@ -371,7 +467,7 @@ func openAuthPostgres(t *testing.T) (*gorm.DB, *dbinfra.DB) {
 func sendCode(t *testing.T, engine *server.Hertz, email string) {
 	t.Helper()
 	status, _, _ := performJSON(t, engine, http.MethodPost,
-		"/api/v2/auth/send-verification-code", map[string]any{"email": email}, "")
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
 	require.Equal(t, http.StatusOK, status)
 }
 

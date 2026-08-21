@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"gorm.io/gorm"
 
+	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
 )
 
@@ -64,10 +65,11 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 
 const commitErrorCtxKey = "danshi.commit_error"
 
-// CommitError 显式允许一次业务错误响应提交当前事务。
+// CommitError 显式允许一次 4xx 业务错误响应提交当前事务。
 //
 // 只应用于“拒绝请求本身也必须留下安全状态”的场景，例如验证码输错后递增
 // failed_attempts。普通 4xx 仍然回滚；调用方必须在全部必要写入成功后才能标记。
+// 5xx 表示服务端未能可靠完成请求，无论是否误置本标记都必须回滚。
 func CommitError(c *app.RequestContext) {
 	c.Set(commitErrorCtxKey, true)
 }
@@ -75,7 +77,21 @@ func CommitError(c *app.RequestContext) {
 func shouldCommitError(c *app.RequestContext) bool {
 	value, ok := c.Get(commitErrorCtxKey)
 	commit, valid := value.(bool)
-	return ok && valid && commit
+	if !ok || !valid || !commit {
+		return false
+	}
+	status := c.Response.StatusCode()
+	if status >= 500 {
+		return false
+	}
+	if value, exists := c.Get(errCtxKey); exists && value != nil {
+		err, isError := value.(error)
+		if !isError || err == nil {
+			return false
+		}
+		status = apierr.As(err).Status
+	}
+	return status >= 400 && status < 500
 }
 
 func rollback(ctx context.Context, tx *gorm.DB, log *slog.Logger, reason string) {

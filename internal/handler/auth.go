@@ -52,6 +52,10 @@ type sessionsResponse struct {
 	Sessions []service.SessionView `json:"sessions"`
 }
 
+type currentUserResponse struct {
+	User service.UserView `json:"user"`
+}
+
 // SendVerificationCode 发送注册验证码。
 func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) {
 	var request sendVerificationCodeRequest
@@ -116,6 +120,20 @@ func (h *Auth) Refresh(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK("刷新成功", result))
+}
+
+// Me 返回当前用户自己的账号信息。
+func (h *Auth) Me(ctx context.Context, c *app.RequestContext) {
+	principal, err := middleware.CurrentPrincipal(c)
+	var user service.UserView
+	if err == nil {
+		user, err = h.service.CurrentUser(ctx, principal)
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("请求成功", currentUserResponse{User: user}))
 }
 
 // Logout 撤销当前会话。

@@ -21,12 +21,13 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 	authHandler := handler.NewAuth(authService)
 	auth := api.Group("/auth")
 
-	auth.POST("/send-verification-code", authHandler.SendVerificationCode)
+	auth.POST("/email-verification-codes", authHandler.SendVerificationCode)
 	auth.POST("/register", authHandler.Register)
 	auth.POST("/login", authHandler.Login)
 	auth.POST("/refresh", authHandler.Refresh)
 
 	requireAuth := middleware.RequireAuth(authService)
+	auth.GET("/me", requireAuth, authHandler.Me)
 	auth.POST("/logout", requireAuth, authHandler.Logout)
 	auth.POST("/logout-all", requireAuth, authHandler.LogoutAll)
 	auth.GET("/sessions", requireAuth, authHandler.Sessions)

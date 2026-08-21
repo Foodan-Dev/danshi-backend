@@ -138,7 +138,7 @@ func NewAuthService(cfg config.Config, sender VerificationEmailSender) *AuthServ
 	return &AuthService{cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender}
 }
 
-// SendVerificationCode 为可注册邮箱生成、摘要存储并投递一次验证码。
+// SendVerificationCode 为允许注册的域名生成并记录一次验证码发送状态。
 func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string) error {
 	email, err := normalizeEmail(rawEmail)
 	if err != nil {
@@ -150,8 +150,9 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if !s.domainAllowed(email) {
 		return nil
 	}
+	registered := false
 	if _, err = s.users.FindByEmail(ctx, email, repository.QueryOptions{IncludeDeleted: true}); err == nil {
-		return nil
+		registered = true
 	} else if !errors.Is(err, repository.ErrNotFound) {
 		return apierr.Internal(err)
 	}
@@ -164,12 +165,19 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if err := enforceSendRate(challenge, now); err != nil {
 		return err
 	}
-	code, err := generateVerificationCode()
+	var code string
+	if registered {
+		challenge.CodeDigest, err = randomDigest()
+	} else {
+		code, err = generateVerificationCode()
+		if err == nil {
+			challenge.CodeDigest = s.codeDigest(email, code)
+		}
+	}
 	if err != nil {
 		return apierr.Internal(err)
 	}
 
-	challenge.CodeDigest = s.codeDigest(email, code)
 	challenge.ExpiresAt = now.Add(verificationCodeTTL)
 	challenge.LastSentAt = &now
 	challenge.SendCount++
@@ -178,8 +186,11 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if err := s.codes.SaveState(ctx, challenge, now); err != nil {
 		return apierr.Internal(err)
 	}
+	if registered {
+		return nil
+	}
 	if err := s.sender.SendRegistrationCode(ctx, email, code); err != nil {
-		return apierr.Internal(err)
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
 	}
 	return nil
 }
@@ -310,6 +321,11 @@ func (s *AuthService) Authenticate(ctx context.Context, accessToken string) (*Pr
 		return nil, apierr.Internal(err)
 	}
 	return &Principal{User: identity.User, SessionID: identity.Session.ID}, nil
+}
+
+// CurrentUser 返回当前用户自己的账号信息。
+func (s *AuthService) CurrentUser(ctx context.Context, principal *Principal) (UserView, error) {
+	return s.userView(ctx, &principal.User)
 }
 
 // Logout 撤销当前设备会话。

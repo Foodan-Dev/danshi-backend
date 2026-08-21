@@ -119,6 +119,14 @@ func TooManyRequests(code BizCode, message string) *Error {
 	return newf(http.StatusTooManyRequests, code, "%s", message)
 }
 
+// ServiceUnavailable 表示依赖服务暂时不可用，客户端可以稍后重试。
+func ServiceUnavailable(message string) *Error {
+	if message == "" {
+		message = "服务暂时不可用，请稍后再试"
+	}
+	return newf(http.StatusServiceUnavailable, BizServiceUnavailable, "%s", message)
+}
+
 // Invalid 构造 422 校验错误。顶层 message 取第一条字段错误的文案。
 func Invalid(fields ...FieldError) *Error {
 	e := &Error{Status: http.StatusUnprocessableEntity, Code: BizValidation, Fields: fields}

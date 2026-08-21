@@ -9,7 +9,7 @@ import (
 // 错误码是对外契约，重复的字面量意味着两种情形在前端无法区分。
 func TestBizCodesAreUnique(t *testing.T) {
 	all := []BizCode{
-		BizInternal, BizNotFound, BizValidation, BizRateLimited, BizUnauthorized,
+		BizInternal, BizNotFound, BizValidation, BizRateLimited, BizUnauthorized, BizServiceUnavailable,
 		BizEmailTaken, BizEmailDomainNotAllow, BizCredentialsInvalid,
 		BizVerifyCodeInvalid, BizVerifyCodeTooMany, BizAccountBanned,
 		BizAccountDeleted, BizSessionRevoked, BizSessionNotFound,
@@ -42,6 +42,9 @@ func TestAsFillsEmptyCode(t *testing.T) {
 	if got := As(&Error{Status: http.StatusForbidden, Code: BizAccountBanned}).Code; got != BizAccountBanned {
 		t.Fatalf("显式业务码被覆盖: %q", got)
 	}
+	if got := As(&Error{Status: http.StatusServiceUnavailable}).Code; got != BizServiceUnavailable {
+		t.Fatalf("期望 503 兜底为 service_unavailable，实际 %q", got)
+	}
 }
 
 // 非业务错误一律归 500，且必须带上与日志关联的 error_id。
@@ -66,6 +69,23 @@ func TestUnauthorizedIsOpaque(t *testing.T) {
 	}
 	if e.ErrorID != "" {
 		t.Fatal("401 不该带 error_id")
+	}
+}
+
+func TestServiceUnavailableCarriesCause(t *testing.T) {
+	cause := errors.New("SES timeout")
+	e := ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(cause)
+	if e.Status != http.StatusServiceUnavailable || e.Code != BizServiceUnavailable {
+		t.Fatalf("期望 503/service_unavailable，实际 %d/%s", e.Status, e.Code)
+	}
+	if e.Message != "验证码暂时无法发送，请稍后再试" {
+		t.Fatalf("503 文案不符: %q", e.Message)
+	}
+	if !errors.Is(e, cause) {
+		t.Fatal("503 底层原因必须保留在错误链中")
+	}
+	if e.ErrorID != "" {
+		t.Fatal("503 不应伪装成内部错误并生成 error_id")
 	}
 }
 
