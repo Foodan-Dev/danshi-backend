@@ -12,7 +12,7 @@ func TestBizCodesAreUnique(t *testing.T) {
 		BizInternal, BizNotFound, BizValidation, BizRateLimited, BizUnauthorized,
 		BizEmailTaken, BizEmailDomainNotAllow, BizCredentialsInvalid,
 		BizVerifyCodeInvalid, BizVerifyCodeTooMany, BizAccountBanned,
-		BizAccountDeleted, BizSessionRevoked,
+		BizAccountDeleted, BizSessionRevoked, BizSessionNotFound,
 		BizPermissionDenied, BizNotOwner,
 		BizPostNotFound, BizPostNotPublished, BizPostDeleted,
 		BizCommentNotFound, BizCommentDeleted, BizContentUnderAudit, BizContentRejected,

@@ -23,6 +23,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
+	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
 // APIPrefix 是本服务唯一的路由前缀。
@@ -33,6 +34,8 @@ type Deps struct {
 	Config config.Config
 	DB     *db.DB
 	Log    *slog.Logger
+	// EmailSender 可由测试或生产适配器替换；nil 时使用 dev 日志实现。
+	EmailSender service.VerificationEmailSender
 }
 
 // Register 装配全部路由。
@@ -58,7 +61,7 @@ func Register(h *server.Hertz, d Deps) {
 	// 每个域一个 register 函数，签名统一为 func(*route.RouterGroup, Deps)。
 	// 由 P2 逐域补全，参见 docs/go-rewrite-plan.md §12 的 P2 表。
 	//
-	//	registerAuth(api, d)
+	registerAuth(api, d)
 	//	registerUser(api, d)
 	//	registerPost(api, d)
 	//	registerComment(api, d)

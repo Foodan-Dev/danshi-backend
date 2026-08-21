@@ -56,7 +56,17 @@ func NewCodec(secret string) *Codec { return &Codec{secret: []byte(secret)} }
 
 // Sign 签发带用户、会话和令牌类型的 JWT。
 func (c *Codec) Sign(userID, sessionID int64, typ TokenType, ttl time.Duration) (string, error) {
-	now := time.Now().UTC()
+	return c.SignAt(userID, sessionID, typ, time.Now().UTC(), ttl)
+}
+
+// SignAt 在指定时刻签发令牌，供需要让会话绝对过期时间与 JWT exp 精确一致的业务使用。
+func (c *Codec) SignAt(
+	userID, sessionID int64,
+	typ TokenType,
+	now time.Time,
+	ttl time.Duration,
+) (string, error) {
+	now = now.UTC()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   strconv.FormatInt(userID, 10),

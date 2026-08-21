@@ -13,12 +13,14 @@ import (
 
 // UnitOfWork 给每个请求开一个事务，对应 Python 侧 get_db() 的 yield/commit/rollback。
 //
-// 提交条件很严格——只有**全部**满足才提交：
+// 默认提交条件很严格——只有**全部**满足才提交：
 //   - 处理器没有上报错误
 //   - HTTP 状态码 < 400
 //
 // 第二条是必要的：有些路径会直接写 4xx 响应而不走 Fail()，
 // 只看错误标记会把它们当成功提交。
+// 唯一例外是处理器在已成功写入安全状态后显式调用 CommitError，
+// 例如验证码输错需要既返回 400 又保留 failed_attempts。
 //
 // panic 由外层 Recovery 兜住，但事务必须在这里先回滚——
 // 所以这里也有一个 defer/recover，回滚之后把 panic 重新抛出去交给 Recovery。
@@ -44,7 +46,7 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 
 		c.Next(db.WithTx(ctx, tx))
 
-		if HasError(c) || c.Response.StatusCode() >= 400 {
+		if (HasError(c) || c.Response.StatusCode() >= 400) && !shouldCommitError(c) {
 			rollback(ctx, tx, log, "请求失败")
 			committed = true // 已处理，defer 不必再回滚
 			return
@@ -58,6 +60,22 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 		}
 		committed = true
 	}
+}
+
+const commitErrorCtxKey = "danshi.commit_error"
+
+// CommitError 显式允许一次业务错误响应提交当前事务。
+//
+// 只应用于“拒绝请求本身也必须留下安全状态”的场景，例如验证码输错后递增
+// failed_attempts。普通 4xx 仍然回滚；调用方必须在全部必要写入成功后才能标记。
+func CommitError(c *app.RequestContext) {
+	c.Set(commitErrorCtxKey, true)
+}
+
+func shouldCommitError(c *app.RequestContext) bool {
+	value, ok := c.Get(commitErrorCtxKey)
+	commit, valid := value.(bool)
+	return ok && valid && commit
 }
 
 func rollback(ctx context.Context, tx *gorm.DB, log *slog.Logger, reason string) {

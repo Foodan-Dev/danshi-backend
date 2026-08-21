@@ -62,6 +62,7 @@ const (
 	BizAccountBanned       BizCode = "account_banned"         // 账号被封禁，前端要展示理由与解封时间
 	BizAccountDeleted      BizCode = "account_deleted"        // 账号已注销
 	BizSessionRevoked      BizCode = "session_revoked"        // 会话已被撤销（在别处登出/被踢）
+	BizSessionNotFound     BizCode = "session_not_found"      // 指定设备会话不存在、已失效或不属于当前用户
 
 	// 权限
 

@@ -46,6 +46,9 @@ func ErrorHandler(log *slog.Logger) app.HandlerFunc {
 		if e.ErrorID != "" {
 			attrs = append(attrs, slog.String("error_id", e.ErrorID))
 		}
+		if e.Cause() != nil {
+			attrs = append(attrs, slog.Any("cause", e.Cause()))
+		}
 		if e.Status >= 500 {
 			log.ErrorContext(ctx, e.Error(), attrs...)
 		} else {

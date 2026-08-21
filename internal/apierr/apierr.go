@@ -76,6 +76,14 @@ func Unauthorized() *Error {
 	return newf(http.StatusUnauthorized, BizUnauthorized, "未登录或登录已失效")
 }
 
+// BadRequest 构造语法正确但业务凭据无效的 400，例如一次性验证码错误或已过期。
+func BadRequest(code BizCode, message string) *Error {
+	if code == "" {
+		code = BizValidation
+	}
+	return newf(http.StatusBadRequest, code, "%s", message)
+}
+
 // Forbidden 表示「知道你是谁，但你不能做这件事」：权限不足、账号被封禁。
 func Forbidden(code BizCode, message string) *Error {
 	if message == "" {
@@ -101,6 +109,14 @@ func Conflict(code BizCode, message string) *Error {
 		code = BizConflict
 	}
 	return newf(http.StatusConflict, code, "%s", message)
+}
+
+// TooManyRequests 构造 429；Retry-After 由 HTTP handler 根据领域错误补充。
+func TooManyRequests(code BizCode, message string) *Error {
+	if code == "" {
+		code = BizRateLimited
+	}
+	return newf(http.StatusTooManyRequests, code, "%s", message)
 }
 
 // Invalid 构造 422 校验错误。顶层 message 取第一条字段错误的文案。
