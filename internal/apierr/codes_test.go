@@ -17,7 +17,7 @@ func TestBizCodesAreUnique(t *testing.T) {
 		BizPostNotFound, BizPostNotPublished, BizPostDeleted,
 		BizCommentNotFound, BizCommentDeleted, BizContentUnderAudit, BizContentRejected,
 		BizDictItemNotFound, BizDictItemInUse, BizWindowNotInCanteen,
-		BizSuggestionClosed, BizTagLimitExceeded,
+		BizSuggestionNotFound, BizSuggestionClosed, BizSuggestionParentPending, BizTagLimitExceeded,
 		BizImageNotFound, BizImageNotOwned, BizImagePurposeWrong, BizImageNotApproved,
 		BizCannotFollowSelf, BizAlreadyExists, BizConflict,
 	}

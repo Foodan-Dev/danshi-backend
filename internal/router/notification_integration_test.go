@@ -116,12 +116,17 @@ func testNotificationProducersAndReads(
 	replyNotification := requireNotification(
 		t, gdb, actors.Replier.User.ID, actors.Mentioned.User.ID, model.NotificationTypeReply,
 	)
-	require.Equal(t, firstReply.Comment.ID, *replyNotification.RelatedCommentID,
-		"reply 必须指向实际被回复的父评论")
+	require.Equal(t, root.Comment.ID, *replyNotification.RelatedCommentID,
+		"reply 必须指向楼主评论")
 	require.NotEqual(t, secondReply.Comment.ID, *replyNotification.RelatedCommentID,
 		"reply 不得指向新回复自身")
 	require.Equal(t, "回复楼内回复的正文", *replyNotification.Content,
 		"预览必须来自新回复正文，而不是父评论正文")
+	status, _, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/comments/%d/replies", *replyNotification.RelatedCommentID),
+		nil, actors.Replier.Token)
+	require.Equal(t, http.StatusOK, status,
+		"reply 通知的 related_comment_id 必须能直接打开整楼回复")
 
 	likeCommentNotification := requireNotification(
 		t, gdb, actors.Commenter.User.ID, actors.Mentioned.User.ID, model.NotificationTypeLikeComment,
@@ -187,7 +192,7 @@ func testNotificationReadEndpoints(
 	var replies service.NotificationList
 	decodeData(t, response, &replies)
 	require.Len(t, replies.Notifications, 1)
-	require.NotEqual(t, rootCommentID, *replies.Notifications[0].RelatedID)
+	require.Equal(t, rootCommentID, *replies.Notifications[0].RelatedID)
 	require.Equal(t, "comment", *replies.Notifications[0].RelatedType)
 	require.Equal(t, postID, *replies.Notifications[0].PostID,
 		"评论类通知必须批量解析所属帖子供前端跳转")

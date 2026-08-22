@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -21,6 +22,9 @@ import (
 // ErrNotFound 是 repository 层统一的“没有命中行”错误。
 // service 不应依赖 GORM 的错误值；需要向 API 暴露 404 时统一交给 ToAPIError。
 var ErrNotFound = errors.New("repository: resource not found")
+
+// ErrAlreadyExists 表示唯一键冲突但不向上层泄露数据库约束名。
+var ErrAlreadyExists = errors.New("repository: resource already exists")
 
 // QueryOptions 是实体查询的公共选项。
 // IncludeDeleted 必须由调用方显式开启；默认查询自动排除 deleted_at 非空的行。
@@ -107,4 +111,9 @@ func hasDeletedAt[T any]() bool {
 	}
 	_, ok := typ.FieldByName("DeletedAt")
 	return ok
+}
+
+func literalContainsPattern(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + replacer.Replace(value) + "%"
 }

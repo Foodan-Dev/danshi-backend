@@ -37,6 +37,35 @@ type UserListRecord struct {
 	IsFollowing    bool
 }
 
+// SearchPage 按昵称关键词分页返回当前可用用户。
+func (UserRepository) SearchPage(
+	ctx context.Context,
+	keyword string,
+	currentUserID uint64,
+	params pagination.Params,
+) ([]UserListRecord, pagination.Meta, error) {
+	query := db.FromContext(ctx).Table("users AS u").Where(`
+		u.deleted_at IS NULL
+		AND NOT (u.ban_is_permanent OR COALESCE(u.banned_until > CURRENT_TIMESTAMP, false))
+	`)
+	if keyword != "" {
+		query = query.Where(`u.name ILIKE ? ESCAPE '\'`, literalContainsPattern(keyword))
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, pagination.Meta{}, err
+	}
+	rows := make([]UserListRecord, 0, params.Limit)
+	err := query.Select(userListColumns, currentUserID, currentUserID, currentUserID).
+		Joins("LEFT JOIN image_assets AS avatar ON avatar.id = u.avatar_image_asset_id").
+		Order("u.created_at DESC, u.id DESC").Offset(params.Offset()).Limit(params.Limit).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, pagination.Meta{}, err
+	}
+	return rows, pagination.NewMeta(params, total), nil
+}
+
 // FindByID 按 id 查询未注销用户。
 func (UserRepository) FindByID(ctx context.Context, userID uint64) (*model.User, error) {
 	var user model.User

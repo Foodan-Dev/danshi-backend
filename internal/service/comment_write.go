@@ -379,10 +379,13 @@ func createCommentNotifications(
 		})
 	}
 	if parent != nil && parent.AuthorID != comment.AuthorID {
-		parentID := parent.ID
+		rootID := parent.ID
+		if comment.RootID != nil {
+			rootID = *comment.RootID
+		}
 		rows = append(rows, model.Notification{
 			RecipientID: parent.AuthorID, SenderID: comment.AuthorID, Type: model.NotificationTypeReply,
-			RelatedCommentID: &parentID, Content: &preview,
+			RelatedCommentID: &rootID, Content: &preview,
 		})
 	}
 	return append(rows, mentionNotifications(comment.ID, comment.AuthorID, comment.Content, mentionIDs)...)

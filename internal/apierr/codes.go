@@ -83,11 +83,13 @@ const (
 
 	// 词表与提议
 
-	BizDictItemNotFound   BizCode = "dict_item_not_found"   // 口味/菜系/餐厅/窗口不存在或已停用
-	BizDictItemInUse      BizCode = "dict_item_in_use"      // 被引用，只能停用不能删除
-	BizWindowNotInCanteen BizCode = "window_not_in_canteen" // 窗口不属于所选餐厅
-	BizSuggestionClosed   BizCode = "suggestion_closed"     // 提议已是终态，不可再改
-	BizTagLimitExceeded   BizCode = "tag_limit_exceeded"    // 单帖标签数超限
+	BizDictItemNotFound        BizCode = "dict_item_not_found"       // 口味/菜系/餐厅/窗口不存在或已停用
+	BizDictItemInUse           BizCode = "dict_item_in_use"          // 被引用，只能停用不能删除
+	BizWindowNotInCanteen      BizCode = "window_not_in_canteen"     // 窗口不属于所选餐厅
+	BizSuggestionNotFound      BizCode = "suggestion_not_found"      // 词条提议不存在或当前用户不可见
+	BizSuggestionClosed        BizCode = "suggestion_closed"         // 提议已是终态，不可再改
+	BizSuggestionParentPending BizCode = "suggestion_parent_pending" // 窗口提议依赖的餐厅提议尚未批准
+	BizTagLimitExceeded        BizCode = "tag_limit_exceeded"        // 单帖标签数超限
 
 	// 图片
 

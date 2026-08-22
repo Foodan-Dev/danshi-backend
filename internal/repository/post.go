@@ -18,6 +18,7 @@ type PostRepository struct{}
 
 // PostFilter 是帖子列表的数据库筛选条件。
 type PostFilter struct {
+	Keyword     *string
 	PostType    *model.PostType
 	ShareType   *model.ShareType
 	Category    *model.PostCategory
@@ -245,6 +246,14 @@ func addPostRecordJoins(query *gorm.DB) *gorm.DB {
 }
 
 func applyPostFilter(query *gorm.DB, filter PostFilter) *gorm.DB {
+	if filter.Keyword != nil {
+		pattern := literalContainsPattern(*filter.Keyword)
+		query = query.Where(
+			`(p.title ILIKE ? ESCAPE '\' OR p.content ILIKE ? ESCAPE '\')`,
+			pattern,
+			pattern,
+		)
+	}
 	if filter.PostType != nil {
 		query = query.Where("p.post_type = ?", *filter.PostType)
 	}

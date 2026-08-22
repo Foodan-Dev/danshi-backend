@@ -70,10 +70,10 @@ func Register(h *server.Hertz, d Deps) {
 	registerPost(api, d)
 	registerComment(api, d)
 	registerNotification(api, d)
-	//	registerSearch(api, d)
+	registerSearch(api, d)
 	//	registerUpload(api, d)
-	//	registerConfig(api, d)
-	//	registerDictionary(api, d)
+	registerConfig(api, d)
+	registerDictionary(api, d)
 	//	registerModeration(api, d)
 	//	registerAdmin(api, d)
 
