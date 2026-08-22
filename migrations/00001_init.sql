@@ -428,7 +428,9 @@ COMMENT ON COLUMN image_assets.uploader_id IS
 COMMENT ON COLUMN image_assets.moderation IS
   '机器审核结论，与 status 正交（status 说的是「有没有被引用」，本列说的是「内容合不合规」）。'
   'pending 待审；pass 通过；review 需人工复核；block 判定违规。'
-  '**只有 pass 的图片允许被帖子或头像引用**（应用层校验）。审核明细见 moderation_records。';
+  '审核是异步的，用户点发布时图片可能还没审完，因此**允许引用尚在 pending/review 的图片**，'
+  '只有 block 不可引用；真正的约束是「引用了未通过图片的帖子不得进入已发布状态」，'
+  '这是跨表规则，由服务层单事务校验（见 go-rewrite-plan §5.2.9）。审核明细见 moderation_records。';
 CREATE INDEX idx_image_assets_moderation ON image_assets (moderation, created_at)
     WHERE moderation IN ('pending', 'review');
 
@@ -1220,7 +1222,8 @@ COMMENT ON TABLE comment_histories IS
 -- 结论如何影响内容可见性：
 --   帖子   pass → status=approved；review → status=pending 转人工；block → status=rejected
 --   评论   pass → 不动（先发后审）；review/block → deleted_at 置位、deleted_reason='moderation'
---   图片   写回 image_assets.moderation，只有 pass 才允许被引用
+--   图片   写回 image_assets.moderation；block 不可被引用，pending/review 可先引用，
+--          但只要还有图片未 pass，所属帖子就不得进入 approved（§5.2.9）
 -- ============================================================
 
 CREATE TABLE moderation_records (

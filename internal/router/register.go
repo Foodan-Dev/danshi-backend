@@ -36,6 +36,8 @@ type Deps struct {
 	Log    *slog.Logger
 	// EmailSender 可由测试或生产适配器替换；nil 时使用 dev 日志实现。
 	EmailSender service.VerificationEmailSender
+	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
+	ContentModerator service.ContentModerator
 }
 
 // Register 装配全部路由。
@@ -63,7 +65,7 @@ func Register(h *server.Hertz, d Deps) {
 	//
 	registerAuth(api, d)
 	//	registerUser(api, d)
-	//	registerPost(api, d)
+	registerPost(api, d)
 	//	registerComment(api, d)
 	//	registerNotification(api, d)
 	//	registerSearch(api, d)

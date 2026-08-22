@@ -22,7 +22,9 @@ func TestParseAndFormat(t *testing.T) {
 }
 
 func TestRejectsBadInput(t *testing.T) {
-	for _, in := range []string{"", "abc", "-1", "1.234"} {
+	for _, in := range []string{
+		"", "abc", "-1", "1.234", "1e2", "NaN", "Inf", "+1", " 1", "100000000", "1.",
+	} {
 		if _, err := money.Parse(in); err == nil {
 			t.Fatalf("%q 应被拒绝", in)
 		}

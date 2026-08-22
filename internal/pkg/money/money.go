@@ -7,9 +7,13 @@ package money
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
+
+var amountPattern = regexp.MustCompile(`^(?:0|[0-9]+)(?:\.[0-9]{1,2})?$`)
 
 // Amount 是金额。JSON 里是字符串，数据库里是 numeric(10,2)。
 type Amount struct {
@@ -23,6 +27,13 @@ func FromDecimal(d decimal.Decimal) Amount { return Amount{d: d} }
 func Parse(s string) (Amount, error) {
 	if s == "" {
 		return Amount{}, fmt.Errorf("金额不能为空")
+	}
+	if !amountPattern.MatchString(s) {
+		return Amount{}, fmt.Errorf("金额格式不正确")
+	}
+	integerPart, _, _ := strings.Cut(s, ".")
+	if len(integerPart) > 8 {
+		return Amount{}, fmt.Errorf("金额整数部分最多八位")
 	}
 	d, err := decimal.NewFromString(s)
 	if err != nil {
