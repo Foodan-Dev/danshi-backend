@@ -347,14 +347,6 @@ func searchPostIDs(posts []service.SearchPostItem) []uint64 {
 	return ids
 }
 
-func postListIDs(posts []service.PostListItem) []uint64 {
-	ids := make([]uint64, 0, len(posts))
-	for _, post := range posts {
-		ids = append(ids, post.ID)
-	}
-	return ids
-}
-
 func searchPostPresent(posts []service.SearchPostItem, id uint64) bool {
 	for _, post := range posts {
 		if post.ID == id {
