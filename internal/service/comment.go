@@ -21,11 +21,19 @@ type CommentService struct {
 	comments  repository.CommentRepository
 	posts     repository.PostRepository
 	moderator ContentModerator
+	alerter   ModerationAlerter
 }
 
 // NewCommentService 创建评论服务。
-func NewCommentService(moderator ContentModerator) *CommentService {
-	return &CommentService{moderator: moderator}
+func NewCommentService(moderator ContentModerator, alerters ...ModerationAlerter) *CommentService {
+	if moderator == nil {
+		moderator = UnavailableContentModerator{}
+	}
+	alerter := ModerationAlerter(DiscardModerationAlerter{})
+	if len(alerters) > 0 && alerters[0] != nil {
+		alerter = alerters[0]
+	}
+	return &CommentService{moderator: moderator, alerter: alerter}
 }
 
 // CommentAuthorView 是评论作者的公开信息。

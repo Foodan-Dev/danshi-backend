@@ -19,6 +19,8 @@ func TestBizCodesAreUnique(t *testing.T) {
 		BizDictItemNotFound, BizDictItemInUse, BizWindowNotInCanteen,
 		BizSuggestionNotFound, BizSuggestionClosed, BizSuggestionParentPending, BizTagLimitExceeded,
 		BizImageNotFound, BizImageNotOwned, BizImagePurposeWrong, BizImageNotApproved,
+		BizUploadNotFound, BizUploadClosed, BizUploadIncomplete, BizUploadSizeMismatch,
+		BizModerationCallbackInvalid,
 		BizCannotFollowSelf, BizAlreadyExists, BizConflict,
 	}
 	seen := make(map[BizCode]bool, len(all))

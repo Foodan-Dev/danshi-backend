@@ -9,15 +9,7 @@ import (
 )
 
 func registerPost(api *route.RouterGroup, deps Deps) {
-	moderator := deps.ContentModerator
-	if moderator == nil {
-		if deps.Config.IsProd() {
-			moderator = service.UnavailableContentModerator{}
-		} else {
-			moderator = service.DirectPassContentModerator{}
-		}
-	}
-	postService := service.NewPostService(moderator)
+	postService := service.NewPostService(deps.ContentModerator, deps.ModerationAlerter)
 	postHandler := handler.NewPost(postService)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)

@@ -9,19 +9,11 @@ import (
 )
 
 func registerUser(api *route.RouterGroup, deps Deps) {
-	moderator := deps.ContentModerator
-	if moderator == nil {
-		if deps.Config.IsProd() {
-			moderator = service.UnavailableContentModerator{}
-		} else {
-			moderator = service.DirectPassContentModerator{}
-		}
-	}
 	alerter := deps.UserModerationAlerter
 	if alerter == nil {
-		alerter = service.DiscardUserModerationAlerter{}
+		alerter = service.GenericUserModerationAlerter{Alerter: deps.ModerationAlerter}
 	}
-	userHandler := handler.NewUser(service.NewUserService(moderator, alerter))
+	userHandler := handler.NewUser(service.NewUserService(deps.ContentModerator, alerter))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 	users := api.Group("/users")

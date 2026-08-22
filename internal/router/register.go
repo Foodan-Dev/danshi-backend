@@ -38,6 +38,14 @@ type Deps struct {
 	EmailSender service.VerificationEmailSender
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
 	ContentModerator service.ContentModerator
+	// ImageStorage 是上传域使用的对象存储边界。
+	ImageStorage service.ImageStorage
+	// ImageModerator 提交异步图片审核；dev 默认同步放行，prod 未配置时 fail-closed。
+	ImageModerator service.ImageModerator
+	// ImageCallbackDecoder 解码外部审核供应商回调。
+	ImageCallbackDecoder service.ImageCallbackDecoder
+	// ModerationAlerter 接收所有非 pass 的审核结论。
+	ModerationAlerter service.ModerationAlerter
 	// UserModerationAlerter 接收昵称/简介 block 告警；具体渠道由后续 moderation 域装配。
 	UserModerationAlerter service.UserModerationAlerter
 }
@@ -51,6 +59,7 @@ type Deps struct {
 //  4. CORS         在业务之前，预检请求不该进到 UoW
 //  5. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
 func Register(h *server.Hertz, d Deps) {
+	d = withDefaultDomainDeps(d)
 	h.Use(middleware.Recovery(d.Log))
 	h.Use(middleware.RequestID())
 	h.Use(middleware.ErrorHandler(d.Log))
@@ -71,10 +80,10 @@ func Register(h *server.Hertz, d Deps) {
 	registerComment(api, d)
 	registerNotification(api, d)
 	registerSearch(api, d)
-	//	registerUpload(api, d)
+	registerUpload(api, d)
 	registerConfig(api, d)
 	registerDictionary(api, d)
-	//	registerModeration(api, d)
+	registerModeration(api, d)
 	//	registerAdmin(api, d)
 
 	registerFallbacks(h)

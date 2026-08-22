@@ -17,7 +17,8 @@ func base() config.Config {
 		JWTSecretKey: goodSecret, JWTExpireMinutes: 60, JWTRefreshExpireDay: 30,
 		EmailVerificationRequired: true, EmailVerificationSecret: goodSecret,
 		AllowedEmailDomains: "fdueat.com,m.fudan.edu.cn",
-		LogLevel:            "info",
+		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600,
+		LogLevel: "info",
 	}
 }
 
@@ -55,6 +56,10 @@ func TestRejectsBadConfig(t *testing.T) {
 			c.CORSAllowOrigins = "*"
 		}, "不能包含 *"},
 		{"开了验证码却没配密钥", func(c *config.Config) { c.EmailVerificationSecret = "" }, "EMAIL_VERIFICATION_SECRET"},
+		{"图片上限非正", func(c *config.Config) { c.COSMaxImageBytes = 0 }, "COS_MAX_IMAGE_BYTES"},
+		{"签名时效非正", func(c *config.Config) { c.COSPresignTTLS = 0 }, "COS_PRESIGN_TTL_SECONDS"},
+		{"图片域名不是 HTTPS", func(c *config.Config) { c.COSImageDomain = "http://img.example.com" }, "COS_IMG_DOMAIN"},
+		{"回调令牌太短", func(c *config.Config) { c.ModerationCallbackToken = "short" }, "MODERATION_CALLBACK_TOKEN"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -82,6 +87,8 @@ func TestProdExtraConstraints(t *testing.T) {
 		{"未配 CORS", func(c *config.Config) { c.CORSAllowOrigins = "" }, "CORS_ALLOW_ORIGINS"},
 		{"CORS 通配", func(c *config.Config) { c.CORSAllowOrigins = "*" }, "不能是 *"},
 		{"未配腾讯云密钥", func(c *config.Config) { c.TencentSecretID = "" }, "TENCENT_CLOUD_SECRET_ID"},
+		{"未配图片域名", func(c *config.Config) { c.COSImageDomain = "" }, "COS_IMG_DOMAIN"},
+		{"未配审核回调", func(c *config.Config) { c.TencentCICallbackURL = "" }, "TENCENT_CI_CALLBACK_URL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,6 +97,9 @@ func TestProdExtraConstraints(t *testing.T) {
 			cfg.CORSAllowOrigins = "https://danshi.example.com"
 			cfg.TencentSecretID, cfg.TencentSecretKey = "id", "key"
 			cfg.COSBucket, cfg.COSRegion = "b", "r"
+			cfg.COSImageDomain = "https://img.example.com"
+			cfg.TencentCICallbackURL = "https://api.example.com/api/v2/moderation/tencent-ci/callback"
+			cfg.ModerationCallbackToken = goodSecret
 			c.mutate(&cfg)
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), c.expect) {
 				t.Fatalf("期望包含 %q，实际: %v", c.expect, err)

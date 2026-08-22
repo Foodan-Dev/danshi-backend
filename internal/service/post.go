@@ -190,16 +190,21 @@ type PostHistoryList struct {
 // PostService 实现 Post 域业务协议。
 type PostService struct {
 	moderator     ContentModerator
+	alerter       ModerationAlerter
 	posts         repository.PostRepository
 	notifications repository.NotificationRepository
 }
 
 // NewPostService 创建帖子服务。
-func NewPostService(moderator ContentModerator) *PostService {
+func NewPostService(moderator ContentModerator, alerters ...ModerationAlerter) *PostService {
 	if moderator == nil {
 		moderator = UnavailableContentModerator{}
 	}
-	return &PostService{moderator: moderator}
+	alerter := ModerationAlerter(DiscardModerationAlerter{})
+	if len(alerters) > 0 && alerters[0] != nil {
+		alerter = alerters[0]
+	}
+	return &PostService{moderator: moderator, alerter: alerter}
 }
 
 // List 返回公开且未删除的信息流，并批量预加载全部关联。

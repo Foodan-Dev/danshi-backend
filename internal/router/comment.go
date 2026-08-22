@@ -9,15 +9,9 @@ import (
 )
 
 func registerComment(api *route.RouterGroup, deps Deps) {
-	moderator := deps.ContentModerator
-	if moderator == nil {
-		if deps.Config.IsProd() {
-			moderator = service.UnavailableContentModerator{}
-		} else {
-			moderator = service.DirectPassContentModerator{}
-		}
-	}
-	commentHandler := handler.NewComment(service.NewCommentService(moderator))
+	commentHandler := handler.NewComment(service.NewCommentService(
+		deps.ContentModerator, deps.ModerationAlerter,
+	))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 

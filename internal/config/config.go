@@ -51,6 +51,14 @@ type Config struct {
 	TencentSecretKey string `mapstructure:"TENCENT_CLOUD_SECRET_KEY"`
 	COSBucket        string `mapstructure:"COS_BUCKET"`
 	COSRegion        string `mapstructure:"COS_REGION"`
+	COSImageDomain   string `mapstructure:"COS_IMG_DOMAIN"`
+	COSMaxImageBytes int64  `mapstructure:"COS_MAX_IMAGE_BYTES"`
+	COSPresignTTLS   int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
+
+	TencentCIBizType        string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
+	TencentCICallbackURL    string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
+	ModerationCallbackToken string `mapstructure:"MODERATION_CALLBACK_TOKEN"`
+	FeishuModerationWebhook string `mapstructure:"FEISHU_MODERATION_WEBHOOK_URL"`
 
 	OTLPEndpoint string `mapstructure:"OTLP_ENDPOINT"`
 	LogLevel     string `mapstructure:"LOG_LEVEL"`
@@ -72,6 +80,22 @@ func (c Config) RefreshTokenTTL() time.Duration {
 // DBConnMaxLifetime 返回数据库连接最长复用时间。
 func (c Config) DBConnMaxLifetime() time.Duration {
 	return time.Duration(c.DBConnMaxLifeS) * time.Second
+}
+
+// COSPresignTTL 返回直传凭证有效期。
+func (c Config) COSPresignTTL() time.Duration {
+	return time.Duration(c.COSPresignTTLS) * time.Second
+}
+
+// COSConfigured 报告对象存储是否具备完整的运行配置。
+func (c Config) COSConfigured() bool {
+	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
+		c.COSBucket != "" && c.COSRegion != "" && c.COSImageDomain != ""
+}
+
+// TencentCIConfigured 报告腾讯 CI 文本与图片审核是否可安全启用。
+func (c Config) TencentCIConfigured() bool {
+	return c.COSConfigured() && c.TencentCICallbackURL != "" && c.ModerationCallbackToken != ""
 }
 
 // EmailDomains 把逗号分隔的白名单拆开并小写化。
@@ -116,7 +140,15 @@ var bindings = map[string]any{
 	"TENCENT_CLOUD_SECRET_ID":  "",
 	"TENCENT_CLOUD_SECRET_KEY": "",
 	"COS_BUCKET":               "",
-	"COS_REGION":               "",
+	"COS_REGION":               "ap-shanghai",
+	"COS_IMG_DOMAIN":           "",
+	"COS_MAX_IMAGE_BYTES":      int64(10 * 1024 * 1024),
+	"COS_PRESIGN_TTL_SECONDS":  600,
+
+	"TENCENT_CI_BIZ_TYPE":           "",
+	"TENCENT_CI_CALLBACK_URL":       "",
+	"MODERATION_CALLBACK_TOKEN":     "",
+	"FEISHU_MODERATION_WEBHOOK_URL": "",
 
 	"OTLP_ENDPOINT": "",
 	"LOG_LEVEL":     "info",

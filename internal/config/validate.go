@@ -82,6 +82,34 @@ func (c Config) Validate() error {
 		add("CORS_ALLOW_CREDENTIALS=true 时 CORS_ALLOW_ORIGINS 不能包含 *")
 	}
 
+	// --- 上传与审核 ---
+	if c.COSMaxImageBytes <= 0 {
+		add("COS_MAX_IMAGE_BYTES 必须为正数")
+	}
+	if c.COSPresignTTLS <= 0 {
+		add("COS_PRESIGN_TTL_SECONDS 必须为正数")
+	}
+	if c.COSImageDomain != "" {
+		if err := validateHTTPSURL("COS_IMG_DOMAIN", c.COSImageDomain); err != nil {
+			add("%v", err)
+		}
+	}
+	if c.TencentCICallbackURL != "" {
+		if err := validateHTTPSURL("TENCENT_CI_CALLBACK_URL", c.TencentCICallbackURL); err != nil {
+			add("%v", err)
+		}
+	}
+	if c.ModerationCallbackToken != "" {
+		if err := validateSecret("MODERATION_CALLBACK_TOKEN", c.ModerationCallbackToken); err != nil {
+			add("%v", err)
+		}
+	}
+	if c.FeishuModerationWebhook != "" {
+		if err := validateHTTPSURL("FEISHU_MODERATION_WEBHOOK_URL", c.FeishuModerationWebhook); err != nil {
+			add("%v", err)
+		}
+	}
+
 	// --- 生产环境的额外硬约束 ---
 	if c.IsProd() {
 		validateProd(c, origins, add)
@@ -109,6 +137,23 @@ func validateProd(c Config, origins []string, add func(string, ...any)) {
 	if c.COSBucket == "" || c.COSRegion == "" {
 		add("生产环境必须配置 COS_BUCKET / COS_REGION")
 	}
+	if c.COSImageDomain == "" {
+		add("生产环境必须配置 COS_IMG_DOMAIN")
+	}
+	if c.TencentCICallbackURL == "" || c.ModerationCallbackToken == "" {
+		add("生产环境必须配置 TENCENT_CI_CALLBACK_URL / MODERATION_CALLBACK_TOKEN")
+	}
+}
+
+func validateHTTPSURL(name, value string) error {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("%s 必须是带主机名的 https URL", name)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s 不得包含 URL 用户信息", name)
+	}
+	return nil
 }
 
 func validateSecret(name, value string) error {

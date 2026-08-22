@@ -93,10 +93,15 @@ const (
 
 	// 图片
 
-	BizImageNotFound     BizCode = "image_not_found"
-	BizImageNotOwned     BizCode = "image_not_owned"     // 只能引用自己上传的图片
-	BizImagePurposeWrong BizCode = "image_purpose_wrong" // 头像位置引用了帖子图片，或反之
-	BizImageNotApproved  BizCode = "image_not_approved"  // 图片未通过审核，帖子不得发布
+	BizImageNotFound             BizCode = "image_not_found"
+	BizImageNotOwned             BizCode = "image_not_owned"             // 只能引用自己上传的图片
+	BizImagePurposeWrong         BizCode = "image_purpose_wrong"         // 头像位置引用了帖子图片，或反之
+	BizImageNotApproved          BizCode = "image_not_approved"          // 图片未通过审核，帖子不得发布
+	BizUploadNotFound            BizCode = "upload_not_found"            // 上传记录不存在
+	BizUploadClosed              BizCode = "upload_closed"               // 上传记录已完成或已被回收
+	BizUploadIncomplete          BizCode = "upload_incomplete"           // 对象尚未直传到存储
+	BizUploadSizeMismatch        BizCode = "upload_size_mismatch"        // 对象大小与签发时声明不一致
+	BizModerationCallbackInvalid BizCode = "moderation_callback_invalid" // 供应商回调形态或目标无效
 
 	// 互动
 

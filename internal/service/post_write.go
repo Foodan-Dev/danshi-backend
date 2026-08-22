@@ -229,6 +229,13 @@ func (s *PostService) finishModeration(
 	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
 		return "", apierr.Internal(err)
 	}
+	if result.Verdict != model.ModerationVerdictPass {
+		s.alerter.Alert(ctx, ModerationAlert{
+			Target: ModerationTargetPost, TargetID: postID, Provider: result.Provider,
+			ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
+			Labels: append([]string{}, result.Labels...),
+		})
+	}
 	switch result.Verdict {
 	case model.ModerationVerdictBlock:
 		return model.PostStatusRejected, nil
@@ -287,6 +294,13 @@ func (s *PostService) moderateTag(ctx context.Context, tag *model.Tag) error {
 	record := moderationRecordForTarget(nil, &tagID, nil, result)
 	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
 		return apierr.Internal(err)
+	}
+	if result.Verdict != model.ModerationVerdictPass {
+		s.alerter.Alert(ctx, ModerationAlert{
+			Target: ModerationTargetTag, TargetID: tag.ID, Provider: result.Provider,
+			ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
+			Labels: append([]string{}, result.Labels...),
+		})
 	}
 	return nil
 }
@@ -551,7 +565,8 @@ func moderationRecordForTarget(
 		PostID: postID, TagID: tagID, PostHistoryID: historyID,
 		Scene: model.ModerationSceneText, Provider: result.Provider,
 		ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
-		Labels: labels, CreatedAt: time.Now().UTC(),
+		Labels: labels, Score: result.Score, RawResponse: result.RawResponse,
+		CreatedAt: time.Now().UTC(),
 	}
 }
 

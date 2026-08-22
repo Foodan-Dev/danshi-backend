@@ -412,7 +412,8 @@ func (s *UserService) moderateUserField(
 	record := &model.ModerationRecord{
 		UserID: &userID, Field: &field, Scene: model.ModerationSceneText,
 		Provider: result.Provider, ProviderJobID: result.ProviderJobID,
-		Verdict: result.Verdict, Labels: labels, CreatedAt: time.Now().UTC(),
+		Verdict: result.Verdict, Labels: labels, Score: result.Score,
+		RawResponse: result.RawResponse, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.users.CreateModerationRecord(ctx, record); err != nil {
 		return apierr.Internal(err)

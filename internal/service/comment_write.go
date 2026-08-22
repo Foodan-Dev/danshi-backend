@@ -265,6 +265,13 @@ func (s *CommentService) moderateComment(
 	if err := s.comments.CreateModerationRecord(ctx, record); err != nil {
 		return false, apierr.Internal(err)
 	}
+	if result.Verdict != model.ModerationVerdictPass {
+		s.alerter.Alert(ctx, ModerationAlert{
+			Target: ModerationTargetComment, TargetID: commentID, Provider: result.Provider,
+			ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
+			Labels: append([]string{}, result.Labels...),
+		})
+	}
 	if result.Verdict != model.ModerationVerdictBlock {
 		return false, nil
 	}
@@ -308,7 +315,8 @@ func moderationRecordForComment(
 		CommentID: &commentID, CommentHistoryID: &historyID,
 		Scene: model.ModerationSceneText, Provider: result.Provider,
 		ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
-		Labels: labels, CreatedAt: time.Now().UTC(),
+		Labels: labels, Score: result.Score, RawResponse: result.RawResponse,
+		CreatedAt: time.Now().UTC(),
 	}
 }
 

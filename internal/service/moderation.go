@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+
+	"github.com/shopspring/decimal"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
@@ -17,6 +20,7 @@ const (
 	ModerationTargetTag     ModerationTarget = "tag"
 	ModerationTargetComment ModerationTarget = "comment"
 	ModerationTargetUser    ModerationTarget = "user"
+	ModerationTargetImage   ModerationTarget = "image_asset"
 )
 
 // ModerationRequest 是与具体供应商无关的文本审核请求。
@@ -32,6 +36,8 @@ type ModerationResult struct {
 	ProviderJobID *string
 	Verdict       model.ModerationVerdict
 	Labels        []string
+	Score         *decimal.Decimal
+	RawResponse   json.RawMessage
 }
 
 // ContentModerator 是可替换的内容审核端口。
