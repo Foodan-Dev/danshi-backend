@@ -27,6 +27,10 @@ lint: ## 静态检查（含分层纪律）
 test: ## 单元测试
 	go test -race -count=1 ./...
 
+.PHONY: test-contract
+test-contract: ## 独立运行 HTTP 契约黑盒套件（需要 Docker）
+	go test -race -count=1 ./test/contract
+
 .PHONY: test-integration
 test-integration: ## 集成测试（需要 Docker）
 	go test -race -count=1 -tags=integration ./test/...
