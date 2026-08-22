@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -197,6 +198,27 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		testSendRateLimit(t, engine, sender)
 		testRegisteredEmailRateLimit(t, engine, sender, gdb)
 		testFailedAttemptPersistence(t, engine, sender, gdb)
+	})
+
+	t.Run("registration validation and verification states", func(t *testing.T) {
+		testRegistrationValidation(t, engine, sender, gdb)
+		testVerificationStates(t, engine, sender, gdb)
+	})
+
+	t.Run("verification cooldown quota and rolling window", func(t *testing.T) {
+		testVerificationRateBoundaries(t, cfg, database, gdb)
+	})
+
+	t.Run("login account states", func(t *testing.T) {
+		testLoginAccountStates(t, engine, sender, gdb)
+	})
+
+	t.Run("session ownership expiry and ban lifecycle", func(t *testing.T) {
+		testSessionSecurityLifecycle(t, cfg, engine, sender, gdb)
+	})
+
+	t.Run("concurrent registration is single winner", func(t *testing.T) {
+		testConcurrentRegistration(t, engine, sender, gdb)
 	})
 }
 
@@ -526,7 +548,7 @@ func testFailedAttemptPersistence(
 	t.Helper()
 	email := "failed-attempt@fdueat.com"
 	sendCode(t, engine, email)
-	for range 2 {
+	for range 5 {
 		status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 			"email": email, "password": "password-123", "verification_code": "999999",
 		}, "")
@@ -535,12 +557,475 @@ func testFailedAttemptPersistence(
 	}
 	var challenge model.EmailVerificationCode
 	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
-	require.EqualValues(t, 2, challenge.FailedAttempts, "4xx 不能回滚验证码失败安全计数")
+	require.EqualValues(t, 5, challenge.FailedAttempts, "4xx 不能回滚验证码失败安全计数")
 
-	status, _, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
 	}, "")
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode)
+	var users int64
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Count(&users).Error)
+	require.Zero(t, users, "达到失败次数上限后，即使验证码正确也不能注册")
+}
+
+func testRegistrationValidation(
+	t *testing.T,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+		"email": authFlowEmail, "password": "password-123", "verification_code": "000000",
+	}, "")
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode)
+
+	deletedAt := time.Now().UTC()
+	deletedEmail := "registration-deleted@fdueat.com"
+	testutil.NewFixtures(t, gdb).CreateUser(
+		func(user *model.User) { user.Email = deletedEmail },
+		testutil.WithDeletedUser(deletedAt),
+	)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+		"email": deletedEmail, "password": "password-123", "verification_code": "000000",
+	}, "")
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode,
+		"软删除行仍占用大小写不敏感邮箱唯一键")
+
+	cases := []struct {
+		name      string
+		payload   map[string]any
+		field     string
+		fieldCode apierr.FieldCode
+	}{
+		{
+			name: "password too short",
+			payload: map[string]any{
+				"email": "short-password@fdueat.com", "password": "1234567",
+				"verification_code": "000000",
+			},
+			field: "password", fieldCode: apierr.FieldTooShort,
+		},
+		{
+			name: "password exceeds bcrypt bytes",
+			payload: map[string]any{
+				"email": "long-password@fdueat.com", "password": strings.Repeat("界", 25),
+				"verification_code": "000000",
+			},
+			field: "password", fieldCode: apierr.FieldTooLong,
+		},
+		{
+			name: "name exceeds unicode rune limit",
+			payload: map[string]any{
+				"email": "long-name@fdueat.com", "password": "password-123",
+				"verification_code": "000000", "name": strings.Repeat("界", 101),
+			},
+			field: "name", fieldCode: apierr.FieldTooLong,
+		},
+		{
+			name: "invalid registration gender",
+			payload: map[string]any{
+				"email": "invalid-gender@fdueat.com", "password": "password-123",
+				"verification_code": "000000", "gender": model.GenderOther,
+			},
+			field: "gender", fieldCode: apierr.FieldInvalidEnum,
+		},
+		{
+			name: "missing verification code",
+			payload: map[string]any{
+				"email": "missing-code@fdueat.com", "password": "password-123",
+			},
+			field: "verification_code", fieldCode: apierr.FieldRequired,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, response, _ := performJSON(
+				t, engine, http.MethodPost, "/api/v2/auth/register", testCase.payload, "",
+			)
+			require.Equal(t, http.StatusUnprocessableEntity, status)
+			requireAuthFieldError(t, response, testCase.field, testCase.fieldCode)
+		})
+	}
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": ""}, "")
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "email", apierr.FieldInvalidFormat)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": authFlowEmail, "password": "",
+	}, "")
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "password", apierr.FieldRequired)
+
+	boundaryEmail := "unicode-boundary@fdueat.com"
+	sendCode(t, engine, boundaryEmail)
+	boundaryName := strings.Repeat("界", 100)
+	boundaryPassword := strings.Repeat("密", 24)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+		"email": boundaryEmail, "password": boundaryPassword,
+		"verification_code": capturedCode(t, sender, boundaryEmail),
+		"name":              boundaryName, "gender": model.GenderMale,
+	}, "")
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var boundaryUser model.User
+	require.NoError(t, gdb.Where("email = ?", boundaryEmail).First(&boundaryUser).Error)
+	require.Equal(t, boundaryName, boundaryUser.Name)
+}
+
+func testVerificationStates(
+	t *testing.T,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	testState := func(t *testing.T, email string, mutate func(*model.EmailVerificationCode)) {
+		t.Helper()
+		sendCode(t, engine, email)
+		var challenge model.EmailVerificationCode
+		require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
+		mutate(&challenge)
+		require.NoError(t, gdb.Model(&challenge).Updates(map[string]any{
+			"expires_at": challenge.ExpiresAt, "consumed_at": challenge.ConsumedAt,
+		}).Error)
+
+		status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+			"email": email, "password": "password-123",
+			"verification_code": capturedCode(t, sender, email),
+		}, "")
+		require.Equal(t, http.StatusBadRequest, status)
+		require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode)
+		var users int64
+		require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Count(&users).Error)
+		require.Zero(t, users)
+	}
+
+	t.Run("expired", func(t *testing.T) {
+		testState(t, "expired-code@fdueat.com", func(challenge *model.EmailVerificationCode) {
+			challenge.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+		})
+	})
+	t.Run("consumed", func(t *testing.T) {
+		testState(t, "consumed-code@fdueat.com", func(challenge *model.EmailVerificationCode) {
+			now := time.Now().UTC()
+			challenge.ConsumedAt = &now
+		})
+	})
+}
+
+func testVerificationRateBoundaries(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	email := "verification-boundaries@fdueat.com"
+	sender := testutil.NewMockEmailSender()
+	engine := authTestEngine(cfg, database, sender)
+	sendCode(t, engine, email)
+
+	setTimes := func(lastSentAt, windowStartedAt time.Time, sendCount int32) {
+		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ?", email).
+			Updates(map[string]any{
+				"last_sent_at": lastSentAt, "send_window_started_at": windowStartedAt,
+				"send_count": sendCount,
+			}).Error)
+	}
+	now := time.Now().UTC()
+	setTimes(now.Add(-59*time.Second), now, 1)
+	status, response, raw := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
+	require.Equal(t, http.StatusTooManyRequests, status)
+	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
+	require.NotEmpty(t, raw.Header().Peek("Retry-After"))
+	sender.RequireDeliveryCount(t, email, 1)
+
+	setTimes(time.Now().UTC().Add(-61*time.Second), time.Now().UTC(), 1)
+	sendCode(t, engine, email)
+	for sender.DeliveryCount(email) < 5 {
+		lastSent := time.Now().UTC().Add(-61 * time.Second)
+		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ?", email).
+			Update("last_sent_at", lastSent).Error)
+		sendCode(t, engine, email)
+	}
+	var challenge model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
+	require.EqualValues(t, 5, challenge.SendCount)
+
+	setTimes(time.Now().UTC().Add(-61*time.Second), time.Now().UTC().Add(-59*time.Minute), 5)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
+	require.Equal(t, http.StatusTooManyRequests, status)
+	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
+	sender.RequireDeliveryCount(t, email, 5)
+
+	setTimes(time.Now().UTC().Add(-61*time.Second), time.Now().UTC().Add(-61*time.Minute), 5)
+	sendCode(t, engine, email)
+	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
+	require.EqualValues(t, 1, challenge.SendCount, "一小时滚动窗口到期后配额必须重置")
+	sender.RequireDeliveryCount(t, email, 6)
+
+	failureEmail := "verification-existing-failure@fdueat.com"
+	failureSender := testutil.NewMockEmailSender()
+	failureSender.Program(testutil.EmailRule{
+		Email: failureEmail, Call: 2,
+		Behavior: testutil.EmailFailure(errors.New("SES test 5xx")),
+	})
+	failureEngine := authTestEngine(cfg, database, failureSender)
+	sendCode(t, failureEngine, failureEmail)
+	lastSent := time.Now().UTC().Add(-61 * time.Second)
+	require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ?", failureEmail).
+		Update("last_sent_at", lastSent).Error)
+	var before model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&before).Error)
+	status, response, _ = performJSON(t, failureEngine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": failureEmail}, "")
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	var after model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&after).Error)
+	require.Equal(t, before.SendCount, after.SendCount)
+	require.Equal(t, before.CodeDigest, after.CodeDigest)
+	require.Equal(t, before.LastSentAt, after.LastSentAt,
+		"已有验证码行的失败发送也必须完整回滚配额和验证码")
+	failureSender.RequireDeliveryCount(t, failureEmail, 1)
+}
+
+func testLoginAccountStates(
+	t *testing.T,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	email := "login-states@fdueat.com"
+	registerPostTestUser(t, engine, sender, email, "登录状态用户")
+	status, _, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": "  " + strings.ToUpper(email) + "  ", "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusOK, status, "邮箱登录必须大小写不敏感")
+
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "wrong-password",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
+
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Updates(map[string]any{
+		"ban_is_permanent": false, "banned_until": future, "ban_reason": "限时测试封禁",
+	}).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizAccountBanned, response.ErrorCode)
+
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Updates(map[string]any{
+		"ban_is_permanent": true, "banned_until": nil, "ban_reason": "永久测试封禁",
+	}).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizAccountBanned, response.ErrorCode)
+	require.Contains(t, response.Message, "永久")
+
+	past := time.Now().UTC().Add(-time.Minute)
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Updates(map[string]any{
+		"ban_is_permanent": false, "banned_until": past, "ban_reason": "已经到期",
+	}).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusOK, status, "限时封禁到期后无需人工清字段即可登录")
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Updates(map[string]any{
+		"banned_until": nil, "ban_reason": nil, "banned_by": nil,
+	}).Error)
+
+	deletedEmail := "login-deleted@fdueat.com"
+	deleted := registerPostTestUser(t, engine, sender, deletedEmail, "注销登录用户")
+	deletedAt := time.Now().UTC()
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", deleted.User.ID).
+		Update("deleted_at", deletedAt).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": deletedEmail, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
+}
+
+func testSessionSecurityLifecycle(
+	t *testing.T,
+	cfg appconfig.Config,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	controller := loginUser(t, engine, "会话控制器")
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/refresh", map[string]any{"refresh_token": controller.Token}, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode, "access token 不能当 refresh token 使用")
+
+	fixtures := testutil.NewFixtures(t, gdb)
+	other := fixtures.CreateActor(cfg)
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		"/api/v2/auth/sessions/"+strconv.FormatUint(other.Session.ID, 10), nil, controller.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizSessionNotFound, response.ErrorCode)
+	status, _, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, other.Token)
+	require.Equal(t, http.StatusOK, status, "跨用户踢设备失败不得影响目标会话")
+
+	owned := loginUser(t, engine, "重复踢设备")
+	ownedClaims, err := jwtx.NewCodec(integrationSecret).Parse(owned.Token, jwtx.TypeAccess)
+	require.NoError(t, err)
+	ownedPath := "/api/v2/auth/sessions/" + strconv.FormatInt(ownedClaims.SessionID, 10)
+	status, _, _ = performJSON(t, engine, http.MethodDelete, ownedPath, nil, controller.Token)
 	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodDelete, ownedPath, nil, controller.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizSessionNotFound, response.ErrorCode)
+
+	expiring := loginUser(t, engine, "过期边界设备")
+	expiringClaims, err := jwtx.NewCodec(integrationSecret).Parse(expiring.Token, jwtx.TypeAccess)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	require.NoError(t, gdb.Model(&model.UserSession{}).Where("id = ?", expiringClaims.SessionID).
+		Updates(map[string]any{
+			"created_at": now.Add(-2 * time.Hour), "last_seen_at": now.Add(-2 * time.Hour),
+			"expires_at": now.Add(-time.Hour),
+		}).Error)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, expiring.Token)
+	assertUnauthorized(t, engine, http.MethodPost, "/api/v2/auth/refresh",
+		map[string]any{"refresh_token": expiring.RefreshToken}, "")
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/sessions", nil, controller.Token)
+	require.Equal(t, http.StatusOK, status)
+	var sessions struct {
+		Sessions []service.SessionView `json:"sessions"`
+	}
+	decodeData(t, response, &sessions)
+	for _, session := range sessions.Sessions {
+		require.NotEqual(t, uint64(expiringClaims.SessionID), session.ID,
+			"刚好处于过期边界之外的会话不得出现在活跃列表")
+	}
+
+	victimEmail := "session-ban-lifecycle@fdueat.com"
+	victim := registerPostTestUser(t, engine, sender, victimEmail, "封禁会话用户")
+	victimClaims, err := jwtx.NewCodec(integrationSecret).Parse(victim.Token, jwtx.TypeAccess)
+	require.NoError(t, err)
+	admin := fixtures.CreateActor(cfg, testutil.WithUserRole(model.UserRoleAdmin))
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/users/%d/status", victim.User.ID),
+		map[string]any{"ban_is_permanent": true, "ban_reason": "会话撤销组合测试"}, admin.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, victim.Token)
+	var victimSession model.UserSession
+	require.NoError(t, gdb.First(&victimSession, uint64(victimClaims.SessionID)).Error)
+	require.NotNil(t, victimSession.RevokedAt, "封禁必须在同一事务撤销已有会话")
+
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/users/%d/status", victim.User.ID),
+		map[string]any{"ban_is_permanent": false}, admin.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, victim.Token)
+	assertUnauthorized(t, engine, http.MethodPost, "/api/v2/auth/refresh",
+		map[string]any{"refresh_token": victim.RefreshToken}, "")
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": victimEmail, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusOK, status, "解封后只允许新登录建立新会话")
+}
+
+func testConcurrentRegistration(
+	t *testing.T,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	email := "concurrent-register@fdueat.com"
+	sendCode(t, engine, email)
+	code := capturedCode(t, sender, email)
+	start := make(chan struct{})
+	ready := make(chan struct{}, 2)
+	results := make(chan asyncRequestResult, 2)
+	for range 2 {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			status, response, raw, err := performJSONRequest(
+				engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+					"email": email, "password": "password-123", "verification_code": code,
+					"name": "并发注册用户",
+				}, "",
+			)
+			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}
+		}()
+	}
+	<-ready
+	<-ready
+	close(start)
+
+	successes, rejected := 0, 0
+	waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for range 2 {
+		select {
+		case result := <-results:
+			require.NoError(t, result.err)
+			switch result.status {
+			case http.StatusOK:
+				successes++
+			case http.StatusBadRequest:
+				require.Equal(t, apierr.BizVerifyCodeInvalid, result.response.ErrorCode)
+				rejected++
+			case http.StatusConflict:
+				require.Equal(t, apierr.BizEmailTaken, result.response.ErrorCode)
+				rejected++
+			default:
+				require.Failf(t, "unexpected registration result", "status=%d response=%+v",
+					result.status, result.response)
+			}
+		case <-waitCtx.Done():
+			require.FailNow(t, "并发注册未在期限内返回")
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, 1, rejected)
+	var user model.User
+	require.NoError(t, gdb.Where("email = ?", email).First(&user).Error)
+	var userCount, sessionCount int64
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Count(&userCount).Error)
+	require.NoError(t, gdb.Model(&model.UserSession{}).Where("user_id = ?", user.ID).Count(&sessionCount).Error)
+	require.EqualValues(t, 1, userCount)
+	require.EqualValues(t, 1, sessionCount)
+	var challenge model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
+	require.NotNil(t, challenge.ConsumedAt)
+}
+
+func requireAuthFieldError(
+	t *testing.T,
+	response testAPIResponse,
+	field string,
+	code apierr.FieldCode,
+) {
+	t.Helper()
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	var data struct {
+		Errors []apierr.FieldError `json:"errors"`
+	}
+	decodeData(t, response, &data)
+	require.NotEmpty(t, data.Errors)
+	require.Equal(t, field, data.Errors[0].Field)
+	require.Equal(t, code, data.Errors[0].Code)
 }
 
 func authTestConfig() appconfig.Config {

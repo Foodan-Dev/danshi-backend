@@ -7,14 +7,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
+	appRouter "github.com/jingyijun/danshi_backend_go/internal/router"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
 
 type captureUserModerationAlerter struct {
@@ -45,6 +50,7 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 	owner := registerPostTestUser(t, engine, sender, "user-owner@fdueat.com", "资料主人")
 	viewer := registerPostTestUser(t, engine, sender, "user-viewer@fdueat.com", "资料访客")
 	fixture := loadPostFixture(t, gdb)
+	fixtures := testutil.NewFixtures(t, gdb)
 
 	t.Run("user route inventory", func(t *testing.T) {
 		testUserRouteInventory(t, engine)
@@ -64,6 +70,22 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("posts and favorites visibility", func(t *testing.T) {
 		testUserPostLists(t, engine, gdb, owner, viewer, fixture)
+	})
+
+	t.Run("profile unicode boundaries and moderation rollback", func(t *testing.T) {
+		testUserProfileBoundaries(t, cfg, database, sender, gdb, fixtures)
+	})
+
+	t.Run("avatar ownership states and concurrent rebinding", func(t *testing.T) {
+		testUserAvatarSafety(t, cfg, database, sender, gdb, fixtures)
+	})
+
+	t.Run("concurrent follow and deleted target semantics", func(t *testing.T) {
+		testUserFollowConcurrencyAndDeletion(t, cfg, engine, gdb, fixtures)
+	})
+
+	t.Run("favorites pagination boundaries", func(t *testing.T) {
+		testUserFavoritesPagination(t, cfg, engine, gdb, fixtures)
 	})
 }
 
@@ -332,6 +354,372 @@ func testUserPostLists(
 		"user_id = ? AND post_id = ?", viewer.User.ID, approved.ID,
 	).Count(&favoriteRows).Error)
 	require.EqualValues(t, 1, favoriteRows)
+}
+
+func testUserProfileBoundaries(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+) {
+	t.Helper()
+	actor := fixtures.CreateActor(cfg)
+	moderation := testutil.NewMockModeration()
+	engine := newUserTestEngine(t, cfg, database, sender, moderation)
+
+	maxName := strings.Repeat("界", 100)
+	maxBio := strings.Repeat("文", 500)
+	status, response, _ := performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
+		"name": maxName, "bio": maxBio, "gender": model.GenderOther,
+	}, actor.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var updated service.UserUpdateResult
+	decodeData(t, response, &updated)
+	require.Equal(t, maxName, updated.User.Name)
+	require.Equal(t, maxBio, *updated.User.Bio)
+	require.Equal(t, model.GenderOther, *updated.User.Gender)
+	moderation.RequireContentCalls(t, 2)
+	calls := moderation.ContentCalls()
+	require.Equal(t, service.ModerationTargetUser, calls[0].Target)
+	require.NotNil(t, calls[0].Field)
+	require.Equal(t, model.ModerationFieldName, *calls[0].Field)
+	require.Equal(t, maxName, calls[0].Text)
+	require.NotNil(t, calls[1].Field)
+	require.Equal(t, model.ModerationFieldBio, *calls[1].Field)
+	require.Equal(t, maxBio, calls[1].Text)
+	var moderationRows int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where("user_id = ?", actor.User.ID).
+		Count(&moderationRows).Error)
+	require.EqualValues(t, 2, moderationRows)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
+		"bio": strings.Repeat("文", 501),
+	}, actor.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "bio", apierr.FieldTooLong)
+	moderation.RequireContentCalls(t, 2)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
+		"name": "   ",
+	}, actor.Token)
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &updated)
+	require.Empty(t, updated.User.Name, "昵称空白输入按现有契约归一为空字符串")
+	moderation.RequireContentCalls(t, 2)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
+		"gender": "unknown",
+	}, actor.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "gender", apierr.FieldInvalidEnum)
+
+	failureActor := fixtures.CreateActor(cfg)
+	failureModeration := testutil.NewMockModeration()
+	failureModeration.ProgramContent(testutil.ContentModerationRule{
+		Target: service.ModerationTargetUser, Contains: "第二字段失败",
+		Outcome: testutil.ContentHTTPFailure(http.StatusServiceUnavailable),
+	})
+	failureEngine := newUserTestEngine(t, cfg, database, sender, failureModeration)
+	status, response, _ = performJSON(t, failureEngine, http.MethodPut,
+		userPath(failureActor.User.ID), map[string]any{
+			"name": "第一字段已通过", "bio": "第二字段失败",
+		}, failureActor.Token)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	failureModeration.RequireContentCalls(t, 2)
+	var stored model.User
+	require.NoError(t, gdb.First(&stored, failureActor.User.ID).Error)
+	require.Equal(t, failureActor.User.Name, stored.Name,
+		"第二个审核调用失败时，用户字段更新必须整体回滚")
+	require.Nil(t, stored.Bio)
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("user_id = ?", failureActor.User.ID).Count(&moderationRows).Error)
+	require.Zero(t, moderationRows, "第一字段已经写入的审核流水也必须随事务回滚")
+}
+
+func testUserAvatarSafety(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	sender *captureEmailSender,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+) {
+	t.Helper()
+	owner := fixtures.CreateActor(cfg)
+	other := fixtures.CreateActor(cfg)
+	avatarImage := func(image *model.ImageAsset) { image.Purpose = model.ImagePurposeAvatar }
+	initial := fixtures.CreateImage(owner.User.ID, avatarImage)
+	foreign := fixtures.CreateImage(other.User.ID, avatarImage)
+	blocked := fixtures.CreateImage(owner.User.ID, avatarImage, func(image *model.ImageAsset) {
+		image.Moderation = model.ModerationStatusBlock
+	})
+	retired := fixtures.CreateImage(owner.User.ID, avatarImage, func(image *model.ImageAsset) {
+		image.Status = model.ImageStatusRetired
+	})
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", owner.User.ID).
+		Update("avatar_image_asset_id", initial.ID).Error)
+	engine := authTestEngine(cfg, database, sender)
+
+	cases := []struct {
+		name      string
+		asset     model.ImageAsset
+		status    int
+		errorCode apierr.BizCode
+	}{
+		{name: "foreign avatar", asset: foreign, status: http.StatusForbidden, errorCode: apierr.BizImageNotOwned},
+		{name: "blocked avatar", asset: blocked, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
+		{name: "retired avatar", asset: retired, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, response, _ := performJSON(t, engine, http.MethodPut, userPath(owner.User.ID),
+				map[string]any{"avatar_url": testCase.asset.PublicURL}, owner.Token)
+			require.Equal(t, testCase.status, status)
+			require.Equal(t, testCase.errorCode, response.ErrorCode)
+			var stored model.User
+			require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
+			require.Equal(t, initial.ID, *stored.AvatarImageAssetID,
+				"失败换绑不得修改当前头像")
+		})
+	}
+
+	first := fixtures.CreateImage(owner.User.ID, avatarImage)
+	second := fixtures.CreateImage(owner.User.ID, avatarImage)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	moderation := testutil.NewMockModeration()
+	outcome := testutil.ContentVerdict(model.ModerationVerdictPass, nil, nil)
+	outcome.Release = release
+	moderation.SetDefaultContent(outcome)
+	concurrentEngine := newUserTestEngine(t, cfg, database, sender, moderation)
+	start := make(chan struct{})
+	ready := make(chan struct{}, 2)
+	results := make(chan asyncRequestResult, 2)
+	assets := []model.ImageAsset{first, second}
+	for index, asset := range assets {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			status, response, raw, err := performJSONRequest(
+				concurrentEngine, http.MethodPut, userPath(owner.User.ID), map[string]any{
+					"name": fmt.Sprintf("并发头像昵称 %d", index), "avatar_url": asset.PublicURL,
+				}, owner.Token,
+			)
+			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}
+		}()
+	}
+	<-ready
+	<-ready
+	close(start)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.True(t, moderation.WaitForContentCalls(waitCtx, 1),
+		"首个头像事务未到达可控审核阻塞点")
+	unblock()
+	for range 2 {
+		select {
+		case result := <-results:
+			require.NoError(t, result.err)
+			require.Equal(t, http.StatusOK, result.status,
+				"error_code=%s message=%s", result.response.ErrorCode, result.response.Message)
+		case <-waitCtx.Done():
+			require.FailNow(t, "并发头像换绑未在期限内完成")
+		}
+	}
+	moderation.RequireContentCalls(t, 2)
+
+	var stored model.User
+	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
+	require.NotNil(t, stored.AvatarImageAssetID)
+	require.Contains(t, []uint64{first.ID, second.ID}, *stored.AvatarImageAssetID)
+	for _, asset := range []model.ImageAsset{initial, first, second} {
+		var current model.ImageAsset
+		require.NoError(t, gdb.First(&current, asset.ID).Error)
+		if current.ID == *stored.AvatarImageAssetID {
+			require.Equal(t, model.ImageStatusReady, current.Status,
+				"最终头像资产必须保持 ready")
+		} else {
+			require.Equal(t, model.ImageStatusRetired, current.Status,
+				"并发换绑后所有失去引用的旧头像都必须退役")
+		}
+	}
+}
+
+func testUserFollowConcurrencyAndDeletion(
+	t *testing.T,
+	cfg appconfig.Config,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+) {
+	t.Helper()
+	follower := fixtures.CreateActor(cfg)
+	target := fixtures.CreateActor(cfg)
+	path := userPath(target.User.ID) + "/follow"
+	const requests = 8
+	start := make(chan struct{})
+	ready := make(chan struct{}, requests)
+	results := make(chan asyncRequestResult, requests)
+	for range requests {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			status, response, raw, err := performJSONRequest(
+				engine, http.MethodPost, path, nil, follower.Token,
+			)
+			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}
+		}()
+	}
+	for range requests {
+		<-ready
+	}
+	close(start)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for range requests {
+		select {
+		case result := <-results:
+			require.NoError(t, result.err)
+			require.Equal(t, http.StatusOK, result.status)
+			var action service.FollowActionResult
+			decodeData(t, result.response, &action)
+			require.True(t, action.IsFollowing)
+			require.EqualValues(t, 1, action.FollowerCount)
+		case <-waitCtx.Done():
+			require.FailNow(t, "并发关注未在期限内完成")
+		}
+	}
+	var followRows, notificationRows int64
+	require.NoError(t, gdb.Model(&model.Follow{}).Where(
+		"follower_id = ? AND following_id = ?", follower.User.ID, target.User.ID,
+	).Count(&followRows).Error)
+	require.EqualValues(t, 1, followRows)
+	require.NoError(t, gdb.Model(&model.Notification{}).Where(
+		"sender_id = ? AND recipient_id = ? AND type = ?",
+		follower.User.ID, target.User.ID, model.NotificationTypeFollow,
+	).Count(&notificationRows).Error)
+	require.EqualValues(t, 1, notificationRows, "并发重复关注只能产生一条通知")
+
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		userPath(target.User.ID), nil, follower.Token)
+	require.Equal(t, http.StatusOK, status)
+	var targetProfile service.UserProfile
+	decodeData(t, response, &targetProfile)
+	require.EqualValues(t, 1, targetProfile.Stats.FollowerCount)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(follower.User.ID)+"/following", nil, follower.Token)
+	require.Equal(t, http.StatusOK, status)
+	var following service.UserFollowList
+	decodeData(t, response, &following)
+	require.Len(t, following.Users, 1)
+	require.EqualValues(t, 1, following.Pagination.Total,
+		"活跃用户的关注统计与列表总数必须一致")
+
+	historicalFollower := fixtures.CreateActor(cfg)
+	deletedTarget := fixtures.CreateActor(cfg)
+	lateFollower := fixtures.CreateActor(cfg)
+	status, _, _ = performJSON(t, engine, http.MethodPost,
+		userPath(deletedTarget.User.ID)+"/follow", nil, historicalFollower.Token)
+	require.Equal(t, http.StatusOK, status)
+	deletedAt := time.Now().UTC()
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", deletedTarget.User.ID).
+		Update("deleted_at", deletedAt).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(historicalFollower.User.ID)+"/following", nil, historicalFollower.Token)
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &following)
+	require.Empty(t, following.Users)
+	require.Zero(t, following.Pagination.Total, "关注列表必须隐藏已注销目标")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(historicalFollower.User.ID), nil, historicalFollower.Token)
+	require.Equal(t, http.StatusOK, status)
+	var historicalProfile service.UserProfile
+	decodeData(t, response, &historicalProfile)
+	require.EqualValues(t, 1, historicalProfile.Stats.FollowingCount,
+		"软注销保留关注审计行，因此资料统计保留历史关注数")
+	require.NoError(t, gdb.Model(&model.Follow{}).Where(
+		"follower_id = ? AND following_id = ?", historicalFollower.User.ID, deletedTarget.User.ID,
+	).Count(&followRows).Error)
+	require.EqualValues(t, 1, followRows)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		userPath(deletedTarget.User.ID)+"/follow", nil, lateFollower.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizNotFound, response.ErrorCode)
+	require.NoError(t, gdb.Model(&model.Follow{}).Where(
+		"follower_id = ? AND following_id = ?", lateFollower.User.ID, deletedTarget.User.ID,
+	).Count(&followRows).Error)
+	require.Zero(t, followRows, "不得新关注已注销用户")
+}
+
+func testUserFavoritesPagination(
+	t *testing.T,
+	cfg appconfig.Config,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+) {
+	t.Helper()
+	author := fixtures.CreateActor(cfg)
+	collector := fixtures.CreateActor(cfg)
+	posts := []testutil.PostFixture{
+		fixtures.CreatePost(author.User.ID, testutil.WithPostTitle("收藏分页一")),
+		fixtures.CreatePost(author.User.ID, testutil.WithPostTitle("收藏分页二")),
+		fixtures.CreatePost(author.User.ID, testutil.WithPostTitle("收藏分页三")),
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	for index, post := range posts {
+		require.NoError(t, gdb.Create(&model.Favorite{
+			UserID: collector.User.ID, PostID: post.Post.ID,
+			CreatedAt: base.Add(time.Duration(index) * time.Minute),
+		}).Error)
+	}
+
+	path := userPath(collector.User.ID) + "/favorites"
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		path+"?page=2&limit=2", nil, collector.Token)
+	require.Equal(t, http.StatusOK, status)
+	var page service.PostList
+	decodeData(t, response, &page)
+	require.Equal(t, []uint64{posts[0].Post.ID}, postIDs(page.Posts))
+	require.Equal(t, 2, page.Pagination.Page)
+	require.Equal(t, 2, page.Pagination.Limit)
+	require.EqualValues(t, 3, page.Pagination.Total)
+	require.Equal(t, 2, page.Pagination.TotalPages)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		path+"?page=99&limit=2", nil, collector.Token)
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &page)
+	require.Empty(t, page.Posts)
+	require.Equal(t, 99, page.Pagination.Page)
+	require.EqualValues(t, 3, page.Pagination.Total)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		path+"?limit=101", nil, collector.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "limit", apierr.FieldOutOfRange)
+	status, response, _ = performJSON(t, engine, http.MethodGet, path, nil, author.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizPermissionDenied, response.ErrorCode)
+}
+
+func newUserTestEngine(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	sender *captureEmailSender,
+	moderation *testutil.MockModeration,
+) *server.Hertz {
+	t.Helper()
+	return testutil.NewEngine(t, appRouter.Deps{
+		Config: cfg, DB: database, EmailSender: sender, ContentModerator: moderation,
+	})
 }
 
 func createAvatarAsset(t *testing.T, gdb *gorm.DB, userID uint64, suffix string) model.ImageAsset {
