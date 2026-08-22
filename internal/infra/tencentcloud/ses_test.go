@@ -1,0 +1,76 @@
+package tencentcloud
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
+	ses "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses/v20201002"
+
+	"github.com/jingyijun/danshi_backend_go/internal/config"
+)
+
+type fakeSESClient struct {
+	ctx      context.Context
+	request  *ses.SendEmailRequest
+	response *ses.SendEmailResponse
+	err      error
+}
+
+type sesTestContextKey struct{}
+
+func (c *fakeSESClient) SendEmailWithContext(
+	ctx context.Context,
+	request *ses.SendEmailRequest,
+) (*ses.SendEmailResponse, error) {
+	c.ctx = ctx
+	c.request = request
+	return c.response, c.err
+}
+
+func TestSESVerificationEmailSenderBuildsRegistrationRequest(t *testing.T) {
+	response := ses.NewSendEmailResponse()
+	response.Response = &ses.SendEmailResponseParams{MessageId: common.StringPtr("message-1")}
+	client := &fakeSESClient{response: response}
+	sender := newSESVerificationEmailSender(sesTestConfig(), client)
+	ctx := context.WithValue(context.Background(), sesTestContextKey{}, "request")
+
+	err := sender.SendRegistrationCode(ctx, "student@fdueat.com", "123456")
+
+	require.NoError(t, err)
+	require.Equal(t, ctx, client.ctx)
+	require.NotNil(t, client.request)
+	require.Equal(t, "旦食 <no-reply@danshi.fdueat.com>", *client.request.FromEmailAddress)
+	require.Equal(t, registrationEmailSubject, *client.request.Subject)
+	require.Len(t, client.request.Destination, 1)
+	require.Equal(t, "student@fdueat.com", *client.request.Destination[0])
+	require.NotNil(t, client.request.Template)
+	require.Equal(t, uint64(9876), *client.request.Template.TemplateID)
+	require.Equal(t, `{"code":"123456"}`, *client.request.Template.TemplateData)
+	require.Equal(t, uint64(1), *client.request.TriggerType)
+}
+
+func TestSESVerificationEmailSenderFailsClosed(t *testing.T) {
+	_, err := NewSESVerificationEmailSender(config.Config{})
+	require.ErrorContains(t, err, "配置不完整")
+
+	sender := newSESVerificationEmailSender(sesTestConfig(), &fakeSESClient{
+		err: errors.New("provider rejected"),
+	})
+	err = sender.SendRegistrationCode(context.Background(), "student@fdueat.com", "123456")
+	require.ErrorContains(t, err, "provider rejected")
+
+	sender = newSESVerificationEmailSender(sesTestConfig(), &fakeSESClient{})
+	err = sender.SendRegistrationCode(context.Background(), "student@fdueat.com", "123456")
+	require.ErrorContains(t, err, "MessageId")
+}
+
+func sesTestConfig() config.Config {
+	return config.Config{
+		TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
+		TencentRegion: "ap-guangzhou", TencentSESFromEmail: "no-reply@danshi.fdueat.com",
+		TencentSESFromName: "旦食", TencentSESTemplateID: 9876,
+	}
+}

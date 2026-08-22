@@ -87,6 +87,16 @@ func TestProdExtraConstraints(t *testing.T) {
 		{"未配 CORS", func(c *config.Config) { c.CORSAllowOrigins = "" }, "CORS_ALLOW_ORIGINS"},
 		{"CORS 通配", func(c *config.Config) { c.CORSAllowOrigins = "*" }, "不能是 *"},
 		{"未配腾讯云密钥", func(c *config.Config) { c.TencentSecretID = "" }, "TENCENT_CLOUD_SECRET_ID"},
+		{"未配 SES 区域", func(c *config.Config) { c.TencentRegion = "" }, "TENCENT_CLOUD_REGION"},
+		{"SES 发件邮箱非法", func(c *config.Config) {
+			c.TencentSESFromEmail = "旦食 <sender@example.com>"
+		}, "TENCENT_SES_FROM_EMAIL"},
+		{"SES 发件人名非法", func(c *config.Config) {
+			c.TencentSESFromName = "旦食:验证码"
+		}, "TENCENT_SES_FROM_NAME"},
+		{"未配 SES 模板", func(c *config.Config) {
+			c.TencentSESTemplateID = 0
+		}, "TENCENT_SES_TEMPLATE_ID"},
 		{"未配图片域名", func(c *config.Config) { c.COSImageDomain = "" }, "COS_IMG_DOMAIN"},
 		{"未配审核回调", func(c *config.Config) { c.TencentCICallbackURL = "" }, "TENCENT_CI_CALLBACK_URL"},
 	}
@@ -96,6 +106,10 @@ func TestProdExtraConstraints(t *testing.T) {
 			cfg.Profile = config.ProfileProd
 			cfg.CORSAllowOrigins = "https://danshi.example.com"
 			cfg.TencentSecretID, cfg.TencentSecretKey = "id", "key"
+			cfg.TencentRegion = "ap-guangzhou"
+			cfg.TencentSESFromEmail = "sender@example.com"
+			cfg.TencentSESFromName = "旦食"
+			cfg.TencentSESTemplateID = 123
 			cfg.COSBucket, cfg.COSRegion = "b", "r"
 			cfg.COSImageDomain = "https://img.example.com"
 			cfg.TencentCICallbackURL = "https://api.example.com/api/v2/moderation/tencent-ci/callback"
@@ -112,6 +126,12 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/danshi?TimeZone=UTC")
 	t.Setenv("JWT_SECRET_KEY", goodSecret)
 	t.Setenv("EMAIL_VERIFICATION_SECRET", goodSecret)
+	t.Setenv("TENCENT_CLOUD_SECRET_ID", "env-secret-id")
+	t.Setenv("TENCENT_CLOUD_SECRET_KEY", "env-secret-key")
+	t.Setenv("TENCENT_CLOUD_REGION", "ap-hongkong")
+	t.Setenv("TENCENT_SES_FROM_EMAIL", "sender@example.com")
+	t.Setenv("TENCENT_SES_FROM_NAME", "测试发件人")
+	t.Setenv("TENCENT_SES_TEMPLATE_ID", "456")
 	t.Setenv("PORT", "9001")
 	cfg, err := config.Load()
 	if err != nil {
@@ -123,5 +143,10 @@ func TestLoadFromEnv(t *testing.T) {
 	// 默认值应当来自 bindings，而不是零值
 	if len(cfg.EmailDomains()) != 3 {
 		t.Fatalf("默认邮箱白名单应有 3 项，实际 %v", cfg.EmailDomains())
+	}
+	if cfg.TencentSecretID != "env-secret-id" || cfg.TencentSecretKey != "env-secret-key" ||
+		cfg.TencentRegion != "ap-hongkong" || cfg.TencentSESFromEmail != "sender@example.com" ||
+		cfg.TencentSESFromName != "测试发件人" || cfg.TencentSESTemplateID != 456 {
+		t.Fatalf("腾讯云 SES 环境变量未完整加载: %+v", cfg)
 	}
 }

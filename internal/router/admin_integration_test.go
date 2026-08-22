@@ -119,9 +119,25 @@ func testAdminRoleGuards(t *testing.T, engine *server.Hertz, actors adminActors)
 	status, _, _ = performJSON(t, engine, http.MethodGet,
 		"/api/v2/admin/posts", nil, actors.Ordinary.Token)
 	require.Equal(t, http.StatusForbidden, status)
-	status, _, _ = performJSON(t, engine, http.MethodPut,
-		fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Ordinary.User.ID),
-		map[string]any{"ban_is_permanent": true, "ban_reason": "越权封禁"}, actors.Admin.Token)
+	status, _, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/users", nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	for _, path := range []string{
+		fmt.Sprintf("/api/v2/admin/users/%d/role", actors.Ordinary.User.ID),
+		"/api/v2/admin/admins",
+		"/api/v2/admin/super-admins",
+	} {
+		method := http.MethodGet
+		var body any
+		if strings.HasSuffix(path, "/role") {
+			method = http.MethodPut
+			body = map[string]any{"role": model.UserRoleAdmin}
+		}
+		status, _, _ = performJSON(t, engine, method, path, body, actors.Admin.Token)
+		require.Equal(t, http.StatusForbidden, status, "%s %s", method, path)
+	}
+	status, _, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/users", nil, actors.Ordinary.Token)
 	require.Equal(t, http.StatusForbidden, status)
 }
 
@@ -135,14 +151,14 @@ func testAdminBanStates(
 	permanentPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Permanent.User.ID)
 	status, _, _ := performJSON(t, engine, http.MethodPut, permanentPath, map[string]any{
 		"ban_is_permanent": true, "ban_reason": "永久封禁集成测试",
-	}, actors.Super.Token)
+	}, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var permanent model.User
 	require.NoError(t, gdb.First(&permanent, actors.Permanent.User.ID).Error)
 	require.True(t, permanent.BanIsPermanent)
 	require.Nil(t, permanent.BannedUntil)
 	require.Equal(t, "永久封禁集成测试", *permanent.BanReason)
-	require.Equal(t, actors.Super.User.ID, *permanent.BannedBy)
+	require.Equal(t, actors.Admin.User.ID, *permanent.BannedBy)
 	var session model.UserSession
 	require.NoError(t, gdb.Where("user_id = ?", permanent.ID).First(&session).Error)
 	require.NotNil(t, session.RevokedAt, "封禁与 RevokeAll 必须在同一事务提交")
@@ -153,17 +169,17 @@ func testAdminBanStates(
 	status, _, _ = performJSON(t, engine, http.MethodPut, timedPath, map[string]any{
 		"ban_is_permanent": false, "banned_until": ptime.Format(until),
 		"ban_reason": "限时封禁集成测试",
-	}, actors.Super.Token)
+	}, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var timed model.User
 	require.NoError(t, gdb.First(&timed, actors.Timed.User.ID).Error)
 	require.False(t, timed.BanIsPermanent)
 	require.NotNil(t, timed.BannedUntil)
 	require.WithinDuration(t, until, *timed.BannedUntil, time.Microsecond)
-	require.Equal(t, actors.Super.User.ID, *timed.BannedBy)
+	require.Equal(t, actors.Admin.User.ID, *timed.BannedBy)
 
 	status, _, _ = performJSON(t, engine, http.MethodPut, timedPath,
-		map[string]any{"ban_is_permanent": false}, actors.Super.Token)
+		map[string]any{"ban_is_permanent": false}, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var unbanned model.User
 	require.NoError(t, gdb.First(&unbanned, actors.Timed.User.ID).Error)
@@ -175,8 +191,15 @@ func testAdminBanStates(
 	illegalPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Illegal.User.ID)
 	status, _, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
 		"ban_is_permanent": true, "banned_until": ptime.Format(until), "ban_reason": "非法组合",
-	}, actors.Super.Token)
+	}, actors.Admin.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
+	status, _, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+		"ban_is_permanent": true, "ban_reason": "超级管理员封禁集成测试",
+	}, actors.Super.Token)
+	require.Equal(t, http.StatusOK, status, "super_admin 仍应继承管理员的封禁权限")
+	status, _, _ = performJSON(t, engine, http.MethodPut, illegalPath,
+		map[string]any{"ban_is_permanent": false}, actors.Super.Token)
+	require.Equal(t, http.StatusOK, status)
 	err := gdb.Model(&model.User{}).Where("id = ?", actors.Illegal.User.ID).UpdateColumns(map[string]any{
 		"ban_is_permanent": true, "banned_until": until, "ban_reason": "数据库约束测试",
 	}).Error
@@ -356,7 +379,7 @@ func testAdminListsAndDeletion(
 	decodeData(t, response, &comments)
 	require.True(t, adminCommentPresent(comments.Comments, commentIDs[0]))
 	status, response, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/admin/users?limit=100", nil, actors.Super.Token)
+		"/api/v2/admin/users?limit=100", nil, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var users service.AdminUserList
 	decodeData(t, response, &users)
@@ -468,7 +491,7 @@ func assertAdminListQueryBudget(
 	}{
 		{Path: "/api/v2/admin/posts", Token: actors.Admin.Token},
 		{Path: "/api/v2/admin/comments", Token: actors.Admin.Token},
-		{Path: "/api/v2/admin/users", Token: actors.Super.Token},
+		{Path: "/api/v2/admin/users", Token: actors.Admin.Token},
 	} {
 		one := measure(endpoint.Path+"?page=1&limit=1", endpoint.Token)
 		six := measure(endpoint.Path+"?page=1&limit=6", endpoint.Token)

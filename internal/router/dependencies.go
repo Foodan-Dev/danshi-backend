@@ -58,6 +58,7 @@ func withDefaultDomainDeps(deps Deps) Deps {
 			deps.ModerationAlerter = service.NewLogModerationAlerter(deps.Log)
 		}
 	}
+	deps.ModerationAlerter = afterCommitModerationAlerter{next: deps.ModerationAlerter}
 	return deps
 }
 

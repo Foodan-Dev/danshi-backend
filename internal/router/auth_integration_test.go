@@ -109,6 +109,10 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		testCommitError5xxRollback(t, database, gdb)
 	})
 
+	t.Run("post commit callbacks follow transaction outcome", func(t *testing.T) {
+		testPostCommitCallbacks(t, database, gdb)
+	})
+
 	t.Run("verification failure rolls back", func(t *testing.T) {
 		failingEngine := authTestEngine(cfg, database, failingEmailSender{})
 		status, response, _ := performJSON(t, failingEngine, http.MethodPost,
@@ -258,6 +262,67 @@ func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB
 	var count int64
 	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", email).Count(&count).Error)
 	require.Zero(t, count, "即使置了 CommitError，5xx 也必须回滚事务")
+}
+
+func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
+	t.Helper()
+	engine := server.New(hertzconfig.Option{F: func(_ *hertzconfig.Options) {}})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine.Use(routermiddleware.ErrorHandler(log))
+	engine.Use(routermiddleware.UnitOfWork(database, log))
+
+	var callbackErr error
+	var committedVisible bool
+	committedEmail := "post-commit-success@fdueat.com"
+	engine.POST("/post-commit-success", func(ctx context.Context, c *app.RequestContext) {
+		user := &model.User{
+			Email: committedEmail, PasswordHash: "$2b$12$test", Name: "commit", Role: model.UserRoleUser,
+		}
+		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
+			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			return
+		}
+		if !dbinfra.AfterCommit(ctx, func(context.Context) {
+			var count int64
+			callbackErr = gdb.Model(&model.User{}).Where("email = ?", committedEmail).Count(&count).Error
+			committedVisible = count == 1
+		}) {
+			routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
+			return
+		}
+		c.JSON(http.StatusOK, map[string]any{"ok": true})
+	})
+
+	rolledBackCalled := false
+	rolledBackEmail := "post-commit-rollback@fdueat.com"
+	engine.POST("/post-commit-rollback", func(ctx context.Context, c *app.RequestContext) {
+		user := &model.User{
+			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Name: "rollback", Role: model.UserRoleUser,
+		}
+		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
+			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			return
+		}
+		if !dbinfra.AfterCommit(ctx, func(context.Context) {
+			rolledBackCalled = true
+		}) {
+			routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
+			return
+		}
+		routermiddleware.Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "forced rollback"))
+	})
+
+	status, _, _ := performJSON(t, engine, http.MethodPost, "/post-commit-success", nil, "")
+	require.Equal(t, http.StatusOK, status)
+	require.NoError(t, callbackErr)
+	require.True(t, committedVisible, "回调执行时事务写入必须已对其它连接可见")
+
+	status, _, _ = performJSON(t, engine, http.MethodPost, "/post-commit-rollback", nil, "")
+	require.Equal(t, http.StatusForbidden, status)
+	require.False(t, rolledBackCalled, "事务回滚时不得执行提交后回调")
+	var count int64
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", rolledBackEmail).Count(&count).Error)
+	require.Zero(t, count)
 }
 
 func testRepositoryBase(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {

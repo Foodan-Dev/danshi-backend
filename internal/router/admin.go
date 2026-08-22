@@ -22,8 +22,8 @@ func registerAdmin(api *route.RouterGroup, deps Deps) {
 	admin.DELETE("/posts/:post_id", requireAuth, requireAdmin, adminHandler.DeletePost)
 	admin.PUT("/posts/:post_id/restore", requireAuth, requireAdmin, adminHandler.RestorePost)
 
-	admin.GET("/users", requireAuth, requireSuperAdmin, adminHandler.Users)
-	admin.PUT("/users/:user_id/status", requireAuth, requireSuperAdmin, adminHandler.UpdateUserStatus)
+	admin.GET("/users", requireAuth, requireAdmin, adminHandler.Users)
+	admin.PUT("/users/:user_id/status", requireAuth, requireAdmin, adminHandler.UpdateUserStatus)
 	admin.PUT("/users/:user_id/role", requireAuth, requireSuperAdmin, adminHandler.UpdateUserRole)
 	admin.GET("/admins", requireAuth, requireSuperAdmin, adminHandler.Admins)
 	admin.GET("/super-admins", requireAuth, requireSuperAdmin, adminHandler.SuperAdmins)

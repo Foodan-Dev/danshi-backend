@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/url"
 	"slices"
 	"strings"
@@ -134,6 +135,9 @@ func validateProd(c Config, origins []string, add func(string, ...any)) {
 	if c.TencentSecretID == "" || c.TencentSecretKey == "" {
 		add("生产环境必须配置 TENCENT_CLOUD_SECRET_ID / TENCENT_CLOUD_SECRET_KEY")
 	}
+	if c.EmailVerificationRequired {
+		validateProdSES(c, add)
+	}
 	if c.COSBucket == "" || c.COSRegion == "" {
 		add("生产环境必须配置 COS_BUCKET / COS_REGION")
 	}
@@ -143,6 +147,27 @@ func validateProd(c Config, origins []string, add func(string, ...any)) {
 	if c.TencentCICallbackURL == "" || c.ModerationCallbackToken == "" {
 		add("生产环境必须配置 TENCENT_CI_CALLBACK_URL / MODERATION_CALLBACK_TOKEN")
 	}
+}
+
+func validateProdSES(c Config, add func(string, ...any)) {
+	if c.TencentRegion == "" {
+		add("生产环境必须配置 TENCENT_CLOUD_REGION")
+	}
+	if !validBareEmail(c.TencentSESFromEmail) {
+		add("生产环境 TENCENT_SES_FROM_EMAIL 必须是裸邮箱地址")
+	}
+	if strings.TrimSpace(c.TencentSESFromName) == "" || strings.Contains(c.TencentSESFromName, ":") {
+		add("生产环境 TENCENT_SES_FROM_NAME 不能为空且不能包含冒号")
+	}
+	if c.TencentSESTemplateID == 0 {
+		add("生产环境必须配置正数 TENCENT_SES_TEMPLATE_ID")
+	}
+}
+
+func validBareEmail(value string) bool {
+	value = strings.TrimSpace(value)
+	address, err := mail.ParseAddress(value)
+	return err == nil && address.Address == value
 }
 
 func validateHTTPSURL(name, value string) error {

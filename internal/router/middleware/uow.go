@@ -45,7 +45,8 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 			}
 		}()
 
-		c.Next(db.WithTx(ctx, tx))
+		requestCtx, afterCommit := db.WithAfterCommitQueue(db.WithTx(ctx, tx))
+		c.Next(requestCtx)
 
 		if (HasError(c) || c.Response.StatusCode() >= 400) && !shouldCommitError(c) {
 			rollback(ctx, tx, log, "请求失败")
@@ -60,6 +61,9 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 			return
 		}
 		committed = true
+		for _, recovered := range afterCommit.Run(context.WithoutCancel(ctx)) {
+			log.ErrorContext(ctx, "事务提交后回调发生 panic", slog.Any("panic", recovered))
+		}
 	}
 }
 

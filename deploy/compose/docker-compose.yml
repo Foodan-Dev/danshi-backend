@@ -37,6 +37,12 @@ services:
       APP_PROFILE: dev
       PORT: "8000"
       CORS_ALLOW_ORIGINS: http://localhost:3000
+      TENCENT_CLOUD_SECRET_ID: ${TENCENT_CLOUD_SECRET_ID:-}
+      TENCENT_CLOUD_SECRET_KEY: ${TENCENT_CLOUD_SECRET_KEY:-}
+      TENCENT_CLOUD_REGION: ${TENCENT_CLOUD_REGION:-ap-guangzhou}
+      TENCENT_SES_FROM_EMAIL: ${TENCENT_SES_FROM_EMAIL:-no-reply@danshi.fdueat.com}
+      TENCENT_SES_FROM_NAME: ${TENCENT_SES_FROM_NAME:-旦食}
+      TENCENT_SES_TEMPLATE_ID: ${TENCENT_SES_TEMPLATE_ID:-}
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}

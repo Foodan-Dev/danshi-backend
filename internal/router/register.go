@@ -34,7 +34,7 @@ type Deps struct {
 	Config config.Config
 	DB     *db.DB
 	Log    *slog.Logger
-	// EmailSender 可由测试或生产适配器替换；nil 时使用 dev 日志实现。
+	// EmailSender 可由测试替换；nil 时 dev 使用日志实现，prod 按配置装配腾讯云 SES。
 	EmailSender service.VerificationEmailSender
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
 	ContentModerator service.ContentModerator

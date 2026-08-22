@@ -12,6 +12,8 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.136
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses v1.3.136
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.75
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
