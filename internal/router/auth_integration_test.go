@@ -84,6 +84,35 @@ func (failingEmailSender) SendRegistrationCode(context.Context, string, string) 
 	return errors.New("test delivery failure")
 }
 
+type timeoutEmailSender struct{}
+
+func (timeoutEmailSender) SendRegistrationCode(context.Context, string, string) error {
+	return context.DeadlineExceeded
+}
+
+type blockingEmailSender struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s blockingEmailSender) SendRegistrationCode(
+	ctx context.Context,
+	_ string,
+	_ string,
+) error {
+	select {
+	case s.started <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type testAPIResponse struct {
 	Code      int             `json:"code"`
 	Message   string          `json:"message"`
@@ -125,6 +154,23 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
 			Where("email = ?", "delivery-fail@fdueat.com").Count(&count).Error)
 		require.Zero(t, count, "发信失败时验证码行和发送计数必须一并回滚")
+	})
+
+	t.Run("verification timeout returns 503 and rolls back", func(t *testing.T) {
+		timeoutEngine := authTestEngine(cfg, database, timeoutEmailSender{})
+		status, response, _ := performJSON(t, timeoutEngine, http.MethodPost,
+			"/api/v2/auth/email-verification-codes", map[string]any{"email": "timeout@fdueat.com"}, "")
+		require.Equal(t, http.StatusServiceUnavailable, status)
+		require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+
+		var count int64
+		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
+			Where("email = ?", "timeout@fdueat.com").Count(&count).Error)
+		require.Zero(t, count, "SES 超时时验证码行和发送计数必须一并回滚")
+	})
+
+	t.Run("verification in-flight limit precedes uow", func(t *testing.T) {
+		testVerificationInFlightLimit(t, cfg, database, gdb)
 	})
 
 	t.Run("register login refresh logout", func(t *testing.T) {
@@ -236,6 +282,98 @@ func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
 		"GET /api/v2/auth/sessions",
 		"DELETE /api/v2/auth/sessions/:id",
 	}, operations)
+}
+
+func testVerificationInFlightLimit(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	gdb *gorm.DB,
+) {
+	t.Helper()
+	const maxInFlight = 5
+
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+	previousMaxOpen := sqlDB.Stats().MaxOpenConnections
+	sqlDB.SetMaxOpenConns(maxInFlight)
+	t.Cleanup(func() { sqlDB.SetMaxOpenConns(previousMaxOpen) })
+
+	started := make(chan struct{}, maxInFlight)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	engine := authTestEngine(cfg, database, blockingEmailSender{started: started, release: release})
+	results := make(chan asyncRequestResult, maxInFlight)
+	for index := range maxInFlight {
+		email := "in-flight-" + strconv.Itoa(index) + "@fdueat.com"
+		go func() {
+			status, response, raw, requestErr := performJSONRequest(
+				engine,
+				http.MethodPost,
+				"/api/v2/auth/email-verification-codes",
+				map[string]any{"email": email},
+				"",
+			)
+			results <- asyncRequestResult{status: status, response: response, raw: raw, err: requestErr}
+		}()
+	}
+
+	allStarted := time.NewTimer(5 * time.Second)
+	defer allStarted.Stop()
+	for range maxInFlight {
+		select {
+		case <-started:
+		case <-allStarted.C:
+			require.FailNow(t, "5 个发信请求未能全部进入阻塞 sender")
+		}
+	}
+	inUseBeforeReject := sqlDB.Stats().InUse
+	require.Equal(t, maxInFlight, inUseBeforeReject, "阻塞 sender 时每个请求都应持有一个事务连接")
+
+	sixthResult := make(chan asyncRequestResult, 1)
+	go func() {
+		status, response, raw, requestErr := performJSONRequest(
+			engine,
+			http.MethodPost,
+			"/api/v2/auth/email-verification-codes",
+			map[string]any{"email": "in-flight-rejected@fdueat.com"},
+			"",
+		)
+		sixthResult <- asyncRequestResult{status: status, response: response, raw: raw, err: requestErr}
+	}()
+
+	var rejected asyncRequestResult
+	select {
+	case rejected = <-sixthResult:
+	case <-time.After(500 * time.Millisecond):
+		require.FailNow(t, "第 6 个请求没有立即拒绝，可能在等待数据库连接")
+	}
+	require.NoError(t, rejected.err)
+	require.Equal(t, http.StatusTooManyRequests, rejected.status)
+	require.Equal(t, apierr.BizVerifyCodeBusy, rejected.response.ErrorCode)
+	require.Equal(t, "2", string(rejected.raw.Header().Peek("Retry-After")))
+	require.Equal(t, inUseBeforeReject, sqlDB.Stats().InUse,
+		"第 6 个请求被拒时不得再借用数据库连接")
+
+	unblock()
+	for range maxInFlight {
+		result := <-results
+		require.NoError(t, result.err)
+		require.Equal(t, http.StatusOK, result.status)
+	}
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/email-verification-codes", map[string]any{"email": "in-flight-recovered@fdueat.com"}, "")
+	require.Equal(t, http.StatusOK, status, "释放在途许可后请求应恢复，response=%s", response.Message)
+}
+
+type asyncRequestResult struct {
+	status   int
+	response testAPIResponse
+	raw      *ut.ResponseRecorder
+	err      error
 }
 
 func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
@@ -589,10 +727,24 @@ func performJSON(
 	token string,
 ) (int, testAPIResponse, *ut.ResponseRecorder) {
 	t.Helper()
+	status, response, recorder, err := performJSONRequest(engine, method, path, payload, token)
+	require.NoError(t, err)
+	return status, response, recorder
+}
+
+func performJSONRequest(
+	engine *server.Hertz,
+	method string,
+	path string,
+	payload any,
+	token string,
+) (int, testAPIResponse, *ut.ResponseRecorder, error) {
 	var body *ut.Body
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
-		require.NoError(t, err)
+		if err != nil {
+			return 0, testAPIResponse{}, nil, err
+		}
 		body = &ut.Body{Body: bytes.NewReader(encoded), Len: len(encoded)}
 	}
 	headers := []ut.Header{{Key: "Content-Type", Value: "application/json"}, {Key: "User-Agent", Value: "Danshi-Test/1.0"}}
@@ -600,10 +752,12 @@ func performJSON(
 		headers = append(headers, ut.Header{Key: "Authorization", Value: "Bearer " + token})
 	}
 	recorder := ut.PerformRequest(engine.Engine, method, path, body, headers...)
-	response := recorder.Result()
+	result := recorder.Result()
 	var decoded testAPIResponse
-	require.NoError(t, json.Unmarshal(response.Body(), &decoded), "body=%s", response.Body())
-	return response.StatusCode(), decoded, recorder
+	if err := json.Unmarshal(result.Body(), &decoded); err != nil {
+		return result.StatusCode(), testAPIResponse{}, recorder, err
+	}
+	return result.StatusCode(), decoded, recorder, nil
 }
 
 func decodeData(t *testing.T, response testAPIResponse, target any) {

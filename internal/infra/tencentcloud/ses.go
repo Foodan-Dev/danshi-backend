@@ -18,7 +18,7 @@ import (
 
 const (
 	sesEndpoint              = "ses.tencentcloudapi.com"
-	sesRequestTimeoutSeconds = 10
+	sesRequestTimeoutSeconds = 2
 	registrationEmailSubject = "旦食注册验证码"
 )
 

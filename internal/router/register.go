@@ -12,6 +12,7 @@ package router
 import (
 	"context"
 	"log/slog"
+	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -26,8 +27,13 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
-// APIPrefix 是本服务唯一的路由前缀。
-const APIPrefix = "/api/v2"
+const (
+	// APIPrefix 是本服务唯一的路由前缀。
+	APIPrefix = "/api/v2"
+
+	verificationCodeMaxInFlight       = 5
+	verificationCodeRetryAfterSeconds = 2
+)
 
 // Deps 是路由装配需要的依赖。业务域的 handler 在这里注入。
 type Deps struct {
@@ -56,13 +62,21 @@ type Deps struct {
 //  1. Recovery     最外层，要能兜住后面所有中间件里的 panic
 //  2. RequestID    尽早分配，后续日志才带得上
 //  3. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
-//  4. CORS         在业务之前，预检请求不该进到 UoW
-//  5. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
+//  4. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
+//  5. CORS         在业务之前，预检请求不该进到 UoW
+//  6. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
 func Register(h *server.Hertz, d Deps) {
 	d = withDefaultDomainDeps(d)
 	h.Use(middleware.Recovery(d.Log))
 	h.Use(middleware.RequestID())
 	h.Use(middleware.ErrorHandler(d.Log))
+	h.Use(middleware.LimitInFlight(
+		http.MethodPost,
+		APIPrefix+"/auth/email-verification-codes",
+		verificationCodeMaxInFlight,
+		verificationCodeRetryAfterSeconds,
+		apierr.TooManyRequests(apierr.BizVerifyCodeBusy, "验证码发送服务繁忙，请稍后再试"),
+	))
 
 	registerProbes(h, d)
 
