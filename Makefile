@@ -54,6 +54,15 @@ cover: ## 测试覆盖率
 	go test -count=1 -coverprofile=coverage.out ./internal/...
 	go tool cover -func=coverage.out | tail -1
 
+.PHONY: bench
+bench: ## 运行不依赖容器的性能基准并报告内存分配
+	go test -run '^$$' -bench . -benchmem -short ./...
+
+.PHONY: bench-db
+bench-db: ## 运行需要 PostgreSQL testcontainer 的端到端基准
+	go test -run '^$$' -bench '^BenchmarkPostListEndToEnd$$' -benchmem ./internal/router
+	go test -run '^$$' -bench '^BenchmarkAssertCurrentMatchesLatest$$' -benchmem ./internal/service
+
 .PHONY: build
 build: build-server build-migrate ## 构建两个二进制
 
