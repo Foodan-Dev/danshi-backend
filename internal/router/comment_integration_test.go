@@ -98,7 +98,8 @@ func testCommentRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
 	operations := make([]string, 0)
 	for _, route := range engine.Routes() {
-		if strings.Contains(route.Path, "/comments") {
+		if strings.HasPrefix(route.Path, "/api/v2/comments") ||
+			(strings.HasPrefix(route.Path, "/api/v2/posts/") && strings.Contains(route.Path, "/comments")) {
 			operations = append(operations, route.Method+" "+route.Path)
 		}
 	}

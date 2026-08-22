@@ -78,8 +78,10 @@ const (
 	BizCommentNotFound      BizCode = "comment_not_found"
 	BizCommentDeleted       BizCode = "comment_deleted"
 	BizNotificationNotFound BizCode = "notification_not_found"
-	BizContentUnderAudit    BizCode = "content_under_audit" // 先审后发，正在等审核结果
-	BizContentRejected      BizCode = "content_rejected"    // 审核判定违规
+	BizContentUnderAudit    BizCode = "content_under_audit"    // 先审后发，正在等审核结果
+	BizContentRejected      BizCode = "content_rejected"       // 审核判定违规
+	BizContentNotRestorable BizCode = "content_not_restorable" // 不是机审软删除，管理员不得恢复
+	BizModerationNotPending BizCode = "moderation_not_pending" // 目标机审记录不存在或已经被人工处理
 
 	// 词表与提议
 

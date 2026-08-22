@@ -55,6 +55,22 @@ func RequireAdmin() app.HandlerFunc {
 	}
 }
 
+// RequireSuperAdmin 要求已认证身份具有 super_admin 角色。
+func RequireSuperAdmin() app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		principal, err := CurrentPrincipal(c)
+		if err != nil {
+			Fail(ctx, c, err)
+			return
+		}
+		if principal.User.Role != model.UserRoleSuperAdmin {
+			Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "需要超级管理员权限"))
+			return
+		}
+		c.Next(ctx)
+	}
+}
+
 // CurrentPrincipal 读取 RequireAuth 写入的当前身份。
 func CurrentPrincipal(c *app.RequestContext) (*service.Principal, error) {
 	raw, ok := c.Get(principalCtxKey)

@@ -84,7 +84,7 @@ func Register(h *server.Hertz, d Deps) {
 	registerConfig(api, d)
 	registerDictionary(api, d)
 	registerModeration(api, d)
-	//	registerAdmin(api, d)
+	registerAdmin(api, d)
 
 	registerFallbacks(h)
 }
