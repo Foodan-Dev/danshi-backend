@@ -66,6 +66,10 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostEditVersion(t, engine, gdb, author, fixture)
 	})
 
+	t.Run("tag canonical case remains editable", func(t *testing.T) {
+		testTagCanonicalCaseRemainsEditable(t, engine, author, fixture)
+	})
+
 	t.Run("concurrent revisions are two and three", func(t *testing.T) {
 		testConcurrentPostEdits(t, engine, gdb, database, author, fixture)
 	})
@@ -103,7 +107,7 @@ func testPostRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
 	operations := make([]string, 0)
 	for _, route := range engine.Routes() {
-		if strings.HasPrefix(route.Path, "/api/v2/posts") {
+		if strings.HasPrefix(route.Path, "/api/v2/posts") && !strings.Contains(route.Path, "/comments") {
 			operations = append(operations, route.Method+" "+route.Path)
 		}
 	}
@@ -258,6 +262,25 @@ func testPostEditVersion(
 		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).
 		Order("t.name").Scan(&tagNames).Error)
 	require.Equal(t, []string{"新标签"}, tagNames)
+}
+
+func testTagCanonicalCaseRemainsEditable(
+	t *testing.T,
+	engine *server.Hertz,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	createPost(t, engine, author.Token, sharePostPayload(fixture, "占位", []string{"ramen"}))
+	post := createPost(t, engine, author.Token, sharePostPayload(fixture, "探针帖", []string{"ramen"}))
+
+	payload := sharePostPayload(fixture, "探针帖", []string{"Ramen"})
+	status, response, _ := performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+
+	payload = sharePostPayload(fixture, "再改一次", []string{"Ramen"})
+	status, response, _ = performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 }
 
 func testConcurrentPostEdits(

@@ -1221,9 +1221,13 @@ COMMENT ON TABLE comment_histories IS
 --
 -- 结论如何影响内容可见性：
 --   帖子   pass → status=approved；review → status=pending 转人工；block → status=rejected
---   评论   pass → 不动（先发后审）；review/block → deleted_at 置位、deleted_reason='moderation'
+--   评论   pass → 不动（先发后审）；review → 仍然可见，进人工复核队列；
+--          block → deleted_at 置位、deleted_reason='moderation'、deleted_by 留空
+--   标签   pass → 不动；review → 仍然可用，进人工队列；block → 下架（deleted_at），关联行保留
 --   图片   写回 image_assets.moderation；block 不可被引用，pending/review 可先引用，
 --          但只要还有图片未 pass，所属帖子就不得进入 approved（§5.2.9）
+--   ⚠ review 一律是「保持现状 + 进人工队列」，不是「先删了再说」。
+--     五类对象在 PRD §6.10.3 的表里语义一致，不要只对某一类对象特殊处理。
 -- ============================================================
 
 CREATE TABLE moderation_records (

@@ -177,10 +177,11 @@ func (s *PostService) persistPostVersion(
 	revision int32,
 	editorID uint64,
 ) (*model.PostHistory, error) {
-	tagIDs, err := s.replaceTags(ctx, resolved.Tags)
+	tagIDs, canonicalTags, err := s.replaceTags(ctx, resolved.Tags)
 	if err != nil {
 		return nil, err
 	}
+	resolved.Tags = canonicalTags
 	if err := s.posts.ReplaceTags(ctx, post.ID, tagIDs); err != nil {
 		return nil, err
 	}
@@ -243,24 +244,26 @@ func (s *PostService) finishModeration(
 	}
 }
 
-func (s *PostService) replaceTags(ctx context.Context, names []string) ([]uint64, error) {
+func (s *PostService) replaceTags(ctx context.Context, names []string) ([]uint64, []string, error) {
 	tagIDs := make([]uint64, 0, len(names))
+	canonicalNames := make([]string, 0, len(names))
 	for _, name := range names {
 		tag, created, err := s.posts.FindOrCreateTag(ctx, name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if tag.DeletedAt != nil {
-			return nil, apierr.Conflict(apierr.BizContentRejected, "包含已下架标签")
+			return nil, nil, apierr.Conflict(apierr.BizContentRejected, "包含已下架标签")
 		}
 		if created {
 			if err := s.moderateTag(ctx, tag); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		tagIDs = append(tagIDs, tag.ID)
+		canonicalNames = append(canonicalNames, tag.Name)
 	}
-	return tagIDs, nil
+	return tagIDs, canonicalNames, nil
 }
 
 func (s *PostService) moderateTag(ctx context.Context, tag *model.Tag) error {
@@ -432,14 +435,6 @@ func contentFields(
 }
 
 func buildSnapshot(resolved resolvedPostPayload) postSnapshot {
-	tags := append([]string{}, resolved.Tags...)
-	sort.Slice(tags, func(i, j int) bool {
-		left, right := strings.ToLower(tags[i]), strings.ToLower(tags[j])
-		if left == right {
-			return tags[i] < tags[j]
-		}
-		return left < right
-	})
 	flavors := append([]model.Flavor{}, resolved.Flavors...)
 	sort.Slice(flavors, func(i, j int) bool {
 		if flavors[i].SortOrder == flavors[j].SortOrder {
@@ -451,7 +446,7 @@ func buildSnapshot(resolved resolvedPostPayload) postSnapshot {
 		PostType: resolved.PostType, ShareType: resolved.ShareType, Title: resolved.Title,
 		Content: resolved.Content, Category: resolved.Category, CanteenID: resolved.CanteenID,
 		CanteenWindowID: resolved.CanteenWindowID, CuisineID: resolved.CuisineID,
-		Tags: nonNilStrings(tags), Images: nonNilStrings(resolved.Images),
+		Tags: snapshotTags(resolved.Tags), Images: nonNilStrings(resolved.Images),
 	}
 	if resolved.Price != nil {
 		price := resolved.Price.String()
@@ -500,7 +495,7 @@ func snapshotFromCurrent(post *model.Post, relations repository.PostRelations) p
 	snapshot := postSnapshot{
 		PostType: post.PostType, ShareType: post.ShareType, Title: post.Title, Content: post.Content,
 		Category: post.Category, CanteenID: post.CanteenID, CanteenWindowID: post.CanteenWindowID,
-		CuisineID: post.CuisineID, Tags: nonNilStrings(relations.Tags[post.ID]),
+		CuisineID: post.CuisineID, Tags: snapshotTags(relations.Tags[post.ID]),
 		Images: nonNilStrings(relations.Images[post.ID]), Flavors: []snapshotFlavor{},
 	}
 	if post.Price != nil {
@@ -512,6 +507,18 @@ func snapshotFromCurrent(post *model.Post, relations repository.PostRelations) p
 		snapshot.Flavors = append(snapshot.Flavors, snapshotFlavor{Name: flavor.Name, Stance: flavor.Stance})
 	}
 	return snapshot
+}
+
+func snapshotTags(values []string) []string {
+	tags := append([]string{}, values...)
+	sort.Slice(tags, func(i, j int) bool {
+		left, right := strings.ToLower(tags[i]), strings.ToLower(tags[j])
+		if left == right {
+			return tags[i] < tags[j]
+		}
+		return left < right
+	})
+	return nonNilStrings(tags)
 }
 
 func budgetColumns(value *BudgetRangeInput) (*int32, *int32) {

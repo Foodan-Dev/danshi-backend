@@ -11,10 +11,11 @@ import (
 // ModerationTarget 标识审核请求的对象类别。
 type ModerationTarget string
 
-// 当前 Post 域会提交的审核对象。
+// 当前 Post 与 Comment 域会提交的审核对象。
 const (
-	ModerationTargetPost ModerationTarget = "post"
-	ModerationTargetTag  ModerationTarget = "tag"
+	ModerationTargetPost    ModerationTarget = "post"
+	ModerationTargetTag     ModerationTarget = "tag"
+	ModerationTargetComment ModerationTarget = "comment"
 )
 
 // ModerationRequest 是与具体供应商无关的文本审核请求。
