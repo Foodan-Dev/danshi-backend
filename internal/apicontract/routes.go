@@ -19,6 +19,9 @@ type Route struct {
 type TypeBinding struct {
 	Request  any
 	Response any
+	// AdditionalErrorStatuses 只登记无法从鉴权、请求体、路径参数和管理端命名空间
+	// 推导出的业务错误状态；生成器会拒绝重复登记规则已覆盖的状态。
+	AdditionalErrorStatuses []int
 }
 
 // TypedRoute 把类型绑定关联到一条明确的 method + Hertz path。
@@ -33,18 +36,6 @@ func Key(method, path string) string { return method + " " + path }
 
 // OperationKey 返回当前路由的稳定键。
 func (r Route) OperationKey() string { return Key(r.Method, r.Path) }
-
-// ResponseStatuses 返回已有契约测试覆盖的状态，加上统一成功与 panic 恢复状态。
-func (r Route) ResponseStatuses() []int {
-	statuses := []int{http.StatusOK}
-	if r.ExpectedStatus != http.StatusOK {
-		statuses = append(statuses, r.ExpectedStatus)
-	}
-	if r.Path == "/ready" {
-		statuses = append(statuses, http.StatusServiceUnavailable)
-	}
-	return append(statuses, http.StatusInternalServerError)
-}
 
 // Routes 返回全部运行时与业务路由的显式契约声明。
 func Routes() []Route {

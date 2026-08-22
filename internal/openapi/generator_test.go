@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
+	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 )
 
 func TestOpenAPIPathConvertsAndDeclaresParameters(t *testing.T) {
@@ -26,11 +28,48 @@ func TestMinimalEnvelopeSchemaShape(t *testing.T) {
 	require.Equal(t, []string{"code", "message", "data", "error_code"}, schema.Required)
 	require.Contains(t, schema.Properties, "error_code")
 	require.Contains(t, schemas, "ErrorData")
+	require.Equal(t, "#/components/schemas/BizCode", schema.Properties["error_code"].Ref)
+	require.Equal(t, stringsOf(apierr.AllBizCodes()), schemas["BizCode"].Value.Enum)
+	require.Equal(t, "#/components/schemas/FieldCode", schemas["FieldError"].Value.Properties["code"].Ref)
+	require.Equal(t, stringsOf(apierr.AllFieldCodes()), schemas["FieldCode"].Value.Enum)
 
 	schema, err = responseEnvelopeSchema("/example", http.StatusInternalServerError, nil, schemas)
 	require.NoError(t, err)
 	require.NotNil(t, schema)
 	require.Contains(t, schemas, "ErrorIDData")
+}
+
+func TestResponseStatusesAreRuleDerived(t *testing.T) {
+	declaration := apicontract.Route{
+		Method: http.MethodPut, Path: "/api/v2/admin/things/:thing_id", BearerAuth: true,
+	}
+	binding := apicontract.TypeBinding{
+		Request: struct{}{}, AdditionalErrorStatuses: []int{http.StatusConflict},
+	}
+	statuses, err := responseStatuses(declaration, binding, []string{"thing_id"})
+	require.NoError(t, err)
+	require.Equal(t, []int{200, 401, 403, 404, 409, 422, 500}, statuses)
+}
+
+func TestAdditionalErrorsRejectRuleDerivedStatuses(t *testing.T) {
+	declaration := apicontract.Route{
+		Method: http.MethodPost, Path: "/api/v2/things", BearerAuth: true,
+	}
+	binding := apicontract.TypeBinding{
+		Request: struct{}{}, AdditionalErrorStatuses: []int{http.StatusUnprocessableEntity},
+	}
+	_, err := responseStatuses(declaration, binding, nil)
+	require.ErrorContains(t, err, "已能由通用规则推导")
+}
+
+func TestRawCallbackBodyDoesNotInvent422(t *testing.T) {
+	declaration := apicontract.Route{Method: http.MethodPost, Path: "/callback"}
+	binding := apicontract.TypeBinding{
+		Request: json.RawMessage{}, AdditionalErrorStatuses: []int{http.StatusBadRequest},
+	}
+	statuses, err := responseStatuses(declaration, binding, nil)
+	require.NoError(t, err)
+	require.Equal(t, []int{200, 400, 500}, statuses)
 }
 
 func TestCoverageGateFailsWhenRuntimeRouteIsMissingFromRegistry(t *testing.T) {
@@ -79,4 +118,13 @@ func TestGenerateProducesValidImportableMinimum(t *testing.T) {
 	require.NotNil(t, operation.Security)
 	require.Equal(t, "thing_id", operation.Parameters[0].Value.Name)
 	require.Equal(t, "integer", operation.Parameters[0].Value.Schema.Value.Type.Slice()[0])
+	require.Equal(t, []string{"200", "401", "404", "422", "500"}, operation.Responses.Keys())
+}
+
+func stringsOf[T ~string](codes []T) []any {
+	values := make([]any, 0, len(codes))
+	for _, code := range codes {
+		values = append(values, string(code))
+	}
+	return values
 }

@@ -1,37 +1,33 @@
 package apierr
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
+	"os"
 	"testing"
+
+	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
 )
 
 // 错误码是对外契约，重复的字面量意味着两种情形在前端无法区分。
-func TestBizCodesAreUnique(t *testing.T) {
-	all := []BizCode{
-		BizInternal, BizNotFound, BizValidation, BizRateLimited, BizUnauthorized, BizServiceUnavailable,
-		BizEmailTaken, BizEmailDomainNotAllow, BizCredentialsInvalid,
-		BizVerifyCodeInvalid, BizVerifyCodeTooMany, BizVerifyCodeBusy, BizAccountBanned,
-		BizAccountDeleted, BizSessionRevoked, BizSessionNotFound,
-		BizPermissionDenied, BizNotOwner,
-		BizPostNotFound, BizPostNotPublished, BizPostDeleted,
-		BizCommentNotFound, BizCommentDeleted, BizContentUnderAudit, BizContentRejected,
-		BizDictItemNotFound, BizDictItemInUse, BizWindowNotInCanteen,
-		BizSuggestionNotFound, BizSuggestionClosed, BizSuggestionParentPending, BizTagLimitExceeded,
-		BizImageNotFound, BizImageNotOwned, BizImagePurposeWrong, BizImageNotApproved,
-		BizUploadNotFound, BizUploadClosed, BizUploadIncomplete, BizUploadSizeMismatch,
-		BizModerationCallbackInvalid,
-		BizCannotFollowSelf, BizAlreadyExists, BizConflict,
+func TestErrorCodesAreUnique(t *testing.T) {
+	assertUniqueCodes(t, AllFieldCodes())
+	assertUniqueCodes(t, AllBizCodes())
+}
+
+// codes.go 新增常量后若未重新生成，单测与 make openapi 都必须失败。
+func TestGeneratedCodeCatalogMatchesCodesSource(t *testing.T) {
+	generated, err := apierrcodes.Generate("codes.go")
+	if err != nil {
+		t.Fatalf("从 codes.go 生成错误码目录: %v", err)
 	}
-	seen := make(map[BizCode]bool, len(all))
-	for _, c := range all {
-		if c == "" {
-			t.Fatal("存在空错误码")
-		}
-		if seen[c] {
-			t.Fatalf("错误码重复: %s", c)
-		}
-		seen[c] = true
+	committed, err := os.ReadFile("codes_gen.go")
+	if err != nil {
+		t.Fatalf("读取 codes_gen.go: %v", err)
+	}
+	if !bytes.Equal(committed, generated) {
+		t.Fatal("codes_gen.go 与 codes.go 不同步；请运行 go generate ./internal/apierr")
 	}
 }
 
@@ -100,5 +96,19 @@ func TestWithersDoNotMutate(t *testing.T) {
 	}
 	if narrowed.Code != BizAccountBanned || narrowed.Cause() == nil {
 		t.Fatal("副本没有带上新的业务码或原因")
+	}
+}
+
+func assertUniqueCodes[T ~string](t *testing.T, codes []T) {
+	t.Helper()
+	seen := make(map[T]bool, len(codes))
+	for _, code := range codes {
+		if code == "" {
+			t.Fatal("存在空错误码")
+		}
+		if seen[code] {
+			t.Fatalf("错误码重复: %s", code)
+		}
+		seen[code] = true
 	}
 }

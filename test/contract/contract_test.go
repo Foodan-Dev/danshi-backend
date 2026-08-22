@@ -133,6 +133,23 @@ func TestStatusBranchesContract(t *testing.T) {
 	})
 }
 
+func TestAdminNamespaceAlwaysRequiresAdmin(t *testing.T) {
+	engine := newContractEngine(t)
+	token := registerContractUser(t, engine)
+	checked := 0
+	for _, route := range engine.Routes() {
+		if !strings.HasPrefix(route.Path, router.APIPrefix+"/admin/") {
+			continue
+		}
+		got := performRequest(
+			t, engine, route.Method, concretePath(route.Path), requestPayload(route.Method), token,
+		)
+		assertError(t, got, http.StatusForbidden, "permission_denied")
+		checked++
+	}
+	require.Positive(t, checked, "必须实际检查至少一条 admin 路由")
+}
+
 func registerContractUser(t *testing.T, engine *server.Hertz) string {
 	t.Helper()
 	got := performRequest(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
