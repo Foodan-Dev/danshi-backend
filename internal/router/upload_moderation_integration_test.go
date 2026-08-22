@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,6 +87,26 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 
 	t.Run("image callback before post creation publishes immediately", func(t *testing.T) {
 		testImageCallbackBeforePostCreation(t, engine, gdb, author, fixture)
+	})
+
+	t.Run("upload validation ownership duplicate and expiry", func(t *testing.T) {
+		testUploadBoundaries(t, engine, gdb, database, cfg, storage, imageModerator, author)
+	})
+
+	t.Run("storage and moderation failures roll back upload state", func(t *testing.T) {
+		testUploadDependencyFailures(t, engine, gdb, database, storage, imageModerator, author)
+	})
+
+	t.Run("callback token payload and missing asset validation", func(t *testing.T) {
+		testCallbackValidation(t, engine, gdb, database, sender, storage, imageModerator, cfg)
+	})
+
+	t.Run("duplicate callbacks serialize and remain idempotent", func(t *testing.T) {
+		testConcurrentImageCallbacks(t, gdb, database, author.User.ID)
+	})
+
+	t.Run("independent image callbacks may arrive out of order", func(t *testing.T) {
+		testOutOfOrderImageCallbacks(t, gdb, database, author.User.ID)
 	})
 
 	t.Run("complete loses expiry race without resurrecting asset", func(t *testing.T) {
@@ -226,6 +247,356 @@ func testUploadContentMD5(
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 }
 
+func testUploadBoundaries(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	cfg appconfig.Config,
+	storage *fakeImageStorage,
+	imageModerator *testutil.MockModeration,
+	author service.AuthResult,
+) {
+	t.Helper()
+	validMD5 := base64.StdEncoding.EncodeToString(make([]byte, 16))
+	for _, testCase := range []struct {
+		name  string
+		body  map[string]any
+		field string
+		code  apierr.FieldCode
+	}{
+		{
+			name:  "invalid purpose",
+			body:  map[string]any{"purpose": "cover", "content_type": "image/jpeg", "size": 1, "content_md5": validMD5},
+			field: "purpose", code: apierr.FieldInvalidEnum,
+		},
+		{
+			name:  "oversized",
+			body:  map[string]any{"purpose": "post", "content_type": "image/jpeg", "size": cfg.COSMaxImageBytes + 1, "content_md5": validMD5},
+			field: "size", code: apierr.FieldOutOfRange,
+		},
+		{
+			name:  "missing md5",
+			body:  map[string]any{"purpose": "post", "content_type": "image/jpeg", "size": 1},
+			field: "content_md5", code: apierr.FieldInvalidFormat,
+		},
+		{
+			name:  "invalid content type",
+			body:  map[string]any{"purpose": "post", "content_type": "text/plain", "size": 1, "content_md5": validMD5},
+			field: "content_type", code: apierr.FieldInvalidEnum,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, response, _ := performJSON(t, engine, http.MethodPost,
+				"/api/v2/uploads/presign", testCase.body, author.Token)
+			require.Equal(t, http.StatusUnprocessableEntity, status)
+			require.Equal(t, apierr.BizValidation, response.ErrorCode)
+			requireUploadFieldError(t, response, testCase.field, testCase.code)
+		})
+	}
+
+	other := testutil.NewFixtures(t, gdb).CreateActor(cfg)
+	presign := presignImage(t, engine, author.Token, 1536)
+	path := fmt.Sprintf("/api/v2/uploads/%d/complete", presign.UploadID)
+	status, response, _ := performJSON(t, engine, http.MethodPost, path, nil, other.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizImageNotOwned, response.ErrorCode)
+	var pending model.ImageAsset
+	require.NoError(t, gdb.First(&pending, presign.UploadID).Error)
+	require.Equal(t, model.ImageStatusPending, pending.Status)
+
+	moderationCalls := len(imageModerator.ImageCalls())
+	status, response, _ = performJSON(t, engine, http.MethodPost, path, nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodPost, path, nil, author.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizUploadClosed, response.ErrorCode)
+	require.Len(t, imageModerator.ImageCalls(), moderationCalls+1,
+		"重复 complete 不能再次提交图片审核")
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/uploads/9223372036854775807/complete", nil, author.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizUploadNotFound, response.ErrorCode)
+
+	expired := presignImage(t, engine, author.Token, 2048)
+	uploads := service.NewUploadService(
+		storage, imageModerator, service.NewModerationService(service.DiscardModerationAlerter{}),
+		cfg.COSMaxImageBytes, cfg.COSPresignTTL(),
+	)
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		count, expireErr := uploads.ExpirePending(ctx, time.Now().UTC().Add(time.Hour), 1)
+		if expireErr == nil && count != 1 {
+			return fmt.Errorf("期望回收 1 条过期上传，实际 %d", count)
+		}
+		return expireErr
+	})
+	require.NoError(t, err)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", expired.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizUploadClosed, response.ErrorCode)
+	var retired model.ImageAsset
+	require.NoError(t, gdb.First(&retired, expired.UploadID).Error)
+	require.Equal(t, model.ImageStatusRetired, retired.Status)
+	// 当前 schema 的 public_url 全局唯一；回收态仍保留空 URL，因此清理本测试资产，
+	// 避免它影响后续独立 presign 场景。
+	require.NoError(t, gdb.Exec(
+		"SELECT danshi_purge_image_assets(ARRAY[?::bigint])", retired.ID,
+	).Error)
+}
+
+func testUploadDependencyFailures(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	storage *fakeImageStorage,
+	imageModerator *testutil.MockModeration,
+	author service.AuthResult,
+) {
+	t.Helper()
+	var before int64
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Count(&before).Error)
+	storage.QueuePresign(testutil.StoragePresignBehavior{Err: errors.New("COS presign 5xx")})
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/uploads/presign", map[string]any{
+		"purpose": "post", "content_type": "image/jpeg", "size": 1024,
+		"content_md5": base64.StdEncoding.EncodeToString(make([]byte, 16)),
+	}, author.Token)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	var after int64
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Count(&after).Error)
+	require.Equal(t, before, after, "presign 失败不能创建悬空资产行")
+
+	headFailure := presignImage(t, engine, author.Token, 1024)
+	storage.QueueHead(testutil.StorageHeadBehavior{Err: errors.New("COS HEAD 5xx")})
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", headFailure.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	requireUploadPending(t, gdb, headFailure.UploadID)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", headFailure.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+
+	moderationFailure := presignImage(t, engine, author.Token, 1024)
+	failureCall := len(imageModerator.ImageCalls()) + 1
+	imageModerator.ProgramImage(testutil.ImageModerationRule{
+		Call: failureCall,
+		Outcome: testutil.ImageFailure(
+			apierr.ServiceUnavailable("图片审核 5xx").WithCause(errors.New("moderation 5xx")),
+		),
+	})
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", moderationFailure.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	requireUploadPending(t, gdb, moderationFailure.UploadID)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", moderationFailure.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+
+	timeoutUpload := presignImage(t, engine, author.Token, 1024)
+	release := make(chan struct{})
+	timeoutCall := len(imageModerator.ImageCalls()) + 1
+	imageModerator.ProgramImage(testutil.ImageModerationRule{
+		Call: timeoutCall,
+		Outcome: testutil.ImageModerationOutcome{
+			Submission: testutil.ImageImmediate(model.ModerationVerdictPass).Submission,
+			Release:    release,
+		},
+	})
+	uploads := service.NewUploadService(
+		storage, imageModerator, service.NewModerationService(service.DiscardModerationAlerter{}),
+		10*1024*1024, 10*time.Minute,
+	)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	timeoutResult := make(chan error, 1)
+	go func() {
+		timeoutResult <- database.RunInTx(requestCtx, func(ctx context.Context) error {
+			_, completeErr := uploads.Complete(ctx, timeoutUpload.UploadID, author.User.ID)
+			return completeErr
+		})
+	}()
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelWait()
+	require.True(t, imageModerator.WaitForImageCalls(waitCtx, timeoutCall))
+	cancelRequest()
+	require.ErrorIs(t, <-timeoutResult, context.Canceled)
+	close(release)
+	requireUploadPending(t, gdb, timeoutUpload.UploadID)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", timeoutUpload.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+}
+
+func testCallbackValidation(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	sender service.VerificationEmailSender,
+	storage *fakeImageStorage,
+	imageModerator *testutil.MockModeration,
+	cfg appconfig.Config,
+) {
+	t.Helper()
+	body := tencentCallbackBody(9223372036854775807, "missing-job", "missing/object.jpg", 0)
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/moderation/tencent-ci/callback", body, "")
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizModerationCallbackInvalid, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/moderation/tencent-ci/callback?token=wrong", body, "")
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizModerationCallbackInvalid, response.ErrorCode)
+
+	unconfigured := cfg
+	unconfigured.ModerationCallbackToken = ""
+	unconfiguredEngine := uploadModerationEngine(
+		unconfigured, database, sender, storage, imageModerator,
+	)
+	status, response, _ = performJSON(t, unconfiguredEngine, http.MethodPost,
+		"/api/v2/moderation/tencent-ci/callback", body, "")
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+
+	callbackPath := "/api/v2/moderation/tencent-ci/callback?token=" +
+		url.QueryEscape(moderationCallbackToken)
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath,
+		map[string]any{"EventName": "UnexpectedEvent"}, "")
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, apierr.BizModerationCallbackInvalid, response.ErrorCode)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, body, "")
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizImageNotFound, response.ErrorCode)
+
+	asset := createModerationAsset(t, gdb, nil, "purged-callback")
+	require.NoError(t, gdb.Exec(
+		"SELECT danshi_purge_image_assets(ARRAY[?::bigint])", asset.ID,
+	).Error)
+	var purgedCount int64
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", asset.ID).Count(&purgedCount).Error)
+	require.Zero(t, purgedCount)
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath,
+		tencentCallbackBody(asset.ID, "purged-job", asset.ObjectKey, 0), "")
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizImageNotFound, response.ErrorCode)
+	var callbackRecords int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("provider_job_id IN ?", []string{"missing-job", "purged-job"}).Count(&callbackRecords).Error)
+	require.Zero(t, callbackRecords, "无效目标回调不能写审核流水")
+}
+
+func testConcurrentImageCallbacks(
+	t *testing.T,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	uploaderID uint64,
+) {
+	t.Helper()
+	asset := createModerationAsset(t, gdb, &uploaderID, "concurrent-callback")
+	mock := testutil.NewMockModeration()
+	mock.SetDefaultImage(tencentPending("concurrent-callback-job"))
+	_, err := mock.SubmitImage(context.Background(), service.ImageModerationRequest{
+		ImageAssetID: asset.ID, ObjectKey: asset.ObjectKey,
+	})
+	require.NoError(t, err)
+
+	const workers = 8
+	ready := make(chan struct{}, workers)
+	start := make(chan struct{})
+	type callbackResult struct {
+		result *service.ImageModerationApplyResult
+		err    error
+	}
+	results := make(chan callbackResult, workers)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	for range workers {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			var applied *service.ImageModerationApplyResult
+			runErr := database.RunInTx(ctx, func(txCtx context.Context) error {
+				var callbackErr error
+				applied, callbackErr = mock.TriggerImageCallback(
+					txCtx, "concurrent-callback-job", model.ModerationVerdictPass,
+					moderation.ApplyImageCallback,
+				)
+				return callbackErr
+			})
+			results <- callbackResult{result: applied, err: runErr}
+		}()
+	}
+	for range workers {
+		<-ready
+	}
+	close(start)
+	nonDuplicates := 0
+	for range workers {
+		result := <-results
+		require.NoError(t, result.err)
+		require.NotNil(t, result.result)
+		if !result.result.Duplicate {
+			nonDuplicates++
+		}
+	}
+	require.Equal(t, 1, nonDuplicates)
+	var records int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("provider_job_id = ?", "concurrent-callback-job").Count(&records).Error)
+	require.EqualValues(t, 1, records)
+	require.NoError(t, gdb.First(&asset, asset.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
+}
+
+func testOutOfOrderImageCallbacks(
+	t *testing.T,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	uploaderID uint64,
+) {
+	t.Helper()
+	first := createModerationAsset(t, gdb, &uploaderID, "out-of-order-first")
+	second := createModerationAsset(t, gdb, &uploaderID, "out-of-order-second")
+	mock := testutil.NewMockModeration()
+	mock.ProgramImage(
+		testutil.ImageModerationRule{Call: 1, Outcome: tencentPending("out-of-order-job-1")},
+		testutil.ImageModerationRule{Call: 2, Outcome: tencentPending("out-of-order-job-2")},
+	)
+	_, err := mock.SubmitImage(context.Background(), service.ImageModerationRequest{
+		ImageAssetID: first.ID, ObjectKey: first.ObjectKey,
+	})
+	require.NoError(t, err)
+	_, err = mock.SubmitImage(context.Background(), service.ImageModerationRequest{
+		ImageAssetID: second.ID, ObjectKey: second.ObjectKey,
+	})
+	require.NoError(t, err)
+	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	apply := func(jobID string, verdict model.ModerationVerdict) *service.ImageModerationApplyResult {
+		var result *service.ImageModerationApplyResult
+		runErr := database.RunInTx(context.Background(), func(ctx context.Context) error {
+			var callbackErr error
+			result, callbackErr = mock.TriggerImageCallback(ctx, jobID, verdict, moderation.ApplyImageCallback)
+			return callbackErr
+		})
+		require.NoError(t, runErr)
+		return result
+	}
+	require.False(t, apply("out-of-order-job-2", model.ModerationVerdictBlock).Duplicate)
+	require.False(t, apply("out-of-order-job-1", model.ModerationVerdictPass).Duplicate)
+	require.True(t, apply("out-of-order-job-1", model.ModerationVerdictPass).Duplicate)
+	mock.RequireCallbackOrder(t, "out-of-order-job-2", "out-of-order-job-1", "out-of-order-job-1")
+	require.NoError(t, gdb.First(&first, first.ID).Error)
+	require.NoError(t, gdb.First(&second, second.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, first.Moderation)
+	require.Equal(t, model.ModerationStatusBlock, second.Moderation)
+}
+
 func testImageCallbackApprovesPost(
 	t *testing.T,
 	engine *server.Hertz,
@@ -349,6 +720,7 @@ func testCompleteExpiryRace(
 	require.NoError(t, err)
 
 	releaseDelete := make(chan struct{})
+	deleteCallsBefore := len(storage.DeleteCalls())
 	storage.QueueDelete(testutil.StorageDeleteBehavior{Release: releaseDelete})
 
 	expireResult := make(chan error, 1)
@@ -361,20 +733,19 @@ func testCompleteExpiryRace(
 			return expireErr
 		})
 	}()
-	require.True(t, storage.WaitForDeleteCalls(ctx, 1), "过期清理未进入对象删除阶段")
+	require.True(t, storage.WaitForDeleteCalls(ctx, deleteCallsBefore+1),
+		"过期清理未进入对象删除阶段")
 
 	completeResult := make(chan error, 1)
+	completeStarted := make(chan struct{})
 	go func() {
+		close(completeStarted)
 		completeResult <- database.RunInTx(ctx, func(txCtx context.Context) error {
 			_, completeErr := uploads.Complete(txCtx, presign.UploadID, userID)
 			return completeErr
 		})
 	}()
-	select {
-	case early := <-completeResult:
-		t.Fatalf("complete 未等待过期清理行锁：%v", early)
-	case <-time.After(100 * time.Millisecond):
-	}
+	<-completeStarted
 	close(releaseDelete)
 	require.NoError(t, <-expireResult)
 	completeErr := <-completeResult
@@ -450,4 +821,66 @@ func testManualReviewIsAppendOnly(
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("id = ? OR supersedes_id = ?", machine.ID, machine.ID).Count(&count).Error)
 	require.EqualValues(t, 2, count, "同一条机器记录至多只能追加一次人工复核")
+}
+
+func requireUploadFieldError(
+	t *testing.T,
+	response testAPIResponse,
+	field string,
+	code apierr.FieldCode,
+) {
+	t.Helper()
+	var data struct {
+		Errors []apierr.FieldError `json:"errors"`
+	}
+	decodeData(t, response, &data)
+	for _, item := range data.Errors {
+		if item.Field == field && item.Code == code {
+			return
+		}
+	}
+	t.Fatalf("未找到字段错误 field=%s code=%s，实际=%+v", field, code, data.Errors)
+}
+
+func requireUploadPending(t *testing.T, gdb *gorm.DB, uploadID uint64) {
+	t.Helper()
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, uploadID).Error)
+	require.Equal(t, model.ImageStatusPending, asset.Status)
+	require.Empty(t, asset.PublicURL)
+	require.Equal(t, model.ModerationStatusPending, asset.Moderation)
+}
+
+func tencentCallbackBody(
+	assetID uint64,
+	jobID string,
+	objectKey string,
+	result int,
+) map[string]any {
+	return map[string]any{
+		"EventName": "ReviewImage",
+		"JobsDetail": map[string]any{
+			"JobId": jobID, "State": "Success", "Object": objectKey,
+			"DataId": fmt.Sprintf("image_asset:%d", assetID), "Result": result, "Score": 99,
+		},
+	}
+}
+
+func createModerationAsset(
+	t *testing.T,
+	gdb *gorm.DB,
+	uploaderID *uint64,
+	key string,
+) model.ImageAsset {
+	t.Helper()
+	size := int64(1024)
+	asset := model.ImageAsset{
+		UploaderID: uploaderID, Purpose: model.ImagePurposePost,
+		ObjectKey:   "moderation/" + key + ".jpg",
+		PublicURL:   "https://img.example.test/moderation/" + key + ".jpg",
+		ContentType: "image/jpeg", Size: &size, Status: model.ImageStatusReady,
+		Moderation: model.ModerationStatusPending,
+	}
+	require.NoError(t, gdb.Create(&asset).Error)
+	return asset
 }

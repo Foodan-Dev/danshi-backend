@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
@@ -32,6 +33,8 @@ type adminActors struct {
 	Illegal   service.AuthResult
 	Author    service.AuthResult
 	Commenter service.AuthResult
+	SelfAdmin service.AuthResult
+	SuperUser service.AuthResult
 }
 
 func TestAdminDomainAgainstPostgres(t *testing.T) {
@@ -113,31 +116,66 @@ func isAdminDomainPath(path string) bool {
 
 func testAdminRoleGuards(t *testing.T, engine *server.Hertz, actors adminActors) {
 	t.Helper()
-	status, _, _ := performJSON(t, engine, http.MethodGet, "/api/v2/admin/posts", nil, "")
-	require.Equal(t, http.StatusUnauthorized, status)
-	status, _, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/admin/posts", nil, actors.Ordinary.Token)
-	require.Equal(t, http.StatusForbidden, status)
-	status, _, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/admin/users", nil, actors.Admin.Token)
-	require.Equal(t, http.StatusOK, status)
-	for _, path := range []string{
-		fmt.Sprintf("/api/v2/admin/users/%d/role", actors.Ordinary.User.ID),
-		"/api/v2/admin/admins",
-		"/api/v2/admin/super-admins",
-	} {
-		method := http.MethodGet
-		var body any
-		if strings.HasSuffix(path, "/role") {
-			method = http.MethodPut
-			body = map[string]any{"role": model.UserRoleAdmin}
-		}
-		status, _, _ = performJSON(t, engine, method, path, body, actors.Admin.Token)
-		require.Equal(t, http.StatusForbidden, status, "%s %s", method, path)
+	const missingID = "9223372036854775807"
+	type routeCase struct {
+		name          string
+		method        string
+		path          string
+		body          any
+		superOnly     bool
+		allowedStatus int
+		allowedCode   apierr.BizCode
 	}
-	status, _, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/admin/users", nil, actors.Ordinary.Token)
-	require.Equal(t, http.StatusForbidden, status)
+	routes := []routeCase{
+		{name: "pending posts", method: http.MethodGet, path: "/api/v2/admin/posts/pending", allowedStatus: http.StatusOK},
+		{name: "review post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/review", body: map[string]any{"status": model.PostStatusApproved}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "posts", method: http.MethodGet, path: "/api/v2/admin/posts", allowedStatus: http.StatusOK},
+		{name: "delete post", method: http.MethodDelete, path: "/api/v2/admin/posts/" + missingID, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "restore post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/restore", allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "users", method: http.MethodGet, path: "/api/v2/admin/users", allowedStatus: http.StatusOK},
+		{name: "update user status", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/status", body: map[string]any{"ban_is_permanent": false}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "update user role", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/role", body: map[string]any{"role": model.UserRoleUser}, superOnly: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "admins", method: http.MethodGet, path: "/api/v2/admin/admins", superOnly: true, allowedStatus: http.StatusOK},
+		{name: "super admins", method: http.MethodGet, path: "/api/v2/admin/super-admins", superOnly: true, allowedStatus: http.StatusOK},
+		{name: "comments", method: http.MethodGet, path: "/api/v2/admin/comments", allowedStatus: http.StatusOK},
+		{name: "delete comment", method: http.MethodDelete, path: "/api/v2/admin/comments/" + missingID, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
+		{name: "restore comment", method: http.MethodPut, path: "/api/v2/admin/comments/" + missingID + "/restore", allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
+		{name: "pending moderation", method: http.MethodGet, path: "/api/v2/admin/moderation-records/pending", allowedStatus: http.StatusOK},
+		{name: "manual review", method: http.MethodPut, path: "/api/v2/admin/moderation-records/" + missingID + "/review", body: map[string]any{"verdict": model.ModerationVerdictPass}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+	}
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body, "",
+				http.StatusUnauthorized, apierr.BizUnauthorized)
+			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+				actors.Ordinary.Token, http.StatusForbidden, apierr.BizPermissionDenied)
+			if route.superOnly {
+				assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+					actors.Admin.Token, http.StatusForbidden, apierr.BizPermissionDenied)
+			} else {
+				assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+					actors.Admin.Token, route.allowedStatus, route.allowedCode)
+			}
+			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+				actors.Super.Token, route.allowedStatus, route.allowedCode)
+		})
+	}
+}
+
+func assertAdminMatrixResponse(
+	t *testing.T,
+	engine *server.Hertz,
+	method string,
+	path string,
+	body any,
+	token string,
+	wantStatus int,
+	wantCode apierr.BizCode,
+) {
+	t.Helper()
+	status, response, _ := performJSON(t, engine, method, path, body, token)
+	require.Equal(t, wantStatus, status, "%s %s", method, path)
+	require.Equal(t, wantCode, response.ErrorCode, "%s %s", method, path)
 }
 
 func testAdminBanStates(
@@ -176,6 +214,7 @@ func testAdminBanStates(
 	require.NotNil(t, timed.BannedUntil)
 	require.WithinDuration(t, until, *timed.BannedUntil, time.Microsecond)
 	require.Equal(t, actors.Admin.User.ID, *timed.BannedBy)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, actors.Timed.Token)
 
 	status, _, _ = performJSON(t, engine, http.MethodPut, timedPath,
 		map[string]any{"ban_is_permanent": false}, actors.Admin.Token)
@@ -188,10 +227,27 @@ func testAdminBanStates(
 	require.Nil(t, unbanned.BannedBy)
 
 	illegalPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Illegal.User.ID)
-	status, _, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+	status, response, _ := performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+		"ban_is_permanent": true,
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireAdminFieldError(t, response, "ban_reason", apierr.FieldRequired)
+	var unchanged model.User
+	require.NoError(t, gdb.First(&unchanged, actors.Illegal.User.ID).Error)
+	require.False(t, unchanged.BanIsPermanent)
+	require.Nil(t, unchanged.BannedUntil)
+	require.Nil(t, unchanged.BanReason)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
 		"ban_is_permanent": true, "banned_until": ptime.Format(until), "ban_reason": "非法组合",
 	}, actors.Admin.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireAdminFieldError(t, response, "banned_until", apierr.FieldConflict)
+	require.NoError(t, gdb.First(&unchanged, actors.Illegal.User.ID).Error)
+	require.False(t, unchanged.BanIsPermanent)
+	require.Nil(t, unchanged.BannedUntil)
 	status, _, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
 		"ban_is_permanent": true, "ban_reason": "超级管理员封禁集成测试",
 	}, actors.Super.Token)
@@ -203,6 +259,30 @@ func testAdminBanStates(
 		"ban_is_permanent": true, "banned_until": until, "ban_reason": "数据库约束测试",
 	}).Error
 	require.ErrorContains(t, err, "users_ban_kind_check", "数据库约束必须拒绝永久与限时并存")
+
+	selfPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.SelfAdmin.User.ID)
+	status, response, _ = performJSON(t, engine, http.MethodPut, selfPath, map[string]any{
+		"ban_is_permanent": true, "ban_reason": "管理员主动封禁自己",
+	}, actors.SelfAdmin.Token)
+	require.Equal(t, http.StatusOK, status, "当前契约允许管理员封禁自己并立即撤销会话")
+	require.Empty(t, response.ErrorCode)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, actors.SelfAdmin.Token)
+	var selfBanned model.User
+	require.NoError(t, gdb.First(&selfBanned, actors.SelfAdmin.User.ID).Error)
+	require.True(t, selfBanned.BanIsPermanent)
+	require.Equal(t, actors.SelfAdmin.User.ID, *selfBanned.BannedBy)
+
+	superPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.SuperUser.User.ID)
+	status, response, _ = performJSON(t, engine, http.MethodPut, superPath, map[string]any{
+		"ban_is_permanent": true, "ban_reason": "管理员封禁超级管理员目标",
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "普通 admin 的封禁权限覆盖 super_admin 目标")
+	require.Empty(t, response.ErrorCode)
+	assertUnauthorized(t, engine, http.MethodGet, "/api/v2/auth/me", nil, actors.SuperUser.Token)
+	var superBanned model.User
+	require.NoError(t, gdb.First(&superBanned, actors.SuperUser.User.ID).Error)
+	require.True(t, superBanned.BanIsPermanent)
+	require.Equal(t, actors.Admin.User.ID, *superBanned.BannedBy)
 }
 
 func testAdminRoleUpdate(
@@ -262,6 +342,15 @@ func testAdminPostReview(
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, post.ID).Error)
 	require.Equal(t, model.PostStatusApproved, stored.Status)
+	status, response, _ = performJSON(t, reviewEngine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/review", post.ID),
+		map[string]any{"status": model.PostStatusRejected}, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizModerationNotPending, response.ErrorCode)
+	var manualCount int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("supersedes_id = ?", machine.ID).Count(&manualCount).Error)
+	require.EqualValues(t, 1, manualCount)
 }
 
 func testAdminCommentReviewAndRestore(
@@ -298,6 +387,15 @@ func testAdminCommentReviewAndRestore(
 	var manual model.ModerationRecord
 	require.NoError(t, gdb.Where("supersedes_id = ?", machine.ID).First(&manual).Error)
 	require.Equal(t, model.ModerationVerdictBlock, manual.Verdict)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/moderation-records/%d/review", machine.ID),
+		map[string]any{"verdict": model.ModerationVerdictPass}, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizConflict, response.ErrorCode)
+	var manualCount int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("supersedes_id = ?", machine.ID).Count(&manualCount).Error)
+	require.EqualValues(t, 1, manualCount)
 	var deleted model.Comment
 	require.NoError(t, gdb.First(&deleted, comment.Comment.ID).Error)
 	require.Equal(t, model.DeleteReasonModeration, *deleted.DeletedReason)
@@ -326,6 +424,26 @@ func testAdminCommentReviewAndRestore(
 	}
 	require.NoError(t, json.Unmarshal(audit.RawResponse, &auditData))
 	require.Equal(t, actors.Admin.User.ID, auditData.ReviewerID)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/comments/%d/restore", comment.Comment.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode)
+	var restoreAudits int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("comment_id = ? AND provider = ?", comment.Comment.ID, model.ModerationProvider("admin_restore")).
+		Count(&restoreAudits).Error)
+	require.EqualValues(t, 1, restoreAudits)
+
+	nonModeration := createComment(t, engine, actors.Commenter.Token, post.ID,
+		map[string]any{"content": "管理员删除的评论不可按误杀恢复"})
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/comments/%d", nonModeration.Comment.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/comments/%d/restore", nonModeration.Comment.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode)
 }
 
 func testAdminListsAndDeletion(
@@ -407,6 +525,25 @@ func testAdminPostRestore(
 	var audit model.ModerationRecord
 	require.NoError(t, gdb.First(&audit, restored.ModerationRecordID).Error)
 	require.Equal(t, model.ModerationProvider("admin_restore"), audit.Provider)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/restore", post.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode)
+	var restoreAudits int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("post_id = ? AND provider = ?", post.ID, model.ModerationProvider("admin_restore")).
+		Count(&restoreAudits).Error)
+	require.EqualValues(t, 1, restoreAudits)
+
+	nonModeration := createPost(t, engine, actors.Author.Token,
+		sharePostPayload(fixture, "管理员删除不可按误杀恢复", []string{"非误杀"}))
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", nonModeration.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/restore", nonModeration.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode)
 
 	asset := createPostAsset(t, gdb, actors.Author.User.ID, "admin-unsafe-restore")
 	payload := sharePostPayload(fixture, "违规图片不可恢复", []string{"图片恢复"})
@@ -439,11 +576,17 @@ func registerAdminActors(
 		Ordinary: register("admin-ordinary", "普通用户"), Permanent: register("admin-permanent", "永久封禁用户"),
 		Timed: register("admin-timed", "限时封禁用户"), Illegal: register("admin-illegal", "非法组合用户"),
 		Author: register("admin-author", "内容作者"), Commenter: register("admin-commenter", "评论作者"),
+		SelfAdmin: register("admin-self-ban", "自封管理员"),
+		SuperUser: register("admin-super-target", "被封超级管理员"),
 	}
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.Super.User.ID).
 		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.Admin.User.ID).
 		UpdateColumn("role", model.UserRoleAdmin).Error)
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.SelfAdmin.User.ID).
+		UpdateColumn("role", model.UserRoleAdmin).Error)
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.SuperUser.User.ID).
+		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
 	return actors
 }
 
@@ -505,4 +648,23 @@ func moderationRecordPresent(records []service.AdminModerationView, id uint64) b
 		}
 	}
 	return false
+}
+
+func requireAdminFieldError(
+	t *testing.T,
+	response testAPIResponse,
+	field string,
+	code apierr.FieldCode,
+) {
+	t.Helper()
+	var data struct {
+		Errors []apierr.FieldError `json:"errors"`
+	}
+	decodeData(t, response, &data)
+	for _, item := range data.Errors {
+		if item.Field == field && item.Code == code {
+			return
+		}
+	}
+	t.Fatalf("未找到字段错误 field=%s code=%s，实际=%+v", field, code, data.Errors)
 }
