@@ -3,7 +3,6 @@ package router_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +21,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
 
 type postFixture struct {
@@ -31,13 +31,10 @@ type postFixture struct {
 	Flavors []model.Flavor
 }
 
-type failingModerator struct{}
-
-func (failingModerator) Review(
-	context.Context,
-	service.ModerationRequest,
-) (service.ModerationResult, error) {
-	return service.ModerationResult{}, errors.New("forced moderation failure")
+func failingModerator() *testutil.MockModeration {
+	mock := testutil.NewMockModeration()
+	mock.SetDefaultContent(testutil.ContentHTTPFailure(http.StatusInternalServerError))
+	return mock
 }
 
 func TestPostDomainAgainstPostgres(t *testing.T) {
@@ -388,7 +385,7 @@ func testModerationFailureRollback(
 	fixture postFixture,
 ) {
 	t.Helper()
-	postService := service.NewPostService(failingModerator{})
+	postService := service.NewPostService(failingModerator())
 	input := createPostInput(t, fixture, "审核失败整事务回滚", []string{"审核回滚"}, nil)
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		_, createErr := postService.Create(ctx, input, author.User.ID)
@@ -538,17 +535,13 @@ func testConcurrentImageReferences(
 
 func loadPostFixture(t *testing.T, gdb *gorm.DB) postFixture {
 	t.Helper()
-	var fixture postFixture
-	require.NoError(t, gdb.Where("is_active").Order("id").First(&fixture.Canteen).Error)
-	require.NoError(t, gdb.Where("is_active").Order("id").First(&fixture.Cuisine).Error)
-	require.NoError(t, gdb.Where("is_active").Order("id").Limit(2).Find(&fixture.Flavors).Error)
-	require.Len(t, fixture.Flavors, 2)
-	floor := "1F"
-	fixture.Window = model.CanteenWindow{
-		CanteenID: fixture.Canteen.ID, Name: "Post 集成测试窗口", Floor: &floor, IsActive: true,
+	dictionaries := testutil.NewFixtures(t, gdb).CreateDictionaries()
+	return postFixture{
+		Canteen: dictionaries.Canteen,
+		Window:  dictionaries.Window,
+		Cuisine: dictionaries.Cuisine,
+		Flavors: dictionaries.Flavors,
 	}
-	require.NoError(t, gdb.Create(&fixture.Window).Error)
-	return fixture
 }
 
 func registerPostTestUser(
@@ -561,7 +554,7 @@ func registerPostTestUser(
 	t.Helper()
 	sendCode(t, engine, email)
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": sender.code(email),
+		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
 		"name": name, "device_label": "Post 集成测试",
 	}, "")
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)

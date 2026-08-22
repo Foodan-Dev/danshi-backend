@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,85 +25,34 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
 
 const moderationCallbackToken = "integration-callback-token"
 
-type fakeImageStorage struct {
-	mu            sync.Mutex
-	objects       map[string]int64
-	presigns      []service.StoragePresignRequest
-	deleteStarted chan struct{}
-	releaseDelete <-chan struct{}
-}
+type fakeImageStorage = testutil.MockImageStorage
 
 func newFakeImageStorage() *fakeImageStorage {
-	return &fakeImageStorage{objects: make(map[string]int64)}
+	storage := testutil.NewMockImageStorage()
+	storage.SetAutoMaterialize(true)
+	storage.SetUploadURLBase("https://cos.example.test/")
+	storage.SetPublicURLBase("https://img.example.test/")
+	return storage
 }
 
-func (s *fakeImageStorage) PresignPut(
-	_ context.Context,
-	request service.StoragePresignRequest,
-) (service.StorageUploadTicket, error) {
-	s.mu.Lock()
-	s.objects[request.ObjectKey] = request.ContentLength
-	s.presigns = append(s.presigns, request)
-	s.mu.Unlock()
-	return service.StorageUploadTicket{
-		UploadURL: "https://cos.example.test/" + url.PathEscape(request.ObjectKey),
-		ExpiresAt: time.Now().UTC().Add(request.TTL),
-	}, nil
+func lastPresign(t *testing.T, storage *fakeImageStorage) service.StoragePresignRequest {
+	t.Helper()
+	request, ok := storage.LastPresign()
+	require.True(t, ok, "预期至少一次 presign 调用")
+	return request
 }
 
-func (s *fakeImageStorage) HeadObject(
-	_ context.Context,
-	objectKey string,
-) (service.StorageObjectMeta, error) {
-	s.mu.Lock()
-	size, exists := s.objects[objectKey]
-	s.mu.Unlock()
-	return service.StorageObjectMeta{Exists: exists, ContentLength: size}, nil
-}
-
-func (s *fakeImageStorage) DeleteObject(_ context.Context, objectKey string) error {
-	if s.deleteStarted != nil {
-		select {
-		case s.deleteStarted <- struct{}{}:
-		default:
-		}
-	}
-	if s.releaseDelete != nil {
-		<-s.releaseDelete
-	}
-	s.mu.Lock()
-	delete(s.objects, objectKey)
-	s.mu.Unlock()
-	return nil
-}
-
-func (*fakeImageStorage) PublicURL(objectKey string) (string, error) {
-	return "https://img.example.test/" + objectKey, nil
-}
-
-func (s *fakeImageStorage) lastPresign() service.StoragePresignRequest {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.presigns[len(s.presigns)-1]
-}
-
-type fixedAsyncImageModerator struct {
-	jobID string
-}
-
-func (m fixedAsyncImageModerator) SubmitImage(
-	context.Context,
-	service.ImageModerationRequest,
-) (service.ImageModerationSubmission, error) {
-	jobID := m.jobID
-	return service.ImageModerationSubmission{
-		Provider:      model.ModerationProviderTencentCI,
-		ProviderJobID: &jobID,
-	}, nil
+func fixedAsyncImageModerator(jobID string) *testutil.MockModeration {
+	mock := testutil.NewMockModeration()
+	outcome := testutil.ImagePending(jobID)
+	outcome.Submission.Provider = model.ModerationProviderTencentCI
+	mock.SetDefaultImage(outcome)
+	return mock
 }
 
 func TestUploadModerationAgainstPostgres(t *testing.T) {
@@ -112,7 +60,13 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	storage := newFakeImageStorage()
 	sender := newCaptureEmailSender()
 	cfg := uploadModerationTestConfig()
-	engine := uploadModerationEngine(cfg, database, sender, storage)
+	imageModerator := testutil.NewMockModeration()
+	imageModerator.ProgramImage(
+		testutil.ImageModerationRule{Call: 1, Outcome: tencentPending("ci-md5-job")},
+		testutil.ImageModerationRule{Call: 2, Outcome: tencentPending("ci-image-pass-job")},
+		testutil.ImageModerationRule{Call: 3, Outcome: tencentPending("ci-image-early-job")},
+	)
+	engine := uploadModerationEngine(cfg, database, sender, storage, imageModerator)
 	author := registerPostTestUser(
 		t, engine, sender, "upload-moderation@fdueat.com", "上传审核用户",
 	)
@@ -128,6 +82,10 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 
 	t.Run("pending image callback approves post exactly once", func(t *testing.T) {
 		testImageCallbackApprovesPost(t, engine, gdb, storage, author, fixture)
+	})
+
+	t.Run("image callback before post creation publishes immediately", func(t *testing.T) {
+		testImageCallbackBeforePostCreation(t, engine, gdb, author, fixture)
 	})
 
 	t.Run("complete loses expiry race without resurrecting asset", func(t *testing.T) {
@@ -152,6 +110,7 @@ func uploadModerationEngine(
 	database *dbinfra.DB,
 	sender service.VerificationEmailSender,
 	storage service.ImageStorage,
+	imageModerator service.ImageModerator,
 ) *server.Hertz {
 	engine := server.New(
 		server.WithHandleMethodNotAllowed(true),
@@ -161,10 +120,62 @@ func uploadModerationEngine(
 	router.Register(engine, router.Deps{
 		Config: cfg, DB: database, Log: log, EmailSender: sender,
 		ContentModerator: service.DirectPassContentModerator{}, ImageStorage: storage,
-		ImageModerator:    fixedAsyncImageModerator{jobID: "ci-image-pass-job"},
+		ImageModerator:    imageModerator,
 		ModerationAlerter: service.DiscardModerationAlerter{},
 	})
 	return engine
+}
+
+func testImageCallbackBeforePostCreation(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	presign := presignImage(t, engine, author.Token, 3072)
+	completePath := fmt.Sprintf("/api/v2/uploads/%d/complete", presign.UploadID)
+	status, response, _ := performJSON(
+		t, engine, http.MethodPost, completePath, nil, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var completed service.UploadCompleteResult
+	decodeData(t, response, &completed)
+
+	callbackBody := map[string]any{
+		"EventName": "ReviewImage",
+		"JobsDetail": map[string]any{
+			"JobId": "ci-image-early-job", "State": "Success",
+			"Object": completed.ObjectKey,
+			"DataId": fmt.Sprintf("image_asset:%d", completed.UploadID),
+			"Result": 0, "Score": 99,
+		},
+	}
+	callbackPath := "/api/v2/moderation/tencent-ci/callback?token=" +
+		url.QueryEscape(moderationCallbackToken)
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, callbackPath, callbackBody, "",
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var applied service.ImageModerationApplyResult
+	decodeData(t, response, &applied)
+	require.False(t, applied.Duplicate)
+	require.Zero(t, applied.ApprovedPosts, "回调早于帖子创建时还没有帖子可补发布")
+
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
+	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
+	payload := sharePostPayload(fixture, "图片先审完再建帖", []string{"早回调"})
+	payload["images"] = []string{completed.PublicURL}
+	post := createPost(t, engine, author.Token, payload)
+	require.Equal(t, model.PostStatusApproved, post.Status)
+}
+
+func tencentPending(jobID string) testutil.ImageModerationOutcome {
+	outcome := testutil.ImagePending(jobID)
+	outcome.Submission.Provider = model.ModerationProviderTencentCI
+	return outcome
 }
 
 func testUploadModerationRouteInventory(t *testing.T, engine *server.Hertz) {
@@ -204,7 +215,7 @@ func testUploadContentMD5(
 		t, engine, http.MethodPost, "/api/v2/uploads/presign", payload, token,
 	)
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
-	request := storage.lastPresign()
+	request := lastPresign(t, storage)
 	require.Equal(t, payload["content_md5"], request.ContentMD5)
 	require.EqualValues(t, 2048, request.ContentLength)
 	require.Equal(t, "image/jpeg", request.ContentType)
@@ -231,7 +242,7 @@ func testImageCallbackApprovesPost(
 	var completed service.UploadCompleteResult
 	decodeData(t, response, &completed)
 	require.Equal(t, model.ImageStatusReady, completed.Status)
-	require.Equal(t, storage.lastPresign().ObjectKey, completed.ObjectKey)
+	require.Equal(t, lastPresign(t, storage).ObjectKey, completed.ObjectKey)
 
 	var asset model.ImageAsset
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
@@ -323,7 +334,7 @@ func testCompleteExpiryRace(
 	defer cancel()
 	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
 	uploads := service.NewUploadService(
-		storage, fixedAsyncImageModerator{jobID: "race-job"}, moderation,
+		storage, fixedAsyncImageModerator("race-job"), moderation,
 		10*1024*1024, 10*time.Minute,
 	)
 	var presign *service.UploadPresignResult
@@ -337,14 +348,8 @@ func testCompleteExpiryRace(
 	})
 	require.NoError(t, err)
 
-	deleteStarted := make(chan struct{}, 1)
 	releaseDelete := make(chan struct{})
-	storage.deleteStarted = deleteStarted
-	storage.releaseDelete = releaseDelete
-	defer func() {
-		storage.deleteStarted = nil
-		storage.releaseDelete = nil
-	}()
+	storage.QueueDelete(testutil.StorageDeleteBehavior{Release: releaseDelete})
 
 	expireResult := make(chan error, 1)
 	go func() {
@@ -356,11 +361,7 @@ func testCompleteExpiryRace(
 			return expireErr
 		})
 	}()
-	select {
-	case <-deleteStarted:
-	case <-ctx.Done():
-		t.Fatal("过期清理未进入对象删除阶段")
-	}
+	require.True(t, storage.WaitForDeleteCalls(ctx, 1), "过期清理未进入对象删除阶段")
 
 	completeResult := make(chan error, 1)
 	go func() {

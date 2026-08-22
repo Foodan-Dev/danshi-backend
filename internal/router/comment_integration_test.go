@@ -17,6 +17,7 @@ import (
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
 
 type commentActors struct {
@@ -26,18 +27,10 @@ type commentActors struct {
 	Mentioned  service.AuthResult
 }
 
-type fixedVerdictModerator struct {
-	verdict model.ModerationVerdict
-}
-
-func (m fixedVerdictModerator) Review(
-	context.Context,
-	service.ModerationRequest,
-) (service.ModerationResult, error) {
-	return service.ModerationResult{
-		Provider: model.ModerationProvider("comment_test"), Verdict: m.verdict,
-		Labels: []string{},
-	}, nil
+func fixedVerdictModerator(verdict model.ModerationVerdict) *testutil.MockModeration {
+	mock := testutil.NewMockModeration()
+	mock.SetDefaultContent(testutil.ContentVerdict(verdict, nil, nil))
+	return mock
 }
 
 func TestCommentDomainAgainstPostgres(t *testing.T) {
@@ -372,9 +365,7 @@ func testCommentModerationReview(
 	t.Helper()
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "评论复核帖子", []string{"评论复核"}))
-	commentService := service.NewCommentService(fixedVerdictModerator{
-		verdict: model.ModerationVerdictReview,
-	})
+	commentService := service.NewCommentService(fixedVerdictModerator(model.ModerationVerdictReview))
 	var result *service.CommentMutationResult
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		var createErr error
@@ -405,9 +396,7 @@ func testCommentModerationBlock(
 	t.Helper()
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "评论违规帖子", []string{"评论违规"}))
-	commentService := service.NewCommentService(fixedVerdictModerator{
-		verdict: model.ModerationVerdictBlock,
-	})
+	commentService := service.NewCommentService(fixedVerdictModerator(model.ModerationVerdictBlock))
 	var result *service.CommentMutationResult
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		var createErr error

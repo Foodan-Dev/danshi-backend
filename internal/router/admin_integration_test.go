@@ -41,9 +41,9 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 	engine := authTestEngine(cfg, database, sender)
 	actors := registerAdminActors(t, engine, sender, gdb)
 	fixture := loadPostFixture(t, gdb)
-	reviewEngine := adminTestEngine(cfg, database, sender, fixedVerdictModerator{
-		verdict: model.ModerationVerdictReview,
-	})
+	reviewEngine := adminTestEngine(
+		cfg, database, sender, fixedVerdictModerator(model.ModerationVerdictReview),
+	)
 
 	t.Run("route inventory and role guards", func(t *testing.T) {
 		testAdminRouteInventory(t, engine)

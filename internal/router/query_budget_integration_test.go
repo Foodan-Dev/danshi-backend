@@ -105,9 +105,9 @@ func seedQueryBudgetFixture(
 	t.Helper()
 	actors := registerAdminActors(t, engine, sender, gdb)
 	postFixture := loadPostFixture(t, gdb)
-	reviewEngine := adminTestEngine(authTestConfig(), database, sender, fixedVerdictModerator{
-		verdict: model.ModerationVerdictReview,
-	})
+	reviewEngine := adminTestEngine(
+		authTestConfig(), database, sender, fixedVerdictModerator(model.ModerationVerdictReview),
+	)
 	approved := make([]service.PostCreateResult, 0, 6)
 	for index := range 6 {
 		post := createPost(t, engine, actors.Author.Token, sharePostPayload(

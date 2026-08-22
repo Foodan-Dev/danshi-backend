@@ -232,9 +232,9 @@ func testUserModerationSemantics(
 ) {
 	t.Helper()
 	alerter := &captureUserModerationAlerter{}
-	reviewService := service.NewUserService(fixedVerdictModerator{
-		verdict: model.ModerationVerdictReview,
-	}, alerter)
+	reviewService := service.NewUserService(
+		fixedVerdictModerator(model.ModerationVerdictReview), alerter,
+	)
 	reviewName := "需人工复核昵称"
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		_, updateErr := reviewService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{
@@ -254,9 +254,9 @@ func testUserModerationSemantics(
 	require.EqualValues(t, 1, reviewCount)
 	require.Empty(t, alerter.all())
 
-	blockService := service.NewUserService(fixedVerdictModerator{
-		verdict: model.ModerationVerdictBlock,
-	}, alerter)
+	blockService := service.NewUserService(
+		fixedVerdictModerator(model.ModerationVerdictBlock), alerter,
+	)
 	blockBio := "机审违规但等待管理员处置"
 	err = database.RunInTx(context.Background(), func(ctx context.Context) error {
 		_, updateErr := blockService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{

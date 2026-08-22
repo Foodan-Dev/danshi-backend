@@ -3,7 +3,6 @@ package router_test
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,11 +19,7 @@ import (
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
@@ -37,6 +32,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/router"
 	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
 
 const (
@@ -44,73 +40,10 @@ const (
 	authFlowEmail     = "auth-flow@fdueat.com"
 )
 
-type captureEmailSender struct {
-	mu    sync.Mutex
-	codes map[string]string
-	count map[string]int
-}
+type captureEmailSender = testutil.MockEmailSender
 
 func newCaptureEmailSender() *captureEmailSender {
-	return &captureEmailSender{codes: make(map[string]string), count: make(map[string]int)}
-}
-
-func (s *captureEmailSender) SendRegistrationCode(
-	_ context.Context,
-	email string,
-	code string,
-) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.codes[email] = code
-	s.count[email]++
-	return nil
-}
-
-func (s *captureEmailSender) code(email string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.codes[email]
-}
-
-func (s *captureEmailSender) sends(email string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.count[email]
-}
-
-type failingEmailSender struct{}
-
-func (failingEmailSender) SendRegistrationCode(context.Context, string, string) error {
-	return errors.New("test delivery failure")
-}
-
-type timeoutEmailSender struct{}
-
-func (timeoutEmailSender) SendRegistrationCode(context.Context, string, string) error {
-	return context.DeadlineExceeded
-}
-
-type blockingEmailSender struct {
-	started chan<- struct{}
-	release <-chan struct{}
-}
-
-func (s blockingEmailSender) SendRegistrationCode(
-	ctx context.Context,
-	_ string,
-	_ string,
-) error {
-	select {
-	case s.started <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case <-s.release:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return testutil.NewMockEmailSender()
 }
 
 type testAPIResponse struct {
@@ -143,7 +76,9 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("verification failure rolls back", func(t *testing.T) {
-		failingEngine := authTestEngine(cfg, database, failingEmailSender{})
+		failingSender := testutil.NewMockEmailSender()
+		failingSender.SetDefault(testutil.EmailFailure(errors.New("test delivery failure")))
+		failingEngine := authTestEngine(cfg, database, failingSender)
 		status, response, _ := performJSON(t, failingEngine, http.MethodPost,
 			"/api/v2/auth/email-verification-codes", map[string]any{"email": "delivery-fail@fdueat.com"}, "")
 		require.Equal(t, http.StatusServiceUnavailable, status)
@@ -157,7 +92,9 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("verification timeout returns 503 and rolls back", func(t *testing.T) {
-		timeoutEngine := authTestEngine(cfg, database, timeoutEmailSender{})
+		timeoutSender := testutil.NewMockEmailSender()
+		timeoutSender.SetDefault(testutil.EmailFailure(context.DeadlineExceeded))
+		timeoutEngine := authTestEngine(cfg, database, timeoutSender)
 		status, response, _ := performJSON(t, timeoutEngine, http.MethodPost,
 			"/api/v2/auth/email-verification-codes", map[string]any{"email": "timeout@fdueat.com"}, "")
 		require.Equal(t, http.StatusServiceUnavailable, status)
@@ -195,7 +132,7 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
 		require.NotNil(t, challenge.ConsumedAt, "用户、会话与验证码消费必须一并提交")
 		require.Len(t, challenge.CodeDigest, 64)
-		require.NotEqual(t, sender.code(email), challenge.CodeDigest, "验证码明文不得落库")
+		require.NotEqual(t, capturedCode(t, sender, email), challenge.CodeDigest, "验证码明文不得落库")
 		claims, err := jwtx.NewCodec(integrationSecret).Parse(register.RefreshToken, jwtx.TypeRefresh)
 		require.NoError(t, err)
 		var registeredSession model.UserSession
@@ -299,13 +236,14 @@ func testVerificationInFlightLimit(
 	sqlDB.SetMaxOpenConns(maxInFlight)
 	t.Cleanup(func() { sqlDB.SetMaxOpenConns(previousMaxOpen) })
 
-	started := make(chan struct{}, maxInFlight)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(unblock)
 
-	engine := authTestEngine(cfg, database, blockingEmailSender{started: started, release: release})
+	blockingSender := testutil.NewMockEmailSender()
+	blockingSender.SetDefault(testutil.EmailBlocked(release))
+	engine := authTestEngine(cfg, database, blockingSender)
 	results := make(chan asyncRequestResult, maxInFlight)
 	for index := range maxInFlight {
 		email := "in-flight-" + strconv.Itoa(index) + "@fdueat.com"
@@ -321,15 +259,10 @@ func testVerificationInFlightLimit(
 		}()
 	}
 
-	allStarted := time.NewTimer(5 * time.Second)
-	defer allStarted.Stop()
-	for range maxInFlight {
-		select {
-		case <-started:
-		case <-allStarted.C:
-			require.FailNow(t, "5 个发信请求未能全部进入阻塞 sender")
-		}
-	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer waitCancel()
+	require.True(t, blockingSender.WaitForAttempts(waitCtx, maxInFlight),
+		"5 个发信请求未能全部进入阻塞 sender")
 	inUseBeforeReject := sqlDB.Stats().InUse
 	require.Equal(t, maxInFlight, inUseBeforeReject, "阻塞 sender 时每个请求都应持有一个事务连接")
 
@@ -552,7 +485,7 @@ func testSendRateLimit(t *testing.T, engine *server.Hertz, sender *captureEmailS
 	require.Equal(t, http.StatusTooManyRequests, status)
 	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
 	require.NotEmpty(t, raw.Header().Peek("Retry-After"))
-	require.Equal(t, 1, sender.sends(email))
+	sender.RequireDeliveryCount(t, email, 1)
 }
 
 func testRegisteredEmailRateLimit(
@@ -575,7 +508,7 @@ func testRegisteredEmailRateLimit(
 	require.Equal(t, http.StatusTooManyRequests, status)
 	require.Equal(t, apierr.BizVerifyCodeTooMany, response.ErrorCode)
 	require.NotEmpty(t, raw.Header().Peek("Retry-After"))
-	require.Zero(t, sender.sends(email), "已注册邮箱绝不能收到验证码投递")
+	sender.RequireNoDelivery(t, email)
 
 	var challenge model.EmailVerificationCode
 	require.NoError(t, gdb.Where("email = ?", email).First(&challenge).Error)
@@ -605,7 +538,7 @@ func testFailedAttemptPersistence(
 	require.EqualValues(t, 2, challenge.FailedAttempts, "4xx 不能回滚验证码失败安全计数")
 
 	status, _, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": sender.code(email),
+		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
 	}, "")
 	require.Equal(t, http.StatusOK, status)
 }
@@ -635,36 +568,8 @@ func authTestEngine(
 
 func openAuthPostgres(t *testing.T) (*gorm.DB, *dbinfra.DB) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	t.Cleanup(cancel)
-
-	container, err := tcpostgres.Run(
-		ctx,
-		"postgres:18",
-		tcpostgres.WithDatabase("danshi_auth_test"),
-		tcpostgres.WithUsername("postgres"),
-		tcpostgres.WithPassword("test"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	require.NoError(t, err)
-	testcontainers.CleanupContainer(t, container)
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-	sqlDB, err := sql.Open("pgx", dsn)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-	require.NoError(t, sqlDB.PingContext(ctx))
-	require.NoError(t, dbinfra.Up(ctx, sqlDB))
-
-	gdb, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
-		DisableAutomaticPing:                     true,
-		DisableForeignKeyConstraintWhenMigrating: true,
-		SkipDefaultTransaction:                   true,
-		Logger:                                   logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
-	return gdb, &dbinfra.DB{DB: gdb}
+	database := testutil.OpenPostgres(t, testutil.WithDatabaseName("danshi_auth_test"))
+	return database.GORM, database.DB
 }
 
 func sendCode(t *testing.T, engine *server.Hertz, email string) {
@@ -683,13 +588,20 @@ func registerUser(
 ) service.AuthResult {
 	t.Helper()
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": sender.code(email),
+		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
 		"name": "测试用户", "gender": "female", "device_label": device,
 	}, "")
 	require.Equal(t, http.StatusOK, status, "response=%s", response.Message)
 	var result service.AuthResult
 	decodeData(t, response, &result)
 	return result
+}
+
+func capturedCode(t *testing.T, sender *captureEmailSender, email string) string {
+	t.Helper()
+	code, ok := sender.LastCode(email)
+	require.True(t, ok, "邮箱 %s 没有成功投递的验证码", email)
+	return code
 }
 
 func loginUser(t *testing.T, engine *server.Hertz, device string) service.AuthResult {
