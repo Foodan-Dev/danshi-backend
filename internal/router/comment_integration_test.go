@@ -73,8 +73,12 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentHistoryFailureRollback(t, engine, gdb, actors, fixture)
 	})
 
-	t.Run("review and block soft delete after moderation", func(t *testing.T) {
-		testCommentModerationRemoval(t, engine, gdb, database, actors, fixture)
+	t.Run("review remains visible and records moderation", func(t *testing.T) {
+		testCommentModerationReview(t, engine, gdb, database, actors, fixture)
+	})
+
+	t.Run("block soft deletes after moderation", func(t *testing.T) {
+		testCommentModerationBlock(t, engine, gdb, database, actors, fixture)
 	})
 
 	t.Run("soft delete preserves replies and counters", func(t *testing.T) {
@@ -361,7 +365,7 @@ func testCommentHistoryFailureRollback(
 	require.Zero(t, failedCreateCount, "revision 1 写入失败必须回滚评论主体")
 }
 
-func testCommentModerationRemoval(
+func testCommentModerationReview(
 	t *testing.T,
 	engine *server.Hertz,
 	gdb *gorm.DB,
@@ -371,36 +375,77 @@ func testCommentModerationRemoval(
 ) {
 	t.Helper()
 	post := createPost(t, engine, actors.PostAuthor.Token,
-		sharePostPayload(fixture, "评论审核帖子", []string{"评论审核"}))
-	for _, verdict := range []model.ModerationVerdict{
-		model.ModerationVerdictReview, model.ModerationVerdictBlock,
-	} {
-		commentService := service.NewCommentService(fixedVerdictModerator{verdict: verdict})
-		var result *service.CommentMutationResult
-		err := database.RunInTx(context.Background(), func(ctx context.Context) error {
-			var createErr error
-			result, createErr = commentService.Create(ctx, post.ID,
-				service.CreateCommentInput{Content: "先发后审内容 " + string(verdict)},
-				actors.Commenter.User.ID)
-			return createErr
-		})
-		require.NoError(t, err)
-		require.True(t, result.Comment.IsDeleted)
-		require.Equal(t, "该评论已删除", result.Comment.Content)
-		var stored model.Comment
-		require.NoError(t, gdb.First(&stored, result.Comment.ID).Error)
-		require.NotNil(t, stored.DeletedAt)
-		require.Equal(t, model.DeleteReasonModeration, *stored.DeletedReason)
-		require.Nil(t, stored.DeletedBy)
-		require.NotEqual(t, "该评论已删除", stored.Content, "软删除不得清空或覆盖原文")
-		var historyCount, moderationCount int64
-		require.NoError(t, gdb.Model(&model.CommentHistory{}).
-			Where("comment_id = ?", stored.ID).Count(&historyCount).Error)
-		require.NoError(t, gdb.Model(&model.ModerationRecord{}).
-			Where("comment_id = ? AND verdict = ?", stored.ID, verdict).Count(&moderationCount).Error)
-		require.EqualValues(t, 1, historyCount)
-		require.EqualValues(t, 1, moderationCount)
-	}
+		sharePostPayload(fixture, "评论复核帖子", []string{"评论复核"}))
+	commentService := service.NewCommentService(fixedVerdictModerator{
+		verdict: model.ModerationVerdictReview,
+	})
+	var result *service.CommentMutationResult
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var createErr error
+		result, createErr = commentService.Create(ctx, post.ID,
+			service.CreateCommentInput{Content: "需人工复核但保持可见"}, actors.Commenter.User.ID)
+		return createErr
+	})
+	require.NoError(t, err)
+	require.False(t, result.Comment.IsDeleted)
+	require.Equal(t, "需人工复核但保持可见", result.Comment.Content)
+
+	var stored model.Comment
+	require.NoError(t, gdb.First(&stored, result.Comment.ID).Error)
+	require.Nil(t, stored.DeletedAt)
+	require.Nil(t, stored.DeletedReason)
+	require.Nil(t, stored.DeletedBy)
+	assertCommentModerationEvidence(t, gdb, stored.ID, model.ModerationVerdictReview)
+}
+
+func testCommentModerationBlock(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "评论违规帖子", []string{"评论违规"}))
+	commentService := service.NewCommentService(fixedVerdictModerator{
+		verdict: model.ModerationVerdictBlock,
+	})
+	var result *service.CommentMutationResult
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var createErr error
+		result, createErr = commentService.Create(ctx, post.ID,
+			service.CreateCommentInput{Content: "机审违规内容"}, actors.Commenter.User.ID)
+		return createErr
+	})
+	require.NoError(t, err)
+	require.True(t, result.Comment.IsDeleted)
+	require.Equal(t, "该评论已删除", result.Comment.Content)
+
+	var stored model.Comment
+	require.NoError(t, gdb.First(&stored, result.Comment.ID).Error)
+	require.NotNil(t, stored.DeletedAt)
+	require.Equal(t, model.DeleteReasonModeration, *stored.DeletedReason)
+	require.Nil(t, stored.DeletedBy)
+	require.Equal(t, "机审违规内容", stored.Content, "软删除不得清空或覆盖原文")
+	assertCommentModerationEvidence(t, gdb, stored.ID, model.ModerationVerdictBlock)
+}
+
+func assertCommentModerationEvidence(
+	t *testing.T,
+	gdb *gorm.DB,
+	commentID uint64,
+	verdict model.ModerationVerdict,
+) {
+	t.Helper()
+	var historyCount, moderationCount int64
+	require.NoError(t, gdb.Model(&model.CommentHistory{}).
+		Where("comment_id = ?", commentID).Count(&historyCount).Error)
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("comment_id = ? AND verdict = ?", commentID, verdict).Count(&moderationCount).Error)
+	require.EqualValues(t, 1, historyCount)
+	require.EqualValues(t, 1, moderationCount)
 }
 
 func testCommentSoftDelete(

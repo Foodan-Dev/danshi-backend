@@ -189,8 +189,9 @@ type PostHistoryList struct {
 
 // PostService 实现 Post 域业务协议。
 type PostService struct {
-	moderator ContentModerator
-	posts     repository.PostRepository
+	moderator     ContentModerator
+	posts         repository.PostRepository
+	notifications repository.NotificationRepository
 }
 
 // NewPostService 创建帖子服务。
@@ -285,11 +286,22 @@ func (s *PostService) Histories(
 
 // Like 幂等点赞并返回触发器维护后的计数。
 func (s *PostService) Like(ctx context.Context, postID, userID uint64) (*PostLikeResult, error) {
-	if err := s.ensureInteractive(ctx, postID); err != nil {
+	post, err := s.interactivePost(ctx, postID)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.posts.Like(ctx, userID, postID); err != nil {
+	created, err := s.posts.Like(ctx, userID, postID)
+	if err != nil {
 		return nil, apierr.Internal(err)
+	}
+	if created && post.AuthorID != userID {
+		notification := &model.Notification{
+			RecipientID: post.AuthorID, SenderID: userID, Type: model.NotificationTypeLikePost,
+			RelatedPostID: &post.ID,
+		}
+		if err := s.notifications.Create(ctx, notification); err != nil {
+			return nil, apierr.Internal(err)
+		}
 	}
 	likeCount, _, err := s.posts.Counters(ctx, postID)
 	if err != nil {
@@ -370,17 +382,22 @@ func (s *PostService) visibleRecord(
 }
 
 func (s *PostService) ensureInteractive(ctx context.Context, postID uint64) error {
+	_, err := s.interactivePost(ctx, postID)
+	return err
+}
+
+func (s *PostService) interactivePost(ctx context.Context, postID uint64) (*repository.PostRecord, error) {
 	record, err := s.posts.FindByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
-		return repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
 	if record.DeletedAt != nil {
-		return apierr.NotFound(apierr.BizPostDeleted, "帖子")
+		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
 	if record.Status != model.PostStatusApproved {
-		return apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
+		return nil, apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
 	}
-	return nil
+	return record, nil
 }
 
 func (s *PostService) loadRelations(

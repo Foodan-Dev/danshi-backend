@@ -265,7 +265,7 @@ func (s *CommentService) moderateComment(
 	if err := s.comments.CreateModerationRecord(ctx, record); err != nil {
 		return false, apierr.Internal(err)
 	}
-	if result.Verdict == model.ModerationVerdictPass {
+	if result.Verdict != model.ModerationVerdictBlock {
 		return false, nil
 	}
 	if err := s.comments.SoftDelete(

@@ -250,9 +250,11 @@ func (PostRepository) CreateModerationRecord(ctx context.Context, record *model.
 	return db.FromContext(ctx).Create(record).Error
 }
 
-// Like 幂等创建点赞动作，计数器由数据库触发器维护。
-func (PostRepository) Like(ctx context.Context, userID, postID uint64) error {
-	return UpsertAssociation(ctx, &model.PostLike{UserID: userID, PostID: postID})
+// Like 幂等创建点赞动作，并返回本次是否真的插入了新行。
+func (PostRepository) Like(ctx context.Context, userID, postID uint64) (bool, error) {
+	result := db.FromContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&model.PostLike{UserID: userID, PostID: postID})
+	return result.RowsAffected == 1, result.Error
 }
 
 // Unlike 幂等物理删除点赞动作。

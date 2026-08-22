@@ -38,6 +38,8 @@ type Deps struct {
 	EmailSender service.VerificationEmailSender
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
 	ContentModerator service.ContentModerator
+	// UserModerationAlerter 接收昵称/简介 block 告警；具体渠道由后续 moderation 域装配。
+	UserModerationAlerter service.UserModerationAlerter
 }
 
 // Register 装配全部路由。
@@ -64,10 +66,10 @@ func Register(h *server.Hertz, d Deps) {
 	// 由 P2 逐域补全，参见 docs/go-rewrite-plan.md §12 的 P2 表。
 	//
 	registerAuth(api, d)
-	//	registerUser(api, d)
+	registerUser(api, d)
 	registerPost(api, d)
 	registerComment(api, d)
-	//	registerNotification(api, d)
+	registerNotification(api, d)
 	//	registerSearch(api, d)
 	//	registerUpload(api, d)
 	//	registerConfig(api, d)

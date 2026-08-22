@@ -72,13 +72,14 @@ const (
 
 	// 内容
 
-	BizPostNotFound      BizCode = "post_not_found"
-	BizPostNotPublished  BizCode = "post_not_published" // 草稿/待审/已驳回，对当前用户不可见
-	BizPostDeleted       BizCode = "post_deleted"       // 已软删除
-	BizCommentNotFound   BizCode = "comment_not_found"
-	BizCommentDeleted    BizCode = "comment_deleted"
-	BizContentUnderAudit BizCode = "content_under_audit" // 先审后发，正在等审核结果
-	BizContentRejected   BizCode = "content_rejected"    // 审核判定违规
+	BizPostNotFound         BizCode = "post_not_found"
+	BizPostNotPublished     BizCode = "post_not_published" // 草稿/待审/已驳回，对当前用户不可见
+	BizPostDeleted          BizCode = "post_deleted"       // 已软删除
+	BizCommentNotFound      BizCode = "comment_not_found"
+	BizCommentDeleted       BizCode = "comment_deleted"
+	BizNotificationNotFound BizCode = "notification_not_found"
+	BizContentUnderAudit    BizCode = "content_under_audit" // 先审后发，正在等审核结果
+	BizContentRejected      BizCode = "content_rejected"    // 审核判定违规
 
 	// 词表与提议
 

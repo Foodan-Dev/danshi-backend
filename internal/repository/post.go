@@ -112,6 +112,51 @@ func (PostRepository) FindPage(
 	return records, pagination.NewMeta(params, total), nil
 }
 
+// FindAuthorPage 返回指定作者的未删除帖子；status 为 nil 时不限制审核状态。
+func (PostRepository) FindAuthorPage(
+	ctx context.Context,
+	authorID uint64,
+	status *model.PostStatus,
+	params pagination.Params,
+) ([]PostRecord, pagination.Meta, error) {
+	query := db.FromContext(ctx).Table("posts AS p").
+		Where("p.author_id = ? AND p.deleted_at IS NULL", authorID)
+	if status != nil {
+		query = query.Where("p.status = ?", *status)
+	}
+	return findScopedPostPage(query, params, "p.created_at DESC, p.id DESC")
+}
+
+// FindFavoritePage 返回用户按收藏时间倒序排列的已发布帖子。
+func (PostRepository) FindFavoritePage(
+	ctx context.Context,
+	userID uint64,
+	params pagination.Params,
+) ([]PostRecord, pagination.Meta, error) {
+	query := db.FromContext(ctx).Table("posts AS p").
+		Joins("JOIN favorites AS favorite_scope ON favorite_scope.post_id = p.id").
+		Where("favorite_scope.user_id = ? AND p.deleted_at IS NULL AND p.status = ?",
+			userID, model.PostStatusApproved)
+	return findScopedPostPage(query, params, "favorite_scope.created_at DESC, p.id DESC")
+}
+
+func findScopedPostPage(
+	query *gorm.DB,
+	params pagination.Params,
+	order string,
+) ([]PostRecord, pagination.Meta, error) {
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, pagination.Meta{}, err
+	}
+	records := make([]PostRecord, 0, params.Limit)
+	query = addPostRecordJoins(query).Select(postRecordColumns).Order(order)
+	if err := query.Offset(params.Offset()).Limit(params.Limit).Scan(&records).Error; err != nil {
+		return nil, pagination.Meta{}, err
+	}
+	return records, pagination.NewMeta(params, total), nil
+}
+
 // IncrementView 只更新浏览数，不触发 GORM autoUpdateTime。
 func (PostRepository) IncrementView(ctx context.Context, postID uint64) error {
 	result := db.FromContext(ctx).Exec(
