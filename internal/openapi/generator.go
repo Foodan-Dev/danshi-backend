@@ -17,7 +17,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
@@ -26,12 +25,22 @@ import (
 
 const bearerScheme = "BearerAuth"
 
+// CodeCatalog 是从 apierr/codes.go 解析出的稳定错误码全集。
+type CodeCatalog struct {
+	FieldCodes []string
+	BizCodes   []string
+}
+
 // Generate 生成、校验并以稳定格式编码 OpenAPI 3.0 文档。
 func Generate(
 	runtimeRoutes route.RoutesInfo,
 	declarations []apicontract.Route,
 	bindings []apicontract.TypedRoute,
+	codes CodeCatalog,
 ) ([]byte, error) {
+	if len(codes.FieldCodes) == 0 || len(codes.BizCodes) == 0 {
+		return nil, fmt.Errorf("错误码目录必须同时包含 FieldCode 与 BizCode")
+	}
 	if err := ValidateCoverage(runtimeRoutes, declarations, bindings); err != nil {
 		return nil, err
 	}
@@ -44,7 +53,7 @@ func Generate(
 		return nil, err
 	}
 
-	document := newDocument()
+	document := newDocument(codes)
 	for _, runtimeRoute := range runtimeRoutes {
 		key := apicontract.Key(runtimeRoute.Method, runtimeRoute.Path)
 		declaration := indexed[key]
@@ -52,7 +61,9 @@ func Generate(
 		if err != nil {
 			return nil, fmt.Errorf("转换路由 %s: %w", declaration.OperationKey(), err)
 		}
-		operation, err := typedOperation(declaration, typed[key], parameters, document.Components.Schemas)
+		operation, err := typedOperation(
+			declaration, typed[key], parameters, document.Components.Schemas, codes,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("生成路由 %s: %w", declaration.OperationKey(), err)
 		}
@@ -135,14 +146,14 @@ func HertzPath(hertzPath string) (string, []string, error) {
 	return strings.Join(segments, "/"), parameters, nil
 }
 
-func newDocument() *openapi3.T {
+func newDocument(codes CodeCatalog) *openapi3.T {
 	components := openapi3.NewComponents()
 	components.Schemas = openapi3.Schemas{
 		"Time":      {Value: openapi3.NewDateTimeSchema()},
 		"Amount":    {Value: openapi3.NewStringSchema()},
 		"Decimal":   {Value: openapi3.NewStringSchema()},
-		"BizCode":   {Value: codeEnumSchema(apierr.AllBizCodes())},
-		"FieldCode": {Value: codeEnumSchema(apierr.AllFieldCodes())},
+		"BizCode":   {Value: codeEnumSchema(codes.BizCodes)},
+		"FieldCode": {Value: codeEnumSchema(codes.FieldCodes)},
 	}
 	components.SecuritySchemes = openapi3.SecuritySchemes{
 		bearerScheme: {Value: openapi3.NewJWTSecurityScheme()},
@@ -164,6 +175,7 @@ func typedOperation(
 	binding apicontract.TypeBinding,
 	pathParameters []string,
 	schemas openapi3.Schemas,
+	codes CodeCatalog,
 ) (*openapi3.Operation, error) {
 	operation := openapi3.NewOperation()
 	operation.OperationID = operationID(declaration.Method, declaration.Path)
@@ -179,7 +191,9 @@ func typedOperation(
 		return nil, err
 	}
 	for _, status := range statuses {
-		responseSchema, err := responseEnvelopeSchema(declaration.Path, status, successData, schemas)
+		responseSchema, err := responseEnvelopeSchema(
+			declaration.Path, status, successData, schemas, codes,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -260,6 +274,7 @@ func responseEnvelopeSchema(
 	status int,
 	successData *openapi3.SchemaRef,
 	schemas openapi3.Schemas,
+	codes CodeCatalog,
 ) (*openapi3.Schema, error) {
 	data := successData
 	isError := status >= http.StatusBadRequest
@@ -289,19 +304,19 @@ func responseEnvelopeSchema(
 		WithPropertyRef("data", data)
 	required := []string{"code", "message", "data"}
 	if isError {
-		ensureCodeSchemas(schemas)
+		ensureCodeSchemas(schemas, codes)
 		schema.WithPropertyRef("error_code", &openapi3.SchemaRef{Ref: "#/components/schemas/BizCode"})
 		required = append(required, "error_code")
 	}
 	return schema.WithRequired(required), nil
 }
 
-func ensureCodeSchemas(schemas openapi3.Schemas) {
+func ensureCodeSchemas(schemas openapi3.Schemas, codes CodeCatalog) {
 	if schemas["BizCode"] == nil {
-		schemas["BizCode"] = &openapi3.SchemaRef{Value: codeEnumSchema(apierr.AllBizCodes())}
+		schemas["BizCode"] = &openapi3.SchemaRef{Value: codeEnumSchema(codes.BizCodes)}
 	}
 	if schemas["FieldCode"] == nil {
-		schemas["FieldCode"] = &openapi3.SchemaRef{Value: codeEnumSchema(apierr.AllFieldCodes())}
+		schemas["FieldCode"] = &openapi3.SchemaRef{Value: codeEnumSchema(codes.FieldCodes)}
 	}
 	if fieldError := schemas["FieldError"]; fieldError != nil && fieldError.Value != nil {
 		fieldError.Value.Properties["code"] = &openapi3.SchemaRef{Ref: "#/components/schemas/FieldCode"}
@@ -361,22 +376,6 @@ func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, s
 }
 
 func enumValues(valueType reflect.Type) []any {
-	if valueType == reflect.TypeFor[apierr.FieldCode]() {
-		codes := apierr.AllFieldCodes()
-		values := make([]any, 0, len(codes))
-		for _, code := range codes {
-			values = append(values, string(code))
-		}
-		return values
-	}
-	if valueType == reflect.TypeFor[apierr.BizCode]() {
-		codes := apierr.AllBizCodes()
-		values := make([]any, 0, len(codes))
-		for _, code := range codes {
-			values = append(values, string(code))
-		}
-		return values
-	}
 	values := map[reflect.Type][]any{
 		reflect.TypeFor[model.UserRole]():          {"user", "admin", "super_admin"},
 		reflect.TypeFor[model.Gender]():            {"male", "female", "other"},

@@ -1,7 +1,5 @@
 package apierr
 
-//go:generate go run ../../cmd/apierrcodes -input codes.go -output codes_gen.go
-
 // 本文件是**错误码的唯一清单**。加错误码只往这里加，不要在业务代码里散落字符串字面量。
 //
 // 分两类，用途完全不同：

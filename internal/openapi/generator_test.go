@@ -11,8 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 )
+
+var testCodeCatalog = CodeCatalog{
+	FieldCodes: []string{"required"},
+	BizCodes:   []string{"internal_error"},
+}
 
 func TestOpenAPIPathConvertsAndDeclaresParameters(t *testing.T) {
 	path, parameters, err := HertzPath("/api/v2/posts/:post_id/comments/:comment_id")
@@ -23,17 +27,21 @@ func TestOpenAPIPathConvertsAndDeclaresParameters(t *testing.T) {
 
 func TestMinimalEnvelopeSchemaShape(t *testing.T) {
 	schemas := openapi3.Schemas{}
-	schema, err := responseEnvelopeSchema("/example", http.StatusUnprocessableEntity, nil, schemas)
+	schema, err := responseEnvelopeSchema(
+		"/example", http.StatusUnprocessableEntity, nil, schemas, testCodeCatalog,
+	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"code", "message", "data", "error_code"}, schema.Required)
 	require.Contains(t, schema.Properties, "error_code")
 	require.Contains(t, schemas, "ErrorData")
 	require.Equal(t, "#/components/schemas/BizCode", schema.Properties["error_code"].Ref)
-	require.Equal(t, stringsOf(apierr.AllBizCodes()), schemas["BizCode"].Value.Enum)
+	require.Equal(t, stringsOf(testCodeCatalog.BizCodes), schemas["BizCode"].Value.Enum)
 	require.Equal(t, "#/components/schemas/FieldCode", schemas["FieldError"].Value.Properties["code"].Ref)
-	require.Equal(t, stringsOf(apierr.AllFieldCodes()), schemas["FieldCode"].Value.Enum)
+	require.Equal(t, stringsOf(testCodeCatalog.FieldCodes), schemas["FieldCode"].Value.Enum)
 
-	schema, err = responseEnvelopeSchema("/example", http.StatusInternalServerError, nil, schemas)
+	schema, err = responseEnvelopeSchema(
+		"/example", http.StatusInternalServerError, nil, schemas, testCodeCatalog,
+	)
 	require.NoError(t, err)
 	require.NotNil(t, schema)
 	require.Contains(t, schemas, "ErrorIDData")
@@ -107,7 +115,7 @@ func TestGenerateProducesValidImportableMinimum(t *testing.T) {
 			ID uint64 `json:"id"`
 		}{}},
 	}}
-	encoded, err := Generate(runtimeRoutes, declarations, bindings)
+	encoded, err := Generate(runtimeRoutes, declarations, bindings, testCodeCatalog)
 	require.NoError(t, err)
 
 	document, err := openapi3.NewLoader().LoadFromData(encoded)

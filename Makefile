@@ -43,12 +43,10 @@ test-convergence: ## 独立运行 P3 契约、查询预算与端点对账门禁�
 
 .PHONY: openapi
 openapi: ## 重新生成并检查 api/openapi.json 是否漂移
-	go run ./cmd/apierrcodes -check -input internal/apierr/codes.go -output internal/apierr/codes_gen.go
 	go run ./cmd/openapi -check -output api/openapi.json
 
 .PHONY: openapi-generate
 openapi-generate: ## 更新 api/openapi.json
-	go generate ./internal/apierr
 	go run ./cmd/openapi -output api/openapi.json
 
 .PHONY: cover

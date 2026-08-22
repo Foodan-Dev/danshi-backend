@@ -1,10 +1,8 @@
 package apierr
 
 import (
-	"bytes"
 	"errors"
 	"net/http"
-	"os"
 	"testing"
 
 	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
@@ -12,23 +10,12 @@ import (
 
 // 错误码是对外契约，重复的字面量意味着两种情形在前端无法区分。
 func TestErrorCodesAreUnique(t *testing.T) {
-	assertUniqueCodes(t, AllFieldCodes())
-	assertUniqueCodes(t, AllBizCodes())
-}
-
-// codes.go 新增常量后若未重新生成，单测与 make openapi 都必须失败。
-func TestGeneratedCodeCatalogMatchesCodesSource(t *testing.T) {
-	generated, err := apierrcodes.Generate("codes.go")
+	catalog, err := apierrcodes.Parse("codes.go")
 	if err != nil {
-		t.Fatalf("从 codes.go 生成错误码目录: %v", err)
+		t.Fatalf("解析 codes.go 错误码目录: %v", err)
 	}
-	committed, err := os.ReadFile("codes_gen.go")
-	if err != nil {
-		t.Fatalf("读取 codes_gen.go: %v", err)
-	}
-	if !bytes.Equal(committed, generated) {
-		t.Fatal("codes_gen.go 与 codes.go 不同步；请运行 go generate ./internal/apierr")
-	}
+	assertUniqueCodes(t, catalog.FieldCodes)
+	assertUniqueCodes(t, catalog.BizCodes)
 }
 
 // As 必须保证响应体里 error_code 永远有值，前端不需要判空。
@@ -99,9 +86,9 @@ func TestWithersDoNotMutate(t *testing.T) {
 	}
 }
 
-func assertUniqueCodes[T ~string](t *testing.T, codes []T) {
+func assertUniqueCodes(t *testing.T, codes []string) {
 	t.Helper()
-	seen := make(map[T]bool, len(codes))
+	seen := make(map[string]bool, len(codes))
 	for _, code := range codes {
 		if code == "" {
 			t.Fatal("存在空错误码")

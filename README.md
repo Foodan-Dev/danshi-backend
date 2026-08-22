@@ -10,6 +10,8 @@
 
 ## 快速开始
 
+本地开发需要 Go 1.27.0；schema、契约和完整集成测试还需要 Docker。
+
 ```bash
 make help          # 看所有命令
 make test          # 单元测试

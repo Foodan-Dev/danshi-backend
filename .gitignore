@@ -1,6 +1,14 @@
 bin/
 coverage.out
+*.out
+*.log
 *.test
 .env
 .env.*
 !.env.example
+
+# `go build ./cmd/<name>` without -o writes command binaries at the repository root.
+/apierrcodes
+/danshi-migrate
+/danshi-server
+/openapi

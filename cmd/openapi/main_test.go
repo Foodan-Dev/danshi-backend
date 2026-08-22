@@ -12,12 +12,16 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
 )
+
+const repositoryCodesPath = "../../internal/apierr/codes.go"
 
 func TestRepositoryRegistryGenerates79ValidOperations(t *testing.T) {
 	hlog.SetOutput(io.Discard)
-	encoded, err := generateSpec()
+	encoded, err := generateSpec(repositoryCodesPath)
+	require.NoError(t, err)
+	catalog, err := apierrcodes.Parse(repositoryCodesPath)
 	require.NoError(t, err)
 	document, err := openapi3.NewLoader().LoadFromData(encoded)
 	require.NoError(t, err)
@@ -36,10 +40,10 @@ func TestRepositoryRegistryGenerates79ValidOperations(t *testing.T) {
 		document.Paths.Value("/api/v2/posts").Post.Responses.Keys(),
 	)
 	postConflict := document.Paths.Value("/api/v2/posts").Post.Responses.Value("409")
-	require.Equal(t, codeEnums(apierr.AllBizCodes()),
+	require.Equal(t, codeEnums(catalog.BizCodes),
 		postConflict.Value.Content.Get("application/json").Schema.Value.Properties["error_code"].Value.Enum)
 	fieldError := document.Components.Schemas["FieldError"].Value
-	require.Equal(t, codeEnums(apierr.AllFieldCodes()), fieldError.Properties["code"].Value.Enum)
+	require.Equal(t, codeEnums(catalog.FieldCodes), fieldError.Properties["code"].Value.Enum)
 	assertInferredResponses(t, document)
 }
 
@@ -50,10 +54,29 @@ func TestDriftGateDetectsChangedSpec(t *testing.T) {
 	require.NoError(t, writeOrCheck(path, []byte("old"), true))
 }
 
-func codeEnums[T ~string](codes []T) []any {
+func TestErrorCodeChangeTripsSpecDriftGate(t *testing.T) {
+	baseline, err := generateSpec(repositoryCodesPath)
+	require.NoError(t, err)
+	source, err := os.ReadFile(repositoryCodesPath)
+	require.NoError(t, err)
+
+	directory := t.TempDir()
+	codesPath := filepath.Join(directory, "codes.go")
+	source = append(source, []byte("\nconst BizDriftProbe BizCode = \"drift_probe\"\n")...)
+	require.NoError(t, os.WriteFile(codesPath, source, 0o600))
+	changed, err := generateSpec(codesPath)
+	require.NoError(t, err)
+	require.Contains(t, string(changed), "drift_probe")
+
+	specPath := filepath.Join(directory, "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, baseline, 0o600))
+	require.ErrorContains(t, writeOrCheck(specPath, changed, true), "已漂移")
+}
+
+func codeEnums(codes []string) []any {
 	values := make([]any, 0, len(codes))
 	for _, code := range codes {
-		values = append(values, string(code))
+		values = append(values, code)
 	}
 	return values
 }

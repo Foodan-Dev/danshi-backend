@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
+	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
 	openapigen "github.com/jingyijun/danshi_backend_go/internal/openapi"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
 )
@@ -21,10 +22,11 @@ import (
 func main() {
 	hlog.SetOutput(io.Discard)
 	output := flag.String("output", "api/openapi.json", "输出文件；使用 - 写到 stdout")
+	codesInput := flag.String("codes", "internal/apierr/codes.go", "错误码唯一清单")
 	check := flag.Bool("check", false, "只检查输出文件是否与重新生成的内容完全一致")
 	flag.Parse()
 
-	encoded, err := generateSpec()
+	encoded, err := generateSpec(*codesInput)
 	if err != nil {
 		fail(err)
 	}
@@ -33,7 +35,11 @@ func main() {
 	}
 }
 
-func generateSpec() ([]byte, error) {
+func generateSpec(codesInput string) ([]byte, error) {
+	catalog, err := apierrcodes.Parse(codesInput)
+	if err != nil {
+		return nil, err
+	}
 	engine := server.New(
 		server.WithHandleMethodNotAllowed(true),
 		hertzconfig.Option{F: func(_ *hertzconfig.Options) {}},
@@ -41,6 +47,10 @@ func generateSpec() ([]byte, error) {
 	router.Register(engine, router.Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	return openapigen.Generate(
 		engine.Routes(), apicontract.Routes(), router.OpenAPIBindings(),
+		openapigen.CodeCatalog{
+			FieldCodes: catalog.FieldCodes,
+			BizCodes:   catalog.BizCodes,
+		},
 	)
 }
 
