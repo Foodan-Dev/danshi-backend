@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,10 +95,6 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("concurrent image delete and reference preserves invariant", func(t *testing.T) {
 		testConcurrentImageReferences(t, engine, gdb, database, author, fixture)
-	})
-
-	t.Run("list select count is independent of page size", func(t *testing.T) {
-		testPostListQueryCount(t, engine, gdb, author, fixture)
 	})
 }
 
@@ -541,37 +536,6 @@ func testConcurrentImageReferences(
 	require.Equal(t, model.ImageStatusReady, asset.Status, "存在引用时资产必须为 ready")
 }
 
-func testPostListQueryCount(
-	t *testing.T,
-	engine *server.Hertz,
-	gdb *gorm.DB,
-	author service.AuthResult,
-	fixture postFixture,
-) {
-	t.Helper()
-	for index := range 6 {
-		createPost(t, engine, author.Token, sharePostPayload(
-			fixture, fmt.Sprintf("查询数帖子 %d", index), []string{fmt.Sprintf("查询%d", index)},
-		))
-	}
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(limit int) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet,
-			fmt.Sprintf("/api/v2/posts?page=1&limit=%d", limit), nil, author.Token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	one := measure(1)
-	six := measure(6)
-	require.Positive(t, one)
-	require.Equal(t, one, six, "列表 SELECT 数不得随 page_size 增长")
-}
-
 func loadPostFixture(t *testing.T, gdb *gorm.DB) postFixture {
 	t.Helper()
 	var fixture postFixture
@@ -768,22 +732,4 @@ func removeHistoryFailureTrigger(t *testing.T, gdb *gorm.DB) {
 		DROP TRIGGER IF EXISTS trg_post_test_fail_history ON post_histories;
 		DROP FUNCTION IF EXISTS post_test_fail_history();
 	`).Error)
-}
-
-func registerQueryCounter(
-	t *testing.T,
-	gdb *gorm.DB,
-	enabled *atomic.Bool,
-	count *atomic.Int64,
-) {
-	t.Helper()
-	callback := func(*gorm.DB) {
-		if enabled.Load() {
-			count.Add(1)
-		}
-	}
-	require.NoError(t, gdb.Callback().Query().Before("gorm:query").
-		Register("post_test_count_query", callback))
-	require.NoError(t, gdb.Callback().Raw().Before("gorm:raw").
-		Register("post_test_count_raw", callback))
 }

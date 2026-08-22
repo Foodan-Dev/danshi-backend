@@ -37,18 +37,100 @@ type response struct {
 	body   map[string]any
 }
 
+var routeExpectedStatus = map[string]int{
+	"GET /health": http.StatusOK,
+	"GET /ready":  http.StatusOK,
+	"POST /api/v2/auth/email-verification-codes":                        http.StatusUnprocessableEntity,
+	"POST /api/v2/auth/register":                                        http.StatusUnprocessableEntity,
+	"POST /api/v2/auth/login":                                           http.StatusUnprocessableEntity,
+	"POST /api/v2/auth/refresh":                                         http.StatusUnauthorized,
+	"GET /api/v2/auth/me":                                               http.StatusUnauthorized,
+	"POST /api/v2/auth/logout":                                          http.StatusUnauthorized,
+	"POST /api/v2/auth/logout-all":                                      http.StatusUnauthorized,
+	"GET /api/v2/auth/sessions":                                         http.StatusUnauthorized,
+	"DELETE /api/v2/auth/sessions/:id":                                  http.StatusUnauthorized,
+	"GET /api/v2/users/:user_id":                                        http.StatusUnauthorized,
+	"PUT /api/v2/users/:user_id":                                        http.StatusUnauthorized,
+	"GET /api/v2/users/:user_id/posts":                                  http.StatusUnauthorized,
+	"GET /api/v2/users/:user_id/favorites":                              http.StatusUnauthorized,
+	"POST /api/v2/users/:user_id/follow":                                http.StatusUnauthorized,
+	"DELETE /api/v2/users/:user_id/follow":                              http.StatusUnauthorized,
+	"GET /api/v2/users/:user_id/following":                              http.StatusUnauthorized,
+	"GET /api/v2/users/:user_id/followers":                              http.StatusUnauthorized,
+	"GET /api/v2/posts":                                                 http.StatusUnauthorized,
+	"GET /api/v2/posts/:post_id":                                        http.StatusUnauthorized,
+	"POST /api/v2/posts":                                                http.StatusUnauthorized,
+	"PUT /api/v2/posts/:post_id":                                        http.StatusUnauthorized,
+	"DELETE /api/v2/posts/:post_id":                                     http.StatusUnauthorized,
+	"GET /api/v2/posts/:post_id/history":                                http.StatusUnauthorized,
+	"POST /api/v2/posts/:post_id/like":                                  http.StatusUnauthorized,
+	"DELETE /api/v2/posts/:post_id/like":                                http.StatusUnauthorized,
+	"POST /api/v2/posts/:post_id/favorite":                              http.StatusUnauthorized,
+	"DELETE /api/v2/posts/:post_id/favorite":                            http.StatusUnauthorized,
+	"GET /api/v2/posts/:post_id/comments":                               http.StatusUnauthorized,
+	"POST /api/v2/posts/:post_id/comments":                              http.StatusUnauthorized,
+	"GET /api/v2/comments/:comment_id/replies":                          http.StatusUnauthorized,
+	"PUT /api/v2/comments/:comment_id":                                  http.StatusUnauthorized,
+	"GET /api/v2/comments/:comment_id/history":                          http.StatusUnauthorized,
+	"POST /api/v2/comments/:comment_id/like":                            http.StatusUnauthorized,
+	"DELETE /api/v2/comments/:comment_id/like":                          http.StatusUnauthorized,
+	"DELETE /api/v2/comments/:comment_id":                               http.StatusUnauthorized,
+	"GET /api/v2/notifications":                                         http.StatusUnauthorized,
+	"GET /api/v2/notifications/unread-count":                            http.StatusUnauthorized,
+	"PUT /api/v2/notifications/read-all":                                http.StatusUnauthorized,
+	"PUT /api/v2/notifications/:notification_id/read":                   http.StatusUnauthorized,
+	"GET /api/v2/search/posts":                                          http.StatusUnauthorized,
+	"GET /api/v2/search/users":                                          http.StatusUnauthorized,
+	"POST /api/v2/uploads/presign":                                      http.StatusUnauthorized,
+	"POST /api/v2/uploads/:upload_id/complete":                          http.StatusUnauthorized,
+	"GET /api/v2/config":                                                http.StatusOK,
+	"POST /api/v2/dictionary-suggestions":                               http.StatusUnauthorized,
+	"GET /api/v2/dictionary-suggestions/mine":                           http.StatusUnauthorized,
+	"GET /api/v2/admin/dictionary-suggestions":                          http.StatusUnauthorized,
+	"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/approve":  http.StatusUnauthorized,
+	"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/reject":   http.StatusUnauthorized,
+	"POST /api/v2/admin/flavors":                                        http.StatusUnauthorized,
+	"PATCH /api/v2/admin/flavors/:flavor_id":                            http.StatusUnauthorized,
+	"DELETE /api/v2/admin/flavors/:flavor_id":                           http.StatusUnauthorized,
+	"POST /api/v2/admin/cuisines":                                       http.StatusUnauthorized,
+	"PATCH /api/v2/admin/cuisines/:cuisine_id":                          http.StatusUnauthorized,
+	"DELETE /api/v2/admin/cuisines/:cuisine_id":                         http.StatusUnauthorized,
+	"POST /api/v2/admin/canteens":                                       http.StatusUnauthorized,
+	"PATCH /api/v2/admin/canteens/:canteen_id":                          http.StatusUnauthorized,
+	"DELETE /api/v2/admin/canteens/:canteen_id":                         http.StatusUnauthorized,
+	"POST /api/v2/admin/canteens/:canteen_id/windows":                   http.StatusUnauthorized,
+	"PATCH /api/v2/admin/canteen-windows/:window_id":                    http.StatusUnauthorized,
+	"DELETE /api/v2/admin/canteen-windows/:window_id":                   http.StatusUnauthorized,
+	"POST /api/v2/moderation/tencent-ci/callback":                       http.StatusForbidden,
+	"GET /api/v2/admin/posts/pending":                                   http.StatusUnauthorized,
+	"PUT /api/v2/admin/posts/:post_id/review":                           http.StatusUnauthorized,
+	"GET /api/v2/admin/posts":                                           http.StatusUnauthorized,
+	"DELETE /api/v2/admin/posts/:post_id":                               http.StatusUnauthorized,
+	"PUT /api/v2/admin/posts/:post_id/restore":                          http.StatusUnauthorized,
+	"GET /api/v2/admin/users":                                           http.StatusUnauthorized,
+	"PUT /api/v2/admin/users/:user_id/status":                           http.StatusUnauthorized,
+	"PUT /api/v2/admin/users/:user_id/role":                             http.StatusUnauthorized,
+	"GET /api/v2/admin/admins":                                          http.StatusUnauthorized,
+	"GET /api/v2/admin/super-admins":                                    http.StatusUnauthorized,
+	"GET /api/v2/admin/comments":                                        http.StatusUnauthorized,
+	"DELETE /api/v2/admin/comments/:comment_id":                         http.StatusUnauthorized,
+	"PUT /api/v2/admin/comments/:comment_id/restore":                    http.StatusUnauthorized,
+	"GET /api/v2/admin/moderation-records/pending":                      http.StatusUnauthorized,
+	"PUT /api/v2/admin/moderation-records/:moderation_record_id/review": http.StatusUnauthorized,
+}
+
 func TestRouteTableContract(t *testing.T) {
 	engine := newContractEngine(t)
 	routes := engine.Routes()
 	require.Len(t, routes, businessRoutes+runtimeRoutes)
 
-	expected := make(map[string]struct{}, len(routes))
+	actual := make(map[string]struct{}, len(routes))
 	covered := make(map[string]int, len(routes))
 	businessCount := 0
 	runtimeCount := 0
 	for _, route := range routes {
 		key := operationKey(route.Method, route.Path)
-		expected[key] = struct{}{}
+		actual[key] = struct{}{}
 		switch {
 		case strings.HasPrefix(route.Path, router.APIPrefix+"/"):
 			businessCount++
@@ -57,17 +139,23 @@ func TestRouteTableContract(t *testing.T) {
 		default:
 			t.Fatalf("路由表包含契约范围外的端点: %s", key)
 		}
+	}
+	require.Equal(t, coverageSet(routeExpectedStatus), actual,
+		"运行时路由与显式契约清单必须双向一致；新增路由必须登记预期状态")
 
+	for _, route := range routes {
+		key := operationKey(route.Method, route.Path)
 		path := concretePath(route.Path)
 		got := performRequest(t, engine, route.Method, path, requestPayload(route.Method), "")
 		assertEnvelope(t, got)
-		require.Equal(t, inventoryExpectedStatus(key), got.status, "%s 响应体=%v", key, got.body)
+		require.Equal(t, routeExpectedStatus[key], got.status, "%s 响应体=%v", key, got.body)
 		covered[key]++
 	}
 
 	require.Equal(t, businessRoutes, businessCount)
 	require.Equal(t, runtimeRoutes, runtimeCount)
-	require.Equal(t, expected, coverageSet(covered), "每条注册路由都必须由契约套件发起 HTTP 请求")
+	require.Equal(t, coverageSet(routeExpectedStatus), coverageSet(covered),
+		"显式清单中的每条路由都必须由契约套件发起 HTTP 请求")
 	for key, hits := range covered {
 		require.Equal(t, 1, hits, "%s 应且仅应由路由表生成一次", key)
 	}
@@ -114,21 +202,6 @@ func TestStatusBranchesContract(t *testing.T) {
 		require.True(t, ok)
 		require.NotEmpty(t, errorID)
 	})
-}
-
-func inventoryExpectedStatus(key string) int {
-	switch key {
-	case "GET /health", "GET /ready", "GET /api/v2/config":
-		return http.StatusOK
-	case "POST /api/v2/auth/email-verification-codes",
-		"POST /api/v2/auth/register",
-		"POST /api/v2/auth/login":
-		return http.StatusUnprocessableEntity
-	case "POST /api/v2/moderation/tencent-ci/callback":
-		return http.StatusForbidden
-	default:
-		return http.StatusUnauthorized
-	}
 }
 
 func registerContractUser(t *testing.T, engine *server.Hertz) string {
@@ -312,7 +385,7 @@ func assertError(t *testing.T, got response, status int, errorCode string) {
 
 func operationKey(method string, path string) string { return method + " " + path }
 
-func coverageSet(covered map[string]int) map[string]struct{} {
+func coverageSet[T any](covered map[string]T) map[string]struct{} {
 	set := make(map[string]struct{}, len(covered))
 	for key := range covered {
 		set[key] = struct{}{}

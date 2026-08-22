@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -155,13 +154,12 @@ func testNotificationProducersAndReads(
 		actors.Commenter.User.ID, model.NotificationTypeFollow)
 	assertNoSelfNotifications(t, gdb)
 
-	testNotificationReadEndpoints(t, engine, gdb, actors, commentNotification.ID, post.ID, root.Comment.ID)
+	testNotificationReadEndpoints(t, engine, actors, commentNotification.ID, post.ID, root.Comment.ID)
 }
 
 func testNotificationReadEndpoints(
 	t *testing.T,
 	engine *server.Hertz,
-	gdb *gorm.DB,
 	actors commentActors,
 	commentNotificationID uint64,
 	postID uint64,
@@ -233,22 +231,6 @@ func testNotificationReadEndpoints(
 	status, _, _ = performJSON(t, engine, http.MethodGet,
 		"/api/v2/notifications?type=unknown", nil, actors.PostAuthor.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
-
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(limit int) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet,
-			fmt.Sprintf("/api/v2/notifications?page=1&limit=%d", limit), nil, actors.PostAuthor.Token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	one, three := measure(1), measure(3)
-	require.Positive(t, one)
-	require.Equal(t, one, three, "通知列表 SELECT 数不得随 page_size 增长")
 }
 
 func requireNotification(

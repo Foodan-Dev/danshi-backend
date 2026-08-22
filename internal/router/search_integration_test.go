@@ -3,9 +3,7 @@ package router_test
 import (
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -39,8 +37,8 @@ func TestSearchDomainAgainstPostgres(t *testing.T) {
 		testUserSearch(t, engine, gdb, author, viewer)
 	})
 
-	t.Run("authentication query validation and query budget", func(t *testing.T) {
-		testSearchGuardsAndQueryBudget(t, engine, gdb, viewer)
+	t.Run("authentication and query validation", func(t *testing.T) {
+		testSearchGuards(t, engine, viewer)
 	})
 }
 
@@ -149,10 +147,9 @@ func testUserSearch(
 	require.Empty(t, result.Users, "永久封禁用户不应出现在搜索结果")
 }
 
-func testSearchGuardsAndQueryBudget(
+func testSearchGuards(
 	t *testing.T,
 	engine *server.Hertz,
-	gdb *gorm.DB,
 	viewer service.AuthResult,
 ) {
 	t.Helper()
@@ -160,20 +157,4 @@ func testSearchGuardsAndQueryBudget(
 	require.Equal(t, http.StatusUnauthorized, status)
 	status, _, _ = performJSON(t, engine, http.MethodGet, "/api/v2/search/posts", nil, viewer.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
-
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(limit int) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet,
-			"/api/v2/search/posts?q=火锅&limit="+strconv.Itoa(limit), nil, viewer.Token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	one, three := measure(1), measure(3)
-	require.Positive(t, one)
-	require.Equal(t, one, three, "帖子搜索 SELECT 数不得随 page_size 增长")
 }

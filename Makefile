@@ -35,6 +35,12 @@ test-contract: ## 独立运行 HTTP 契约黑盒套件（需要 Docker）
 test-integration: ## 集成测试（需要 Docker）
 	go test -race -count=1 -tags=integration ./test/...
 
+.PHONY: test-convergence
+test-convergence: ## 独立运行 P3 契约、查询预算与端点对账门禁（需要 Docker）
+	go test -race -count=1 ./test/contract
+	go test -race -count=1 -run '^TestHotPathQueryBudgetsAgainstPostgres$$' ./internal/router
+	go test -race -count=1 ./test/convergence
+
 .PHONY: cover
 cover: ## 测试覆盖率
 	go test -count=1 -coverprofile=coverage.out ./internal/...

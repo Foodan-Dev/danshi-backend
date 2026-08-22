@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -384,8 +383,6 @@ func testAdminListsAndDeletion(
 	var users service.AdminUserList
 	decodeData(t, response, &users)
 	require.True(t, adminUserPresent(users.Users, actors.Illegal.User.ID))
-
-	assertAdminListQueryBudget(t, engine, gdb, actors)
 }
 
 func testAdminPostRestore(
@@ -465,39 +462,6 @@ func adminTestEngine(
 		Config: cfg, DB: database, Log: log, EmailSender: sender, ContentModerator: moderator,
 	})
 	return engine
-}
-
-func assertAdminListQueryBudget(
-	t *testing.T,
-	engine *server.Hertz,
-	gdb *gorm.DB,
-	actors adminActors,
-) {
-	t.Helper()
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(path, token string) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet, path, nil, token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	for _, endpoint := range []struct {
-		Path  string
-		Token string
-	}{
-		{Path: "/api/v2/admin/posts", Token: actors.Admin.Token},
-		{Path: "/api/v2/admin/comments", Token: actors.Admin.Token},
-		{Path: "/api/v2/admin/users", Token: actors.Admin.Token},
-	} {
-		one := measure(endpoint.Path+"?page=1&limit=1", endpoint.Token)
-		six := measure(endpoint.Path+"?page=1&limit=6", endpoint.Token)
-		require.Positive(t, one)
-		require.Equal(t, one, six, "%s 查询数不得随 page_size 增长", endpoint.Path)
-	}
 }
 
 func markPostModerationDeleted(t *testing.T, gdb *gorm.DB, postID uint64) {

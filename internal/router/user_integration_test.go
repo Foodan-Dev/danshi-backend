@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -65,10 +64,6 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("posts and favorites visibility", func(t *testing.T) {
 		testUserPostLists(t, engine, gdb, owner, viewer, fixture)
-	})
-
-	t.Run("list select count is independent of page size", func(t *testing.T) {
-		testUserListQueryCount(t, engine, gdb, owner, viewer, fixture)
 	})
 }
 
@@ -337,60 +332,6 @@ func testUserPostLists(
 		"user_id = ? AND post_id = ?", viewer.User.ID, approved.ID,
 	).Count(&favoriteRows).Error)
 	require.EqualValues(t, 1, favoriteRows)
-}
-
-func testUserListQueryCount(
-	t *testing.T,
-	engine *server.Hertz,
-	gdb *gorm.DB,
-	owner service.AuthResult,
-	viewer service.AuthResult,
-	fixture postFixture,
-) {
-	t.Helper()
-	for index := range 6 {
-		user := model.User{
-			Email: fmt.Sprintf("user-list-%d@fdueat.com", index), PasswordHash: "$2b$12$test",
-			Name: fmt.Sprintf("列表用户 %d", index), Role: model.UserRoleUser,
-		}
-		require.NoError(t, gdb.Create(&user).Error)
-		require.NoError(t, gdb.Create(&model.Follow{
-			FollowerID: viewer.User.ID, FollowingID: user.ID,
-		}).Error)
-		require.NoError(t, gdb.Create(&model.Follow{
-			FollowerID: user.ID, FollowingID: viewer.User.ID,
-		}).Error)
-		post := createPost(t, engine, owner.Token, sharePostPayload(
-			fixture, fmt.Sprintf("用户列表查询数 %d", index), []string{fmt.Sprintf("用户列表%d", index)},
-		))
-		status, _, _ := performJSON(t, engine, http.MethodPost,
-			postPath(post.ID)+"/favorite", nil, viewer.Token)
-		require.Equal(t, http.StatusOK, status)
-	}
-
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(path string, limit int) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet,
-			fmt.Sprintf("%s?page=1&limit=%d", path, limit), nil, viewer.Token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	for _, path := range []string{
-		userPath(owner.User.ID) + "/posts",
-		userPath(viewer.User.ID) + "/favorites",
-		userPath(viewer.User.ID) + "/following",
-		userPath(viewer.User.ID) + "/followers",
-	} {
-		one := measure(path, 1)
-		six := measure(path, 6)
-		require.Positive(t, one)
-		require.Equal(t, one, six, "%s 的 SELECT 数不得随 page_size 增长", path)
-	}
 }
 
 func createAvatarAsset(t *testing.T, gdb *gorm.DB, userID uint64, suffix string) model.ImageAsset {

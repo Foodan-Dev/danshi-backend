@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,10 +86,6 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("like is idempotent and recreatable", func(t *testing.T) {
 		testCommentLikes(t, engine, gdb, actors, fixture)
-	})
-
-	t.Run("list select count is independent of page size", func(t *testing.T) {
-		testCommentListQueryCount(t, engine, gdb, actors, fixture)
 	})
 }
 
@@ -538,48 +533,6 @@ func testCommentLikes(
 	require.EqualValues(t, 1, likeCount)
 	require.NoError(t, gdb.First(&stored, comment.Comment.ID).Error)
 	require.True(t, stored.UpdatedAt.Equal(updatedAt), "点赞不得改写评论内容更新时间")
-}
-
-func testCommentListQueryCount(
-	t *testing.T,
-	engine *server.Hertz,
-	gdb *gorm.DB,
-	actors commentActors,
-	fixture postFixture,
-) {
-	t.Helper()
-	post := createPost(t, engine, actors.PostAuthor.Token,
-		sharePostPayload(fixture, "评论查询数帖子", []string{"评论查询数"}))
-	for index := range 6 {
-		root := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
-			"content":            fmt.Sprintf("查询数楼主 %d", index),
-			"mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
-		})
-		for replyIndex := range 3 {
-			createComment(t, engine, actors.Replier.Token, post.ID, map[string]any{
-				"content":            fmt.Sprintf("查询数回复 %d-%d", index, replyIndex),
-				"parent_id":          root.Comment.ID,
-				"mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
-			})
-		}
-	}
-	var enabled atomic.Bool
-	var count atomic.Int64
-	registerQueryCounter(t, gdb, &enabled, &count)
-	measure := func(limit int) int64 {
-		count.Store(0)
-		enabled.Store(true)
-		status, _, _ := performJSON(t, engine, http.MethodGet,
-			fmt.Sprintf("/api/v2/posts/%d/comments?page=1&limit=%d", post.ID, limit),
-			nil, actors.PostAuthor.Token)
-		enabled.Store(false)
-		require.Equal(t, http.StatusOK, status)
-		return count.Load()
-	}
-	one := measure(1)
-	six := measure(6)
-	require.Positive(t, one)
-	require.Equal(t, one, six, "评论列表 SELECT 数不得随 page_size 增长")
 }
 
 func registerCommentActors(
