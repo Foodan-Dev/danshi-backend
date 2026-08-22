@@ -20,6 +20,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
 	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
@@ -37,86 +38,14 @@ type response struct {
 	body   map[string]any
 }
 
-var routeExpectedStatus = map[string]int{
-	"GET /health": http.StatusOK,
-	"GET /ready":  http.StatusOK,
-	"POST /api/v2/auth/email-verification-codes":                        http.StatusUnprocessableEntity,
-	"POST /api/v2/auth/register":                                        http.StatusUnprocessableEntity,
-	"POST /api/v2/auth/login":                                           http.StatusUnprocessableEntity,
-	"POST /api/v2/auth/refresh":                                         http.StatusUnauthorized,
-	"GET /api/v2/auth/me":                                               http.StatusUnauthorized,
-	"POST /api/v2/auth/logout":                                          http.StatusUnauthorized,
-	"POST /api/v2/auth/logout-all":                                      http.StatusUnauthorized,
-	"GET /api/v2/auth/sessions":                                         http.StatusUnauthorized,
-	"DELETE /api/v2/auth/sessions/:id":                                  http.StatusUnauthorized,
-	"GET /api/v2/users/:user_id":                                        http.StatusUnauthorized,
-	"PUT /api/v2/users/:user_id":                                        http.StatusUnauthorized,
-	"GET /api/v2/users/:user_id/posts":                                  http.StatusUnauthorized,
-	"GET /api/v2/users/:user_id/favorites":                              http.StatusUnauthorized,
-	"POST /api/v2/users/:user_id/follow":                                http.StatusUnauthorized,
-	"DELETE /api/v2/users/:user_id/follow":                              http.StatusUnauthorized,
-	"GET /api/v2/users/:user_id/following":                              http.StatusUnauthorized,
-	"GET /api/v2/users/:user_id/followers":                              http.StatusUnauthorized,
-	"GET /api/v2/posts":                                                 http.StatusUnauthorized,
-	"GET /api/v2/posts/:post_id":                                        http.StatusUnauthorized,
-	"POST /api/v2/posts":                                                http.StatusUnauthorized,
-	"PUT /api/v2/posts/:post_id":                                        http.StatusUnauthorized,
-	"DELETE /api/v2/posts/:post_id":                                     http.StatusUnauthorized,
-	"GET /api/v2/posts/:post_id/history":                                http.StatusUnauthorized,
-	"POST /api/v2/posts/:post_id/like":                                  http.StatusUnauthorized,
-	"DELETE /api/v2/posts/:post_id/like":                                http.StatusUnauthorized,
-	"POST /api/v2/posts/:post_id/favorite":                              http.StatusUnauthorized,
-	"DELETE /api/v2/posts/:post_id/favorite":                            http.StatusUnauthorized,
-	"GET /api/v2/posts/:post_id/comments":                               http.StatusUnauthorized,
-	"POST /api/v2/posts/:post_id/comments":                              http.StatusUnauthorized,
-	"GET /api/v2/comments/:comment_id/replies":                          http.StatusUnauthorized,
-	"PUT /api/v2/comments/:comment_id":                                  http.StatusUnauthorized,
-	"GET /api/v2/comments/:comment_id/history":                          http.StatusUnauthorized,
-	"POST /api/v2/comments/:comment_id/like":                            http.StatusUnauthorized,
-	"DELETE /api/v2/comments/:comment_id/like":                          http.StatusUnauthorized,
-	"DELETE /api/v2/comments/:comment_id":                               http.StatusUnauthorized,
-	"GET /api/v2/notifications":                                         http.StatusUnauthorized,
-	"GET /api/v2/notifications/unread-count":                            http.StatusUnauthorized,
-	"PUT /api/v2/notifications/read-all":                                http.StatusUnauthorized,
-	"PUT /api/v2/notifications/:notification_id/read":                   http.StatusUnauthorized,
-	"GET /api/v2/search/posts":                                          http.StatusUnauthorized,
-	"GET /api/v2/search/users":                                          http.StatusUnauthorized,
-	"POST /api/v2/uploads/presign":                                      http.StatusUnauthorized,
-	"POST /api/v2/uploads/:upload_id/complete":                          http.StatusUnauthorized,
-	"GET /api/v2/config":                                                http.StatusOK,
-	"POST /api/v2/dictionary-suggestions":                               http.StatusUnauthorized,
-	"GET /api/v2/dictionary-suggestions/mine":                           http.StatusUnauthorized,
-	"GET /api/v2/admin/dictionary-suggestions":                          http.StatusUnauthorized,
-	"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/approve":  http.StatusUnauthorized,
-	"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/reject":   http.StatusUnauthorized,
-	"POST /api/v2/admin/flavors":                                        http.StatusUnauthorized,
-	"PATCH /api/v2/admin/flavors/:flavor_id":                            http.StatusUnauthorized,
-	"DELETE /api/v2/admin/flavors/:flavor_id":                           http.StatusUnauthorized,
-	"POST /api/v2/admin/cuisines":                                       http.StatusUnauthorized,
-	"PATCH /api/v2/admin/cuisines/:cuisine_id":                          http.StatusUnauthorized,
-	"DELETE /api/v2/admin/cuisines/:cuisine_id":                         http.StatusUnauthorized,
-	"POST /api/v2/admin/canteens":                                       http.StatusUnauthorized,
-	"PATCH /api/v2/admin/canteens/:canteen_id":                          http.StatusUnauthorized,
-	"DELETE /api/v2/admin/canteens/:canteen_id":                         http.StatusUnauthorized,
-	"POST /api/v2/admin/canteens/:canteen_id/windows":                   http.StatusUnauthorized,
-	"PATCH /api/v2/admin/canteen-windows/:window_id":                    http.StatusUnauthorized,
-	"DELETE /api/v2/admin/canteen-windows/:window_id":                   http.StatusUnauthorized,
-	"POST /api/v2/moderation/tencent-ci/callback":                       http.StatusForbidden,
-	"GET /api/v2/admin/posts/pending":                                   http.StatusUnauthorized,
-	"PUT /api/v2/admin/posts/:post_id/review":                           http.StatusUnauthorized,
-	"GET /api/v2/admin/posts":                                           http.StatusUnauthorized,
-	"DELETE /api/v2/admin/posts/:post_id":                               http.StatusUnauthorized,
-	"PUT /api/v2/admin/posts/:post_id/restore":                          http.StatusUnauthorized,
-	"GET /api/v2/admin/users":                                           http.StatusUnauthorized,
-	"PUT /api/v2/admin/users/:user_id/status":                           http.StatusUnauthorized,
-	"PUT /api/v2/admin/users/:user_id/role":                             http.StatusUnauthorized,
-	"GET /api/v2/admin/admins":                                          http.StatusUnauthorized,
-	"GET /api/v2/admin/super-admins":                                    http.StatusUnauthorized,
-	"GET /api/v2/admin/comments":                                        http.StatusUnauthorized,
-	"DELETE /api/v2/admin/comments/:comment_id":                         http.StatusUnauthorized,
-	"PUT /api/v2/admin/comments/:comment_id/restore":                    http.StatusUnauthorized,
-	"GET /api/v2/admin/moderation-records/pending":                      http.StatusUnauthorized,
-	"PUT /api/v2/admin/moderation-records/:moderation_record_id/review": http.StatusUnauthorized,
+var routeExpectedStatus = expectedStatusByRoute()
+
+func expectedStatusByRoute() map[string]int {
+	statuses := make(map[string]int, businessRoutes+runtimeRoutes)
+	for _, declaration := range apicontract.Routes() {
+		statuses[declaration.OperationKey()] = declaration.ExpectedStatus
+	}
+	return statuses
 }
 
 func TestRouteTableContract(t *testing.T) {

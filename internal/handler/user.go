@@ -24,14 +24,14 @@ type User struct {
 func NewUser(userService *service.UserService) *User { return &User{service: userService} }
 
 type updateUserRequest struct {
-	Name         *string
-	NameSet      bool
-	Bio          *string
-	BioSet       bool
-	Gender       *string
-	GenderSet    bool
-	AvatarURL    *string
-	AvatarURLSet bool
+	Name         *string `json:"name"`
+	NameSet      bool    `json:"-"`
+	Bio          *string `json:"bio"`
+	BioSet       bool    `json:"-"`
+	Gender       *string `json:"gender"`
+	GenderSet    bool    `json:"-"`
+	AvatarURL    *string `json:"avatar_url"`
+	AvatarURLSet bool    `json:"-"`
 }
 
 // UnmarshalJSON 保留“字段缺席”与“显式 null”的差异，支持真正的局部更新。

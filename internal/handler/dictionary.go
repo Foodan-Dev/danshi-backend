@@ -66,11 +66,11 @@ type createCanteenRequest struct {
 }
 
 type updateCanteenRequest struct {
-	CodeSet   bool
-	Name      *string
-	Campus    *string
-	SortOrder *int32
-	IsActive  *bool
+	CodeSet   bool    `json:"-"`
+	Name      *string `json:"name"`
+	Campus    *string `json:"campus"`
+	SortOrder *int32  `json:"sort_order"`
+	IsActive  *bool   `json:"is_active"`
 }
 
 func (r *updateCanteenRequest) UnmarshalJSON(data []byte) error {
@@ -90,12 +90,12 @@ type createWindowRequest struct {
 }
 
 type updateWindowRequest struct {
-	CanteenIDSet bool
-	Name         *string
-	Floor        *string
-	FloorSet     bool
-	SortOrder    *int32
-	IsActive     *bool
+	CanteenIDSet bool    `json:"-"`
+	Name         *string `json:"name"`
+	Floor        *string `json:"floor"`
+	FloorSet     bool    `json:"-"`
+	SortOrder    *int32  `json:"sort_order"`
+	IsActive     *bool   `json:"is_active"`
 }
 
 func (r *updateWindowRequest) UnmarshalJSON(data []byte) error {

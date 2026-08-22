@@ -41,6 +41,14 @@ test-convergence: ## 独立运行 P3 契约、查询预算与端点对账门禁�
 	go test -race -count=1 -run '^TestHotPathQueryBudgetsAgainstPostgres$$' ./internal/router
 	go test -race -count=1 ./test/convergence
 
+.PHONY: openapi
+openapi: ## 重新生成并检查 api/openapi.json 是否漂移
+	go run ./cmd/openapi -check -output api/openapi.json
+
+.PHONY: openapi-generate
+openapi-generate: ## 更新 api/openapi.json
+	go run ./cmd/openapi -output api/openapi.json
+
 .PHONY: cover
 cover: ## 测试覆盖率
 	go test -count=1 -coverprofile=coverage.out ./internal/...

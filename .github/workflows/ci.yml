@@ -20,6 +20,8 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "以下文件未格式化："; echo "$unformatted"; exit 1
           fi
+      - name: OpenAPI 漂移与覆盖门禁
+        run: make openapi
       - uses: golangci/golangci-lint-action@v6
         with: {version: v2.1.0}
 
