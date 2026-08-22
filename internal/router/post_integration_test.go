@@ -38,13 +38,37 @@ func failingModerator() *testutil.MockModeration {
 }
 
 func TestPostDomainAgainstPostgres(t *testing.T) {
-	gdb, database := openAuthPostgres(t)
-	cfg := authTestConfig()
-	sender := newCaptureEmailSender()
-	engine := authTestEngine(cfg, database, sender)
+	moderation := testutil.NewMockModeration()
+	moderation.ProgramContent(
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetPost, Contains: "需人工审核帖子",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictReview, []string{"manual_review"}, nil),
+		},
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetPost, Contains: "违规拦截帖子",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictBlock, []string{"blocked"}, nil),
+		},
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetPost, Contains: "编辑后违规标题",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictBlock, []string{"edited_block"}, nil),
+		},
+	)
+	moderation.ProgramImage(
+		testutil.ImageModerationRule{Call: 1, Outcome: testutil.ImagePending("post-image-pass")},
+		testutil.ImageModerationRule{Call: 2, Outcome: testutil.ImagePending("post-image-block")},
+		testutil.ImageModerationRule{Call: 3, Outcome: testutil.ImagePending("post-image-early")},
+		testutil.ImageModerationRule{Call: 4, Outcome: testutil.ImagePending("post-image-duplicate")},
+	)
+	h := testutil.NewHarness(t, testutil.WithModerationMock(moderation))
+	gdb, database := h.Database.GORM, h.Database.DB
+	sender, engine := h.Email, h.Engine
 	author := registerPostTestUser(t, engine, sender, "post-author@fdueat.com", "帖子作者")
 	other := registerPostTestUser(t, engine, sender, "post-reader@fdueat.com", "其他用户")
-	fixture := loadPostFixture(t, gdb)
+	dictionaries := h.Fixtures.CreateDictionaries()
+	fixture := postFixture{
+		Canteen: dictionaries.Canteen, Window: dictionaries.Window,
+		Cuisine: dictionaries.Cuisine, Flavors: dictionaries.Flavors,
+	}
 
 	t.Run("post route inventory", func(t *testing.T) {
 		testPostRouteInventory(t, engine)
@@ -58,12 +82,24 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostValidationErrors(t, engine, gdb, author, fixture)
 	})
 
+	t.Run("share seeking and unicode boundary matrix", func(t *testing.T) {
+		testPostTypeAndUnicodeBoundaries(t, engine, author, fixture)
+	})
+
+	t.Run("price budget tag and image boundary matrix", func(t *testing.T) {
+		testPostPayloadBoundaries(t, engine, gdb, h.Fixtures, author, other, fixture)
+	})
+
 	t.Run("edit main associations snapshot and moderation", func(t *testing.T) {
 		testPostEditVersion(t, engine, gdb, author, fixture)
 	})
 
 	t.Run("tag canonical case remains editable", func(t *testing.T) {
 		testTagCanonicalCaseRemainsEditable(t, engine, author, fixture)
+	})
+
+	t.Run("edit authorization deleted no-op and clear optionals", func(t *testing.T) {
+		testPostEditEdges(t, engine, gdb, author, other, fixture)
 	})
 
 	t.Run("concurrent revisions are two and three", func(t *testing.T) {
@@ -84,6 +120,18 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("like and favorite are idempotent actions", func(t *testing.T) {
 		testPostActions(t, engine, gdb, author, other, fixture)
+	})
+
+	t.Run("list filters pagination and stable sorting", func(t *testing.T) {
+		testPostListMatrix(t, engine, gdb, h.Fixtures, author, fixture)
+	})
+
+	t.Run("text moderation visibility and edit transitions", func(t *testing.T) {
+		testPostTextModeration(t, engine, gdb, author, other, fixture)
+	})
+
+	t.Run("image callbacks cover pass block early and duplicate delivery", func(t *testing.T) {
+		testPostImageModeration(t, h, author, fixture)
 	})
 
 	t.Run("soft delete retires unreferenced image", func(t *testing.T) {
@@ -145,7 +193,7 @@ func testPostCreateContract(
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).First(&moderation).Error)
 	require.Equal(t, histories[0].ID, *moderation.PostHistoryID)
 	require.Equal(t, model.ModerationVerdictPass, moderation.Verdict)
-	require.Equal(t, model.ModerationProvider("dev_allow"), moderation.Provider)
+	require.Equal(t, testutil.MockModerationProvider, moderation.Provider)
 
 	beforeUpdatedAt := stored.UpdatedAt
 	status, response, _ := performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, author.Token)
@@ -220,6 +268,225 @@ func testPostValidationErrors(
 	require.Equal(t, apierr.FieldInvalidFormat, fields.Errors[0].Code)
 }
 
+func testPostTypeAndUnicodeBoundaries(
+	t *testing.T,
+	engine *server.Hertz,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	boundary := sharePostPayload(fixture, strings.Repeat("界", 200), []string{strings.Repeat("味", 10)})
+	boundary["content"] = strings.Repeat("文", 5000)
+	created := createPost(t, engine, author.Token, boundary)
+	require.Equal(t, model.PostStatusApproved, created.Status)
+
+	seeking := seekingPostPayload(fixture, "求推荐合法边界")
+	created = createPost(t, engine, author.Token, seeking)
+	require.Equal(t, model.PostTypeSeeking, created.PostType)
+
+	tests := []struct {
+		name   string
+		field  string
+		code   apierr.FieldCode
+		mutate func(map[string]any)
+	}{
+		{
+			name: "empty title", field: "title", code: apierr.FieldRequired,
+			mutate: func(payload map[string]any) { payload["title"] = "　 " },
+		},
+		{
+			name: "title over rune limit", field: "title", code: apierr.FieldTooLong,
+			mutate: func(payload map[string]any) { payload["title"] = strings.Repeat("界", 201) },
+		},
+		{
+			name: "empty content", field: "content", code: apierr.FieldRequired,
+			mutate: func(payload map[string]any) { payload["content"] = "\n\t" },
+		},
+		{
+			name: "content over rune limit", field: "content", code: apierr.FieldTooLong,
+			mutate: func(payload map[string]any) { payload["content"] = strings.Repeat("文", 5001) },
+		},
+		{
+			name: "invalid post type", field: "post_type", code: apierr.FieldInvalidEnum,
+			mutate: func(payload map[string]any) { payload["post_type"] = "poll" },
+		},
+		{
+			name: "invalid category", field: "category", code: apierr.FieldInvalidEnum,
+			mutate: func(payload map[string]any) { payload["category"] = "drink" },
+		},
+		{
+			name: "invalid status", field: "status", code: apierr.FieldInvalidEnum,
+			mutate: func(payload map[string]any) { payload["status"] = model.PostStatusRejected },
+		},
+		{
+			name: "published share requires share type", field: "share_type", code: apierr.FieldRequired,
+			mutate: func(payload map[string]any) { delete(payload, "share_type") },
+		},
+		{
+			name: "share rejects seeking budget", field: "budget_range", code: apierr.FieldConflict,
+			mutate: func(payload map[string]any) {
+				payload["budget_range"] = map[string]any{"min": 10, "max": 20}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := sharePostPayload(fixture, "类型与字符边界", []string{})
+			test.mutate(payload)
+			status, response, _ := performJSON(
+				t, engine, http.MethodPost, "/api/v2/posts", payload, author.Token,
+			)
+			requireFieldError(t, status, response, test.field, test.code)
+		})
+	}
+
+	seekingTests := []struct {
+		name   string
+		field  string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "seeking rejects share type", field: "share_type",
+			mutate: func(payload map[string]any) { payload["share_type"] = model.ShareTypeRecommend },
+		},
+		{
+			name: "seeking rejects price", field: "price",
+			mutate: func(payload map[string]any) { payload["price"] = "10.00" },
+		},
+		{
+			name: "seeking rejects share flavors", field: "flavors",
+			mutate: func(payload map[string]any) { payload["flavors"] = []string{fixture.Flavors[0].Name} },
+		},
+		{
+			name: "seeking rejects overlapping preferences", field: "preferences",
+			mutate: func(payload map[string]any) {
+				payload["preferences"] = map[string]any{
+					"prefer_flavors": []string{fixture.Flavors[0].Name},
+					"avoid_flavors":  []string{fixture.Flavors[0].Name},
+				}
+			},
+		},
+		{
+			name: "seeking rejects reversed budget", field: "budget_range.max",
+			mutate: func(payload map[string]any) {
+				payload["budget_range"] = map[string]any{"min": 30, "max": 20}
+			},
+		},
+	}
+	for _, test := range seekingTests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := seekingPostPayload(fixture, "提问帖字段互斥")
+			test.mutate(payload)
+			status, response, _ := performJSON(
+				t, engine, http.MethodPost, "/api/v2/posts", payload, author.Token,
+			)
+			requireFieldError(t, status, response, test.field, apierr.FieldConflict)
+		})
+	}
+}
+
+func testPostPayloadBoundaries(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+	author service.AuthResult,
+	other service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	prices := []struct {
+		name  string
+		value any
+	}{
+		{name: "number", value: 18.5},
+		{name: "scientific notation", value: "1e2"},
+		{name: "negative", value: "-1.00"},
+		{name: "three decimals", value: "1.001"},
+		{name: "more than eight integer digits", value: "123456789.00"},
+	}
+	for _, test := range prices {
+		t.Run("price "+test.name, func(t *testing.T) {
+			payload := sharePostPayload(fixture, "价格边界", []string{})
+			payload["price"] = test.value
+			status, response, _ := performJSON(
+				t, engine, http.MethodPost, "/api/v2/posts", payload, author.Token,
+			)
+			requireFieldError(t, status, response, "price", apierr.FieldInvalidFormat)
+		})
+	}
+
+	longTag := sharePostPayload(fixture, "标签长度边界", []string{strings.Repeat("标", 11)})
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/posts", longTag, author.Token)
+	requireFieldError(t, status, response, "tags", apierr.FieldTooLong)
+
+	tenTags := make([]string, 10)
+	for index := range tenTags {
+		tenTags[index] = fmt.Sprintf("边界%d", index)
+	}
+	created := createPost(t, engine, author.Token, sharePostPayload(fixture, "十个标签合法", tenTags))
+	require.NotZero(t, created.ID)
+
+	inactive := fixtures.CreateDictionaries(func(spec *testutil.DictionarySpec) {
+		spec.IsActive = false
+	})
+	inactivePayload := sharePostPayload(fixture, "停用词表", []string{})
+	inactivePayload["canteen_code"] = inactive.Canteen.Code
+	inactivePayload["canteen_window_id"] = nil
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", inactivePayload, author.Token,
+	)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizDictItemNotFound, response.ErrorCode)
+
+	otherImage := fixtures.CreateImage(other.User.ID)
+	otherImagePayload := sharePostPayload(fixture, "引用他人图片", []string{})
+	otherImagePayload["images"] = []string{otherImage.PublicURL}
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", otherImagePayload, author.Token,
+	)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizImageNotOwned, response.ErrorCode)
+
+	blockedImage := fixtures.CreateImage(author.User.ID, func(asset *model.ImageAsset) {
+		asset.Moderation = model.ModerationStatusBlock
+	})
+	blockedImagePayload := sharePostPayload(fixture, "引用拦截图片", []string{})
+	blockedImagePayload["images"] = []string{blockedImage.PublicURL}
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", blockedImagePayload, author.Token,
+	)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizImageNotApproved, response.ErrorCode)
+
+	images := make([]model.ImageAsset, 9)
+	imageURLs := make([]string, 9)
+	for index := range images {
+		images[index] = fixtures.CreateImage(author.User.ID)
+		imageURLs[index] = images[index].PublicURL
+	}
+	nineImagePayload := sharePostPayload(fixture, "九张图片合法", []string{})
+	nineImagePayload["images"] = imageURLs
+	created = createPost(t, engine, author.Token, nineImagePayload)
+	var imageCount int64
+	require.NoError(t, gdb.Model(&model.PostImage{}).Where("post_id = ?", created.ID).Count(&imageCount).Error)
+	require.EqualValues(t, 9, imageCount)
+
+	tenImagePayload := sharePostPayload(fixture, "十张图片越界", []string{})
+	tenImagePayload["images"] = append(append([]string{}, imageURLs...), "https://image.example.test/tenth.jpg")
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", tenImagePayload, author.Token,
+	)
+	requireFieldError(t, status, response, "images", apierr.FieldOutOfRange)
+
+	duplicateImagePayload := sharePostPayload(fixture, "重复图片", []string{})
+	duplicateImagePayload["images"] = []string{imageURLs[0], imageURLs[0]}
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", duplicateImagePayload, author.Token,
+	)
+	requireFieldError(t, status, response, "images", apierr.FieldConflict)
+}
+
 func testPostEditVersion(
 	t *testing.T,
 	engine *server.Hertz,
@@ -273,6 +540,75 @@ func testTagCanonicalCaseRemainsEditable(
 	payload = sharePostPayload(fixture, "再改一次", []string{"Ramen"})
 	status, response, _ = performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+}
+
+func testPostEditEdges(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	author service.AuthResult,
+	other service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	originalPayload := sharePostPayload(fixture, "编辑边界原帖", []string{"编辑边界"})
+	post := createPost(t, engine, author.Token, originalPayload)
+
+	status, response, _ := performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), originalPayload, other.Token,
+	)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+	status, response, _ = performJSON(
+		t, engine, http.MethodGet, postPath(post.ID)+"/history", nil, other.Token,
+	)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+
+	status, response, _ = performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), originalPayload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var histories []model.PostHistory
+	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
+	require.Equal(t, []int32{1, 2}, postRevisions(histories),
+		"全量 PUT 即使内容相同也必须形成可追溯的新版本")
+
+	clearPayload := map[string]any{
+		"post_type": model.PostTypeShare, "share_type": model.ShareTypeRecommend,
+		"status": model.PostStatusApproved, "title": "清空可选字段后",
+		"content": "保留必填正文", "category": model.PostCategoryFood,
+		"canteen_code": nil, "canteen_window_id": nil, "cuisine": nil, "price": nil,
+		"flavors": []string{}, "tags": []string{}, "images": []string{},
+	}
+	status, response, _ = performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), clearPayload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var stored model.Post
+	require.NoError(t, gdb.First(&stored, post.ID).Error)
+	require.Nil(t, stored.CanteenID)
+	require.Nil(t, stored.CanteenWindowID)
+	require.Nil(t, stored.CuisineID)
+	require.Nil(t, stored.Price)
+	for _, target := range []any{&model.PostTag{}, &model.PostFlavor{}, &model.PostImage{}} {
+		var count int64
+		require.NoError(t, gdb.Model(target).Where("post_id = ?", post.ID).Count(&count).Error)
+		require.Zero(t, count)
+	}
+
+	deleted := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "已删除不可编辑", []string{"删除编辑"}))
+	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(deleted.ID), nil, other.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+	status, _, _ = performJSON(t, engine, http.MethodDelete, postPath(deleted.ID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(
+		t, engine, http.MethodPut, postPath(deleted.ID), originalPayload, author.Token,
+	)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 }
 
 func testConcurrentPostEdits(
@@ -398,6 +734,23 @@ func testModerationFailureRollback(
 	var tagCount int64
 	require.NoError(t, gdb.Model(&model.Tag{}).Where("name = ?", "审核回滚").Count(&tagCount).Error)
 	require.Zero(t, tagCount, "审核失败时标签、主体、历史必须全部回滚")
+
+	timeoutModerator := testutil.NewMockModeration()
+	timeoutModerator.SetDefaultContent(testutil.ContentTimeout())
+	timeoutService := service.NewPostService(timeoutModerator)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err = database.RunInTx(timeoutCtx, func(ctx context.Context) error {
+		_, createErr := timeoutService.Create(
+			ctx, createPostInput(t, fixture, "审核超时整事务回滚", []string{}, nil), author.User.ID,
+		)
+		return createErr
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	timeoutModerator.RequireContentCalls(t, 1)
+	require.NoError(t, gdb.Model(&model.Post{}).
+		Where("title = ?", "审核超时整事务回滚").Count(&postCount).Error)
+	require.Zero(t, postCount)
 }
 
 func testPostActions(
@@ -445,6 +798,344 @@ func testPostActions(
 	require.EqualValues(t, 1, stored.LikeCount)
 	require.EqualValues(t, 1, stored.FavoriteCount)
 	require.True(t, stored.UpdatedAt.Equal(updatedAt), "点赞收藏不得改写内容更新时间")
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete, likePath, nil, other.Token)
+	require.Equal(t, http.StatusOK, status)
+	const concurrentLikes = 8
+	ready := make(chan struct{}, concurrentLikes)
+	start := make(chan struct{})
+	results := make(chan asyncRequestResult, concurrentLikes)
+	for range concurrentLikes {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			requestStatus, requestResponse, raw, requestErr := performJSONRequest(
+				engine, http.MethodPost, likePath, nil, other.Token,
+			)
+			results <- asyncRequestResult{
+				status: requestStatus, response: requestResponse, raw: raw, err: requestErr,
+			}
+		}()
+	}
+	for range concurrentLikes {
+		<-ready
+	}
+	close(start)
+	for range concurrentLikes {
+		result := <-results
+		require.NoError(t, result.err)
+		require.Equal(t, http.StatusOK, result.status)
+		var like service.PostLikeResult
+		decodeData(t, result.response, &like)
+		require.EqualValues(t, 1, like.LikeCount)
+	}
+	require.NoError(t, gdb.First(&stored, post.ID).Error)
+	require.EqualValues(t, 1, stored.LikeCount, "并发重复点赞只能形成一条关系")
+}
+
+func testPostListMatrix(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	groupTag := "筛选同组"
+	firstPayload := sharePostPayload(fixture, "筛选甲", []string{groupTag, "筛选甲"})
+	firstPayload["price"] = "10.00"
+	first := createPost(t, engine, author.Token, firstPayload)
+
+	secondPayload := sharePostPayload(fixture, "筛选乙", []string{groupTag, "筛选乙"})
+	secondPayload["share_type"] = model.ShareTypeWarning
+	secondPayload["category"] = model.PostCategoryRecipe
+	secondPayload["price"] = "30.00"
+	secondPayload["flavors"] = []string{fixture.Flavors[1].Name}
+	second := createPost(t, engine, author.Token, secondPayload)
+
+	thirdPayload := seekingPostPayload(fixture, "筛选丙")
+	thirdPayload["tags"] = []string{groupTag, "筛选丙"}
+	third := createPost(t, engine, author.Token, thirdPayload)
+
+	fixedCreatedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	require.NoError(t, gdb.Model(&model.Post{}).Where("id IN ?", []uint64{first.ID, second.ID, third.ID}).
+		UpdateColumn("created_at", fixedCreatedAt).Error)
+
+	assertFilter := func(values url.Values, included []uint64, excluded []uint64) {
+		t.Helper()
+		values.Set("limit", "100")
+		status, response, _ := performJSON(
+			t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
+		)
+		require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+		var result service.PostList
+		decodeData(t, response, &result)
+		ids := postListIDs(result.Posts)
+		for _, id := range included {
+			require.Contains(t, ids, id)
+		}
+		for _, id := range excluded {
+			require.NotContains(t, ids, id)
+		}
+	}
+	assertFilter(url.Values{"post_type": {string(model.PostTypeShare)}},
+		[]uint64{first.ID, second.ID}, []uint64{third.ID})
+	assertFilter(url.Values{"share_type": {string(model.ShareTypeWarning)}},
+		[]uint64{second.ID}, []uint64{first.ID, third.ID})
+	assertFilter(url.Values{"category": {string(model.PostCategoryRecipe)}},
+		[]uint64{second.ID}, []uint64{first.ID, third.ID})
+	assertFilter(url.Values{"canteen_code": {fixture.Canteen.Code}},
+		[]uint64{first.ID, second.ID, third.ID}, nil)
+	assertFilter(url.Values{"cuisine": {fixture.Cuisine.Name}},
+		[]uint64{first.ID, second.ID, third.ID}, nil)
+	assertFilter(url.Values{"flavors": {fixture.Flavors[1].Name}},
+		[]uint64{second.ID, third.ID}, []uint64{first.ID})
+	assertFilter(url.Values{"tags": {"筛选甲"}}, []uint64{first.ID}, []uint64{second.ID, third.ID})
+	assertFilter(url.Values{"min_price": {"10.01"}}, []uint64{second.ID}, []uint64{first.ID, third.ID})
+	assertFilter(url.Values{"max_price": {"10.00"}}, []uint64{first.ID}, []uint64{second.ID, third.ID})
+	assertFilter(url.Values{"min_price": {"9.99"}, "max_price": {"10.00"}},
+		[]uint64{first.ID}, []uint64{second.ID, third.ID})
+	assertFilter(url.Values{
+		"post_type": {string(model.PostTypeShare)}, "share_type": {string(model.ShareTypeRecommend)},
+		"category": {string(model.PostCategoryFood)}, "canteen_code": {fixture.Canteen.Code},
+		"cuisine": {fixture.Cuisine.Name}, "flavors": {fixture.Flavors[0].Name},
+		"tags": {"筛选甲"}, "min_price": {"10.00"}, "max_price": {"10.00"},
+	}, []uint64{first.ID}, []uint64{second.ID, third.ID})
+
+	values := url.Values{"tags": {groupTag}, "sort_by": {"latest"}, "limit": {"100"}}
+	status, response, _ := performJSON(
+		t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status)
+	var latest service.PostList
+	decodeData(t, response, &latest)
+	require.Equal(t, []uint64{third.ID, second.ID, first.ID}, postListIDs(latest.Posts),
+		"created_at 相同时必须用 id DESC 稳定排序")
+
+	values.Set("sort_by", "price")
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var byPrice service.PostList
+	decodeData(t, response, &byPrice)
+	require.Equal(t, []uint64{first.ID, second.ID, third.ID}, postListIDs(byPrice.Posts),
+		"价格排序应升序且空价格稳定置后")
+
+	for _, sortBy := range []string{"hot", "trending"} {
+		values.Set("sort_by", sortBy)
+		status, response, _ = performJSON(
+			t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
+		)
+		require.Equal(t, http.StatusOK, status)
+		var sorted service.PostList
+		decodeData(t, response, &sorted)
+		require.Equal(t, []uint64{third.ID, second.ID, first.ID}, postListIDs(sorted.Posts),
+			"sort_by=%s 在分数与时间相同时必须按 id DESC 稳定排序", sortBy)
+	}
+
+	values = url.Values{"tags": {groupTag}, "sort_by": {"latest"}, "page": {"2"}, "limit": {"2"}}
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var secondPage service.PostList
+	decodeData(t, response, &secondPage)
+	require.Equal(t, []uint64{first.ID}, postListIDs(secondPage.Posts))
+	require.EqualValues(t, 3, secondPage.Pagination.Total)
+	require.Equal(t, 2, secondPage.Pagination.TotalPages)
+
+	for _, path := range []string{
+		"/api/v2/posts?sort_by=unknown",
+		"/api/v2/posts?page=0",
+		"/api/v2/posts?limit=101",
+		"/api/v2/posts?min_price=20.00&max_price=10.00",
+	} {
+		status, response, _ = performJSON(t, engine, http.MethodGet, path, nil, author.Token)
+		require.Equal(t, http.StatusUnprocessableEntity, status, "path=%s", path)
+		require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	}
+
+	departed := fixtures.CreateUser()
+	departedPost := fixtures.CreatePost(departed.ID,
+		testutil.WithPostTitle("已注销作者帖子"), testutil.WithPostTags("注销作者帖"))
+	deletedAt := time.Now().UTC()
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", departed.ID).
+		UpdateColumn("deleted_at", deletedAt).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/posts?tags="+url.QueryEscape("注销作者帖"), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var departedList service.PostList
+	decodeData(t, response, &departedList)
+	require.Len(t, departedList.Posts, 1)
+	require.Equal(t, departedPost.Post.ID, departedList.Posts[0].ID)
+	require.Equal(t, "已注销用户", departedList.Posts[0].Author.Name)
+	require.Nil(t, departedList.Posts[0].Author.AvatarURL)
+}
+
+func testPostTextModeration(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	author service.AuthResult,
+	other service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	draftPayload := sharePostPayload(fixture, "作者草稿可见", []string{"草稿可见"})
+	draftPayload["status"] = model.PostStatusDraft
+	delete(draftPayload, "share_type")
+	draft := createPost(t, engine, author.Token, draftPayload)
+	require.Equal(t, model.PostStatusDraft, draft.Status)
+	assertPrivatePostVisibility(t, engine, draft.ID, author.Token, other.Token)
+	assertPostAbsentFromList(t, engine, author.Token, "草稿可见", draft.ID)
+
+	review := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "需人工审核帖子", []string{"待审可见"}))
+	require.Equal(t, model.PostStatusPending, review.Status)
+	assertPrivatePostVisibility(t, engine, review.ID, author.Token, other.Token)
+	assertPostAbsentFromList(t, engine, author.Token, "待审可见", review.ID)
+	assertPostModeration(t, gdb, review.ID, model.ModerationVerdictReview, []string{"manual_review"})
+
+	blocked := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "违规拦截帖子", []string{"驳回可见"}))
+	require.Equal(t, model.PostStatusRejected, blocked.Status)
+	assertPrivatePostVisibility(t, engine, blocked.ID, author.Token, other.Token)
+	assertPostAbsentFromList(t, engine, author.Token, "驳回可见", blocked.ID)
+	assertPostModeration(t, gdb, blocked.ID, model.ModerationVerdictBlock, []string{"blocked"})
+
+	edited := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "编辑前已发布帖子", []string{"编辑送审"}))
+	payload := sharePostPayload(fixture, "编辑后违规标题", []string{"编辑送审"})
+	payload["edit_reason"] = "验证编辑重新送审"
+	status, response, _ := performJSON(
+		t, engine, http.MethodPut, postPath(edited.ID), payload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var result service.PostCreateResult
+	decodeData(t, response, &result)
+	require.Equal(t, model.PostStatusRejected, result.Status)
+	var stored model.Post
+	require.NoError(t, gdb.First(&stored, edited.ID).Error)
+	require.Equal(t, model.PostStatusRejected, stored.Status)
+	require.Equal(t, "编辑后违规标题", stored.Title)
+	var histories []model.PostHistory
+	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("revision").Find(&histories).Error)
+	require.Equal(t, []int32{1, 2}, postRevisions(histories))
+	var records []model.ModerationRecord
+	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("id").Find(&records).Error)
+	require.Len(t, records, 2)
+	require.Equal(t, histories[1].ID, *records[1].PostHistoryID)
+	require.Equal(t, model.ModerationVerdictBlock, records[1].Verdict)
+	require.Equal(t, []string{"edited_block"}, []string(records[1].Labels))
+	assertPrivatePostVisibility(t, engine, edited.ID, author.Token, other.Token)
+}
+
+func testPostImageModeration(
+	t *testing.T,
+	h *testutil.Harness,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	moderationService := service.NewModerationService(service.DiscardModerationAlerter{})
+
+	passImage := completePostImage(t, h, author.Token, 2048)
+	passPayload := sharePostPayload(fixture, "图片待审后通过", []string{"图片通过"})
+	passPayload["images"] = []string{passImage.PublicURL}
+	passPost := createPost(t, h.Engine, author.Token, passPayload)
+	require.Equal(t, model.PostStatusPending, passPost.Status)
+	passResult := triggerPostImageCallback(
+		t, h, moderationService, "post-image-pass", model.ModerationVerdictPass,
+	)
+	require.False(t, passResult.Duplicate)
+	require.EqualValues(t, 1, passResult.ApprovedPosts)
+	assertStoredPostStatus(t, h.Database.GORM, passPost.ID, model.PostStatusApproved)
+
+	blockImage := completePostImage(t, h, author.Token, 3072)
+	blockPayload := sharePostPayload(fixture, "图片待审后拦截", []string{"图片拦截"})
+	blockPayload["images"] = []string{blockImage.PublicURL}
+	blockPost := createPost(t, h.Engine, author.Token, blockPayload)
+	require.Equal(t, model.PostStatusPending, blockPost.Status)
+	blockResult := triggerPostImageCallback(
+		t, h, moderationService, "post-image-block", model.ModerationVerdictBlock,
+	)
+	require.False(t, blockResult.Duplicate)
+	require.Zero(t, blockResult.ApprovedPosts)
+	assertStoredPostStatus(t, h.Database.GORM, blockPost.ID, model.PostStatusPending)
+	var storedImage model.ImageAsset
+	require.NoError(t, h.Database.GORM.First(&storedImage, blockImage.UploadID).Error)
+	require.Equal(t, model.ModerationStatusBlock, storedImage.Moderation)
+
+	earlyImage := completePostImage(t, h, author.Token, 4096)
+	earlyResult := triggerPostImageCallback(
+		t, h, moderationService, "post-image-early", model.ModerationVerdictPass,
+	)
+	require.Zero(t, earlyResult.ApprovedPosts)
+	earlyPayload := sharePostPayload(fixture, "图片回调早于发帖", []string{"图片早回调"})
+	earlyPayload["images"] = []string{earlyImage.PublicURL}
+	earlyPost := createPost(t, h.Engine, author.Token, earlyPayload)
+	require.Equal(t, model.PostStatusApproved, earlyPost.Status)
+
+	duplicateImage := completePostImage(t, h, author.Token, 5120)
+	duplicatePayload := sharePostPayload(fixture, "图片回调并发去重", []string{"图片去重"})
+	duplicatePayload["images"] = []string{duplicateImage.PublicURL}
+	duplicatePost := createPost(t, h.Engine, author.Token, duplicatePayload)
+	require.Equal(t, model.PostStatusPending, duplicatePost.Status)
+
+	type callbackResult struct {
+		result *service.ImageModerationApplyResult
+		err    error
+	}
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	results := make(chan callbackResult, 2)
+	for range 2 {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var applied *service.ImageModerationApplyResult
+			err := h.Database.DB.RunInTx(ctx, func(txCtx context.Context) error {
+				var callbackErr error
+				applied, callbackErr = h.Moderation.TriggerImageCallback(
+					txCtx, "post-image-duplicate", model.ModerationVerdictPass,
+					moderationService.ApplyImageCallback,
+				)
+				return callbackErr
+			})
+			results <- callbackResult{result: applied, err: err}
+		}()
+	}
+	<-ready
+	<-ready
+	close(start)
+	duplicateCount, appliedCount := 0, 0
+	for range 2 {
+		outcome := <-results
+		require.NoError(t, outcome.err)
+		if outcome.result.Duplicate {
+			duplicateCount++
+		}
+		appliedCount += int(outcome.result.ApprovedPosts)
+	}
+	require.Equal(t, 1, duplicateCount)
+	require.Equal(t, 1, appliedCount)
+	assertStoredPostStatus(t, h.Database.GORM, duplicatePost.ID, model.PostStatusApproved)
+
+	serial := triggerPostImageCallback(
+		t, h, moderationService, "post-image-duplicate", model.ModerationVerdictPass,
+	)
+	require.True(t, serial.Duplicate)
+	require.Zero(t, serial.ApprovedPosts)
+	var recordCount int64
+	require.NoError(t, h.Database.GORM.Model(&model.ModerationRecord{}).
+		Where("image_asset_id = ? AND provider_job_id = ?", duplicateImage.UploadID, "post-image-duplicate").
+		Count(&recordCount).Error)
+	require.EqualValues(t, 1, recordCount)
+	h.Moderation.RequireCallbackOrder(
+		t,
+		"post-image-pass", "post-image-block", "post-image-early",
+		"post-image-duplicate", "post-image-duplicate", "post-image-duplicate",
+	)
 }
 
 func testPostSoftDelete(
@@ -462,7 +1153,11 @@ func testPostSoftDelete(
 	require.NoError(t, gdb.First(&asset, asset.ID).Error)
 	require.Equal(t, model.ImageStatusReady, asset.Status)
 
-	status, _, _ := performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
+	status, response, _ := performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, post.ID).Error)
@@ -471,12 +1166,39 @@ func testPostSoftDelete(
 	require.NoError(t, gdb.First(&asset, asset.ID).Error)
 	require.Equal(t, model.ImageStatusRetired, asset.Status)
 
-	status, response, _ := performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, author.Token)
+	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, author.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+
+	status, response, _ = performJSON(
+		t, engine, http.MethodGet, "/api/v2/posts?tags="+url.QueryEscape("删除"), nil, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status)
+	var list service.PostList
+	decodeData(t, response, &list)
+	require.NotContains(t, postListIDs(list.Posts), post.ID)
+
+	status, response, _ = performJSON(
+		t, engine, http.MethodGet,
+		"/api/v2/search/posts?q="+url.QueryEscape("软删除帖子"), nil, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status)
+	var search service.SearchPostList
+	decodeData(t, response, &search)
+	for _, item := range search.Posts {
+		require.NotEqual(t, post.ID, item.ID)
+	}
+
+	for _, suffix := range []string{"/like", "/favorite"} {
+		status, response, _ = performJSON(
+			t, engine, http.MethodPost, postPath(post.ID)+suffix, nil, author.Token,
+		)
+		require.Equal(t, http.StatusNotFound, status)
+		require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	}
 }
 
 func testConcurrentImageReferences(
@@ -572,6 +1294,164 @@ func sharePostPayload(fixture postFixture, title string, tags []string) map[stri
 		"price": "18.5", "flavors": []string{fixture.Flavors[0].Name},
 		"tags": tags, "images": []string{},
 	}
+}
+
+func seekingPostPayload(fixture postFixture, title string) map[string]any {
+	return map[string]any{
+		"post_type": model.PostTypeSeeking, "status": model.PostStatusApproved,
+		"title": title, "content": "提问帖集成测试正文", "category": model.PostCategoryFood,
+		"canteen_code": fixture.Canteen.Code, "canteen_window_id": fixture.Window.ID,
+		"cuisine": fixture.Cuisine.Name, "tags": []string{"求推荐"}, "images": []string{},
+		"budget_range": map[string]any{"min": 10, "max": 30},
+		"preferences": map[string]any{
+			"prefer_flavors": []string{fixture.Flavors[0].Name},
+			"avoid_flavors":  []string{fixture.Flavors[1].Name},
+		},
+	}
+}
+
+func requireFieldError(
+	t *testing.T,
+	status int,
+	response testAPIResponse,
+	field string,
+	code apierr.FieldCode,
+) {
+	t.Helper()
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	var data struct {
+		Errors []apierr.FieldError `json:"errors"`
+	}
+	decodeData(t, response, &data)
+	require.NotEmpty(t, data.Errors)
+	for _, item := range data.Errors {
+		if item.Field == field {
+			require.Equal(t, code, item.Code)
+			return
+		}
+	}
+	require.Failf(t, "缺少字段错误", "field=%s errors=%+v", field, data.Errors)
+}
+
+func postRevisions(histories []model.PostHistory) []int32 {
+	revisions := make([]int32, 0, len(histories))
+	for _, history := range histories {
+		revisions = append(revisions, history.Revision)
+	}
+	return revisions
+}
+
+func postListIDs(posts []service.PostListItem) []uint64 {
+	ids := make([]uint64, 0, len(posts))
+	for _, post := range posts {
+		ids = append(ids, post.ID)
+	}
+	return ids
+}
+
+func assertPrivatePostVisibility(
+	t *testing.T,
+	engine *server.Hertz,
+	postID uint64,
+	authorToken string,
+	otherToken string,
+) {
+	t.Helper()
+	status, response, _ := performJSON(t, engine, http.MethodGet, postPath(postID), nil, authorToken)
+	require.Equal(t, http.StatusOK, status, "作者应能查看自己的非公开帖子")
+	var detail service.PostDetail
+	decodeData(t, response, &detail)
+	require.Equal(t, postID, detail.ID)
+	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(postID), nil, otherToken)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostNotPublished, response.ErrorCode)
+}
+
+func assertPostAbsentFromList(
+	t *testing.T,
+	engine *server.Hertz,
+	token string,
+	tag string,
+	postID uint64,
+) {
+	t.Helper()
+	status, response, _ := performJSON(
+		t, engine, http.MethodGet, "/api/v2/posts?tags="+url.QueryEscape(tag), nil, token,
+	)
+	require.Equal(t, http.StatusOK, status)
+	var list service.PostList
+	decodeData(t, response, &list)
+	require.NotContains(t, postListIDs(list.Posts), postID)
+}
+
+func assertPostModeration(
+	t *testing.T,
+	gdb *gorm.DB,
+	postID uint64,
+	verdict model.ModerationVerdict,
+	labels []string,
+) {
+	t.Helper()
+	var record model.ModerationRecord
+	require.NoError(t, gdb.Where("post_id = ?", postID).Order("id DESC").First(&record).Error)
+	require.Equal(t, verdict, record.Verdict)
+	require.Equal(t, labels, []string(record.Labels))
+	require.NotNil(t, record.PostHistoryID)
+}
+
+func completePostImage(
+	t *testing.T,
+	h *testutil.Harness,
+	token string,
+	size int64,
+) service.UploadCompleteResult {
+	t.Helper()
+	presign := presignImage(t, h.Engine, token, size)
+	status, response, _ := performJSON(
+		t, h.Engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", presign.UploadID), nil, token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var completed service.UploadCompleteResult
+	decodeData(t, response, &completed)
+	require.Equal(t, model.ImageStatusReady, completed.Status)
+	return completed
+}
+
+func triggerPostImageCallback(
+	t *testing.T,
+	h *testutil.Harness,
+	moderationService *service.ModerationService,
+	jobID string,
+	verdict model.ModerationVerdict,
+) *service.ImageModerationApplyResult {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var applied *service.ImageModerationApplyResult
+	err := h.Database.DB.RunInTx(ctx, func(txCtx context.Context) error {
+		var callbackErr error
+		applied, callbackErr = h.Moderation.TriggerImageCallback(
+			txCtx, jobID, verdict, moderationService.ApplyImageCallback,
+		)
+		return callbackErr
+	})
+	require.NoError(t, err)
+	require.NotNil(t, applied)
+	return applied
+}
+
+func assertStoredPostStatus(
+	t *testing.T,
+	gdb *gorm.DB,
+	postID uint64,
+	status model.PostStatus,
+) {
+	t.Helper()
+	var stored model.Post
+	require.NoError(t, gdb.First(&stored, postID).Error)
+	require.Equal(t, status, stored.Status)
 }
 
 func createPost(
