@@ -6,7 +6,7 @@
 
 ## 技术栈与架构
 
-- Go 1.27.0
+- Go 1.26.7
 - CloudWeGo Hertz 0.10
 - GORM 2 + pgx 5
 - PostgreSQL 18
@@ -28,7 +28,7 @@ router → handler → service → repository → model
 
 ### 环境要求
 
-- Go 1.27.0
+- Go 1.26.7
 - Docker Engine 和 Docker Compose
 - golangci-lint 2.13.1（仅 `make lint` 需要）
 

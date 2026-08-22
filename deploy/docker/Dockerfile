@@ -4,7 +4,7 @@
 # 拆开是为了滚动更新时不会每个副本都想跑一次迁移。
 
 # ---------- 依赖缓存层 ----------
-FROM golang:1.27.0-alpine AS deps
+FROM golang:1.26.7-alpine AS deps
 WORKDIR /src
 # 先只拷 go.mod/go.sum，让依赖层在源码变动时仍能命中缓存
 COPY go.mod go.sum ./

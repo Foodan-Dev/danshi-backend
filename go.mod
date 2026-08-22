@@ -1,6 +1,6 @@
 module github.com/jingyijun/danshi_backend_go
 
-go 1.27.0
+go 1.26.7
 
 require (
 	github.com/cloudwego/hertz v0.10.6
