@@ -45,12 +45,16 @@ func TestDictionaryDomainAgainstPostgres(t *testing.T) {
 		testDuplicateAndRejectedSuggestions(t, engine, gdb, proposer, ordinary, admin)
 	})
 
+	t.Run("suggestion validation ownership visibility and existing item reuse", func(t *testing.T) {
+		testDictionarySuggestionEdges(t, engine, gdb, proposer, ordinary, admin, fixture, post.ID)
+	})
+
 	t.Run("approve rollback is atomic", func(t *testing.T) {
 		testSuggestionApprovalRollback(t, engine, gdb, proposer, admin, post.ID)
 	})
 
 	t.Run("dictionary crud and in-use delete semantics", func(t *testing.T) {
-		testDictionaryCRUD(t, engine, gdb, ordinary, admin)
+		testDictionaryCRUD(t, engine, gdb, ordinary, admin, fixture)
 	})
 }
 
@@ -235,6 +239,10 @@ func testDuplicateAndRejectedSuggestions(
 		suggestionRejectPath(rejected.ID), map[string]any{"review_note": "再次驳回"}, admin.Token)
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizSuggestionClosed, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		suggestionApprovePath(rejected.ID), map[string]any{}, admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizSuggestionClosed, response.ErrorCode)
 
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		"/api/v2/dictionary-suggestions/mine?limit=100", nil, proposer.Token)
@@ -242,6 +250,102 @@ func testDuplicateAndRejectedSuggestions(
 	var mine service.SuggestionList
 	decodeData(t, response, &mine)
 	require.GreaterOrEqual(t, len(mine.Suggestions), 2)
+}
+
+func testDictionarySuggestionEdges(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	proposer service.AuthResult,
+	ordinary service.AuthResult,
+	admin service.AuthResult,
+	fixture postFixture,
+	postID uint64,
+) {
+	t.Helper()
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/dictionary-suggestions", map[string]any{
+			"kind": "invalid", "proposed_name": "非法类型",
+		}, proposer.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireDictionaryFieldError(t, response, "kind", apierr.FieldInvalidEnum)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/dictionary-suggestions", map[string]any{
+			"kind": model.SuggestionKindCanteenWindow, "proposed_name": "无父窗口",
+		}, proposer.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireDictionaryFieldError(t, response, "parent_canteen_id", apierr.FieldRequired)
+
+	foreignParent := createSuggestion(t, engine, ordinary.Token, map[string]any{
+		"kind": model.SuggestionKindCanteen, "proposed_name": "他人的父餐厅提议",
+	})
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/dictionary-suggestions", map[string]any{
+			"kind": model.SuggestionKindCanteenWindow, "proposed_name": "越权父提议窗口",
+			"parent_suggestion_id": foreignParent.ID,
+		}, proposer.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizSuggestionNotFound, response.ErrorCode)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/dictionary-suggestions", map[string]any{
+			"kind": model.SuggestionKindCuisine, "proposed_name": "越权来源帖", "post_id": postID,
+		}, ordinary.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+
+	first := createSuggestion(t, engine, proposer.Token, map[string]any{
+		"kind": model.SuggestionKindCuisine, "proposed_name": "同一用户重复提议",
+	})
+	second := createSuggestion(t, engine, proposer.Token, map[string]any{
+		"kind": model.SuggestionKindCuisine, "proposed_name": "同一用户重复提议",
+	})
+	require.NotEqual(t, first.ID, second.ID, "重复提议必须各自保留审核与来源语义")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/dictionary-suggestions/mine?limit=100", nil, ordinary.Token)
+	require.Equal(t, http.StatusOK, status)
+	var ordinaryMine service.SuggestionList
+	decodeData(t, response, &ordinaryMine)
+	require.False(t, suggestionPresent(ordinaryMine.Suggestions, first.ID))
+	require.False(t, suggestionPresent(ordinaryMine.Suggestions, second.ID))
+
+	existing := createSuggestion(t, engine, proposer.Token, map[string]any{
+		"kind": model.SuggestionKindCuisine, "proposed_name": fixture.Cuisine.Name,
+	})
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		suggestionApprovePath(existing.ID), map[string]any{}, ordinary.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizPermissionDenied, response.ErrorCode)
+	var stillPending model.DictionarySuggestion
+	require.NoError(t, gdb.First(&stillPending, existing.ID).Error)
+	require.Equal(t, model.SuggestionStatusPending, stillPending.Status)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		suggestionApprovePath(existing.ID), map[string]any{}, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var reused service.SuggestionView
+	decodeData(t, response, &reused)
+	require.Equal(t, &fixture.Cuisine.ID, reused.ResultingCuisineID)
+	var cuisineCount int64
+	require.NoError(t, gdb.Model(&model.Cuisine{}).
+		Where("name = ?", fixture.Cuisine.Name).Count(&cuisineCount).Error)
+	require.EqualValues(t, 1, cuisineCount)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/dictionary-suggestions?kind=invalid", nil, admin.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireDictionaryFieldError(t, response, "kind", apierr.FieldInvalidEnum)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/dictionary-suggestions/mine?page=999&limit=100", nil, proposer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var beyond service.SuggestionList
+	decodeData(t, response, &beyond)
+	require.Empty(t, beyond.Suggestions)
 }
 
 func testSuggestionApprovalRollback(
@@ -297,10 +401,15 @@ func testDictionaryCRUD(
 	gdb *gorm.DB,
 	ordinary service.AuthResult,
 	admin service.AuthResult,
+	fixture postFixture,
 ) {
 	t.Helper()
 	flavor := createAdminFlavor(t, engine, admin.Token, "CRUD 临时口味")
-	status, response, _ := performJSON(t, engine, http.MethodPatch,
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/admin/flavors", map[string]any{"name": flavor.Name}, admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizAlreadyExists, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPatch,
 		fmt.Sprintf("/api/v2/admin/flavors/%d", flavor.ID),
 		map[string]any{"name": "CRUD 已改口味", "is_active": false}, admin.Token)
 	require.Equal(t, http.StatusOK, status)
@@ -317,6 +426,10 @@ func testDictionaryCRUD(
 	require.Equal(t, http.StatusOK, status)
 	var cuisine service.DictionaryItemView
 	decodeData(t, response, &cuisine)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/admin/cuisines", map[string]any{"name": cuisine.Name}, admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizAlreadyExists, response.ErrorCode)
 	status, _, _ = performJSON(t, engine, http.MethodPatch,
 		fmt.Sprintf("/api/v2/admin/cuisines/%d", cuisine.ID),
 		map[string]any{"sort_order": 88}, admin.Token)
@@ -332,6 +445,12 @@ func testDictionaryCRUD(
 	require.Equal(t, http.StatusOK, status)
 	var canteen service.DictionaryCanteenView
 	decodeData(t, response, &canteen)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/admin/canteens", map[string]any{
+			"code": canteen.Code, "name": "CRUD 重复 code 餐厅", "campus": "测试校区",
+		}, admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizAlreadyExists, response.ErrorCode)
 	status, _, _ = performJSON(t, engine, http.MethodPatch,
 		fmt.Sprintf("/api/v2/admin/canteens/%d", canteen.ID),
 		map[string]any{"code": "changed-code"}, admin.Token)
@@ -342,6 +461,11 @@ func testDictionaryCRUD(
 	require.Equal(t, http.StatusOK, status)
 	var window service.DictionaryWindowView
 	decodeData(t, response, &window)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/admin/canteens/%d/windows", canteen.ID),
+		map[string]any{"name": window.Name, "floor": "2F"}, admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizAlreadyExists, response.ErrorCode)
 	status, response, _ = performJSON(t, engine, http.MethodPatch,
 		fmt.Sprintf("/api/v2/admin/canteen-windows/%d", window.ID),
 		map[string]any{"floor": nil, "is_active": false}, admin.Token)
@@ -358,10 +482,44 @@ func testDictionaryCRUD(
 
 	var approvedFlavor model.Flavor
 	require.NoError(t, gdb.Where("name = ?", "联合测试口味").First(&approvedFlavor).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPatch,
+		fmt.Sprintf("/api/v2/admin/flavors/%d", approvedFlavor.ID),
+		map[string]any{"is_active": false}, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var inactiveFlavor service.DictionaryItemView
+	decodeData(t, response, &inactiveFlavor)
+	require.False(t, inactiveFlavor.IsActive, "被帖子引用的词条仍必须允许停用")
 	status, response, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/flavors/%d", approvedFlavor.ID), nil, admin.Token)
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizDictItemInUse, response.ErrorCode)
+
+	createPost(t, engine, ordinary.Token,
+		sharePostPayload(fixture, "词表引用删除保护", []string{"词表保护"}))
+	for _, target := range []struct {
+		path string
+		name string
+	}{
+		{fmt.Sprintf("/api/v2/admin/cuisines/%d", fixture.Cuisine.ID), "被引用菜系"},
+		{fmt.Sprintf("/api/v2/admin/canteen-windows/%d", fixture.Window.ID), "被引用窗口"},
+		{fmt.Sprintf("/api/v2/admin/canteens/%d", fixture.Canteen.ID), "被引用餐厅"},
+	} {
+		status, response, _ = performJSON(t, engine, http.MethodDelete, target.path, nil, admin.Token)
+		require.Equal(t, http.StatusConflict, status, target.name)
+		require.Equal(t, apierr.BizDictItemInUse, response.ErrorCode, target.name)
+	}
+	status, response, _ = performJSON(t, engine, http.MethodPatch,
+		fmt.Sprintf("/api/v2/admin/canteens/%d", fixture.Canteen.ID),
+		map[string]any{"is_active": false}, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/config", nil, "")
+	require.Equal(t, http.StatusOK, status)
+	var config service.ExploreConfig
+	decodeData(t, response, &config)
+	for _, item := range config.Canteens {
+		require.NotEqual(t, fixture.Canteen.Code, item.ID,
+			"父餐厅停用后自身及其仍启用窗口都不能出现在配置中")
+	}
 
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", ordinary.User.ID).
 		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
@@ -369,6 +527,34 @@ func testDictionaryCRUD(
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/flavors/%d", superFlavor.ID), nil, ordinary.Token)
 	require.Equal(t, http.StatusOK, status, "super_admin 应拥有普通管理员词表权限")
+}
+
+func requireDictionaryFieldError(
+	t *testing.T,
+	response testAPIResponse,
+	field string,
+	code apierr.FieldCode,
+) {
+	t.Helper()
+	var data struct {
+		Errors []apierr.FieldError `json:"errors"`
+	}
+	decodeData(t, response, &data)
+	for _, item := range data.Errors {
+		if item.Field == field && item.Code == code {
+			return
+		}
+	}
+	t.Fatalf("未找到字段错误 field=%s code=%s，实际=%+v", field, code, data.Errors)
+}
+
+func suggestionPresent(suggestions []service.SuggestionView, id uint64) bool {
+	for _, suggestion := range suggestions {
+		if suggestion.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func createSuggestion(

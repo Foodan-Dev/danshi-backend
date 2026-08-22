@@ -32,6 +32,12 @@ func TestConfigDomainAgainstPostgres(t *testing.T) {
 		require.Equal(t, model.PostTypeSeeking, result.PostTypes[1].Type)
 		require.NotEmpty(t, result.Cuisines)
 		require.NotEmpty(t, result.Flavors)
+		require.GreaterOrEqual(t, len(result.Canteens), 2)
+		require.Equal(t, "config-tie-a", result.Canteens[0].ID)
+		require.Equal(t, "config-tie-b", result.Canteens[1].ID,
+			"相同 sort_order 必须以 id 稳定排序")
+		require.Equal(t, []string{"配置排序菜系 A", "配置排序菜系 B"}, result.Cuisines[:2])
+		require.Equal(t, []string{"配置排序口味 A", "配置排序口味 B"}, result.Flavors[:2])
 		require.Contains(t, result.Cuisines, "配置启用菜系")
 		require.NotContains(t, result.Cuisines, "配置停用菜系")
 		require.Contains(t, result.Flavors, "配置启用口味")
@@ -41,6 +47,10 @@ func TestConfigDomainAgainstPostgres(t *testing.T) {
 		for index := range result.Canteens {
 			item := &result.Canteens[index]
 			require.NotEqual(t, "config-inactive", item.ID)
+			for _, window := range item.Windows {
+				require.NotEqual(t, "父餐厅停用窗口", window.Name,
+					"父餐厅停用时不能泄漏仍为 active 的子窗口")
+			}
 			if item.ID == activeCanteen.Code {
 				found = item
 			}
@@ -76,6 +86,12 @@ func createConfigFixtures(t *testing.T, gdb *gorm.DB) (model.Canteen, model.Cant
 	}
 	require.NoError(t, gdb.Create(&activeCanteen).Error)
 	require.NoError(t, gdb.Create(&inactiveCanteen).Error)
+	for _, canteen := range []model.Canteen{
+		{Code: "config-tie-a", Name: "配置排序餐厅 A", Campus: "测试校区", SortOrder: -200, IsActive: true},
+		{Code: "config-tie-b", Name: "配置排序餐厅 B", Campus: "测试校区", SortOrder: -200, IsActive: true},
+	} {
+		require.NoError(t, gdb.Create(&canteen).Error)
+	}
 	floor := "1F"
 	activeWindow := model.CanteenWindow{
 		CanteenID: activeCanteen.ID, Name: "配置启用窗口", Floor: &floor,
@@ -98,11 +114,23 @@ func createConfigFixtures(t *testing.T, gdb *gorm.DB) (model.Canteen, model.Cant
 	require.NoError(t, gdb.Create(&model.Cuisine{
 		Name: "配置停用菜系", SortOrder: -99, IsActive: false,
 	}).Error)
+	require.NoError(t, gdb.Create(&model.Cuisine{
+		Name: "配置排序菜系 A", SortOrder: -200, IsActive: true,
+	}).Error)
+	require.NoError(t, gdb.Create(&model.Cuisine{
+		Name: "配置排序菜系 B", SortOrder: -200, IsActive: true,
+	}).Error)
 	require.NoError(t, gdb.Create(&model.Flavor{
 		Name: "配置启用口味", SortOrder: -100, IsActive: true,
 	}).Error)
 	require.NoError(t, gdb.Create(&model.Flavor{
 		Name: "配置停用口味", SortOrder: -99, IsActive: false,
+	}).Error)
+	require.NoError(t, gdb.Create(&model.Flavor{
+		Name: "配置排序口味 A", SortOrder: -200, IsActive: true,
+	}).Error)
+	require.NoError(t, gdb.Create(&model.Flavor{
+		Name: "配置排序口味 B", SortOrder: -200, IsActive: true,
 	}).Error)
 	return activeCanteen, activeWindow
 }
