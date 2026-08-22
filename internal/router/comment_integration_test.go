@@ -34,12 +34,15 @@ func fixedVerdictModerator(verdict model.ModerationVerdict) *testutil.MockModera
 }
 
 func TestCommentDomainAgainstPostgres(t *testing.T) {
-	gdb, database := openAuthPostgres(t)
-	cfg := authTestConfig()
-	sender := newCaptureEmailSender()
-	engine := authTestEngine(cfg, database, sender)
+	h := testutil.NewHarness(t)
+	gdb, database := h.Database.GORM, h.Database.DB
+	sender, engine := h.Email, h.Engine
 	actors := registerCommentActors(t, engine, sender)
-	fixture := loadPostFixture(t, gdb)
+	dictionaries := h.Fixtures.CreateDictionaries()
+	fixture := postFixture{
+		Canteen: dictionaries.Canteen, Window: dictionaries.Window,
+		Cuisine: dictionaries.Cuisine, Flavors: dictionaries.Flavors,
+	}
 
 	t.Run("comment route inventory", func(t *testing.T) {
 		testCommentRouteInventory(t, engine)
@@ -49,8 +52,16 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentCreateContract(t, engine, gdb, actors, fixture)
 	})
 
+	t.Run("parent content and mention boundary matrix", func(t *testing.T) {
+		testCommentCreateBoundaries(t, engine, gdb, h.Fixtures, actors, fixture)
+	})
+
 	t.Run("edit appends version and reruns moderation", func(t *testing.T) {
 		testCommentEditVersion(t, engine, gdb, actors, fixture)
+	})
+
+	t.Run("edit delete authorization and deleted guards", func(t *testing.T) {
+		testCommentMutationGuards(t, engine, gdb, actors, fixture)
 	})
 
 	t.Run("concurrent revisions are two and three", func(t *testing.T) {
@@ -79,6 +90,14 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("like is idempotent and recreatable", func(t *testing.T) {
 		testCommentLikes(t, engine, gdb, actors, fixture)
+	})
+
+	t.Run("deleted post hides comments and disables interaction", func(t *testing.T) {
+		testDeletedPostCommentVisibility(t, engine, actors, fixture)
+	})
+
+	t.Run("moderation failures roll back comment transaction", func(t *testing.T) {
+		testCommentModerationFailureRollback(t, gdb, database, actors, fixture)
 	})
 }
 
@@ -176,6 +195,148 @@ func testCommentCreateContract(
 		}, actors.Replier.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	requireFieldError(t, status, response, "reply_to_user_id", apierr.FieldConflict)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(root.Comment.ID)+"/replies?page=1&limit=1", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+	var replies service.CommentReplies
+	decodeData(t, response, &replies)
+	require.EqualValues(t, 2, replies.Pagination.Total)
+	require.Equal(t, 2, replies.Pagination.TotalPages)
+	require.Len(t, replies.Replies, 1)
+	require.Equal(t, firstReply.Comment.ID, replies.Replies[0].ID)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(firstReply.Comment.ID)+"/replies", nil, actors.PostAuthor.Token)
+	requireFieldError(t, status, response, "comment_id", apierr.FieldConflict)
+}
+
+func testCommentCreateBoundaries(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	fixtures *testutil.Fixtures,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	firstPost := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "评论父链边界甲", []string{"父链甲"}))
+	secondPost := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "评论父链边界乙", []string{"父链乙"}))
+	root := createComment(t, engine, actors.Commenter.Token, firstPost.ID,
+		map[string]any{"content": "父链根评论"})
+	otherRoot := createComment(t, engine, actors.Commenter.Token, secondPost.ID,
+		map[string]any{"content": "别帖根评论"})
+
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "回复不存在评论", "parent_id": uint64(9_999_999_999),
+		}, actors.Replier.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizCommentNotFound, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "零 parent id", "parent_id": 0,
+		}, actors.Replier.Token)
+	requireFieldError(t, status, response, "parent_id", apierr.FieldInvalidFormat)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "回复别帖评论", "parent_id": otherRoot.Comment.ID,
+		}, actors.Replier.Token)
+	requireFieldError(t, status, response, "parent_id", apierr.FieldConflict)
+
+	deletedParent := createComment(t, engine, actors.Commenter.Token, firstPost.ID,
+		map[string]any{"content": "即将删除的父评论"})
+	status, _, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(deletedParent.Comment.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "回复已删除评论", "parent_id": deletedParent.Comment.ID,
+		}, actors.Replier.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizCommentDeleted, response.ErrorCode)
+
+	for _, test := range []struct {
+		name    string
+		content string
+		code    apierr.FieldCode
+	}{
+		{name: "empty", content: "　\n", code: apierr.FieldRequired},
+		{name: "over unicode rune limit", content: strings.Repeat("评", 2001), code: apierr.FieldTooLong},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestStatus, requestResponse, _ := performJSON(t, engine, http.MethodPost,
+				fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID),
+				map[string]any{"content": test.content}, actors.Commenter.Token)
+			requireFieldError(t, requestStatus, requestResponse, "content", test.code)
+		})
+	}
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "提及不存在用户", "mentioned_user_ids": []uint64{9_999_999_999},
+		}, actors.Commenter.Token)
+	requireFieldError(t, status, response, "mentioned_user_ids", apierr.FieldConflict)
+
+	deletedUser := fixtures.CreateUser(testutil.WithDeletedUser(time.Now().UTC()))
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content": "提及已注销用户", "mentioned_user_ids": []uint64{deletedUser.ID},
+		}, actors.Commenter.Token)
+	requireFieldError(t, status, response, "mentioned_user_ids", apierr.FieldConflict)
+
+	selfMention := createComment(t, engine, actors.Commenter.Token, firstPost.ID, map[string]any{
+		"content": strings.Repeat("界", 2000), "parent_id": root.Comment.ID,
+		"mentioned_user_ids": []uint64{actors.Commenter.User.ID},
+	})
+	var mention model.CommentMention
+	require.NoError(t, gdb.Where(
+		"comment_id = ? AND user_id = ?", selfMention.Comment.ID, actors.Commenter.User.ID,
+	).First(&mention).Error)
+	var selfNotifications int64
+	require.NoError(t, gdb.Model(&model.Notification{}).Where(
+		"recipient_id = ? AND sender_id = ? AND type = ? AND related_comment_id = ?",
+		actors.Commenter.User.ID, actors.Commenter.User.ID,
+		model.NotificationTypeMention, selfMention.Comment.ID,
+	).Count(&selfNotifications).Error)
+	require.Zero(t, selfNotifications, "提及自己保留关系但不得给自己发通知")
+
+	departed := fixtures.CreateUser()
+	var firstPostRow model.Post
+	require.NoError(t, gdb.First(&firstPostRow, firstPost.ID).Error)
+	departedComment := fixtures.CreateComment(firstPostRow, departed.ID,
+		testutil.WithCommentContent("已注销作者评论仍保留"))
+	departedAt := time.Now().UTC()
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", departed.ID).
+		UpdateColumn("deleted_at", departedAt).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments?limit=100", firstPost.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status)
+	var departedList service.CommentList
+	decodeData(t, response, &departedList)
+	foundDeparted := false
+	for _, item := range departedList.Comments {
+		if item.ID == departedComment.Comment.ID {
+			foundDeparted = true
+			require.Equal(t, "已注销用户", item.Author.Name)
+			require.Nil(t, item.Author.AvatarURL)
+		}
+	}
+	require.True(t, foundDeparted)
+
+	for _, path := range []string{
+		fmt.Sprintf("/api/v2/posts/%d/comments?sort_by=unknown", firstPost.ID),
+		fmt.Sprintf("/api/v2/posts/%d/comments?page=0", firstPost.ID),
+		commentPath(root.Comment.ID) + "/replies?limit=101",
+	} {
+		status, response, _ = performJSON(t, engine, http.MethodGet, path, nil, actors.Commenter.Token)
+		require.Equal(t, http.StatusUnprocessableEntity, status, "path=%s", path)
+		require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	}
 }
 
 func testCommentEditVersion(
@@ -229,6 +390,55 @@ func testCommentEditVersion(
 		"content": "越权编辑",
 	}, actors.Replier.Token)
 	require.Equal(t, http.StatusForbidden, status)
+}
+
+func testCommentMutationGuards(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "评论变更守卫", []string{"评论守卫"}))
+	comment := createComment(t, engine, actors.Commenter.Token, post.ID,
+		map[string]any{"content": "评论变更守卫目标"})
+
+	status, response, _ := performJSON(t, engine, http.MethodPut,
+		commentPath(comment.Comment.ID), map[string]any{"content": "越权编辑"}, actors.Replier.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(comment.Comment.ID), nil, actors.Replier.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(comment.Comment.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status)
+	var stored model.Comment
+	require.NoError(t, gdb.First(&stored, comment.Comment.ID).Error)
+	require.NotNil(t, stored.DeletedAt)
+
+	requests := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{method: http.MethodPut, path: commentPath(comment.Comment.ID), body: map[string]any{"content": "删除后编辑"}},
+		{method: http.MethodGet, path: commentPath(comment.Comment.ID) + "/history"},
+		{method: http.MethodPost, path: commentPath(comment.Comment.ID) + "/like"},
+		{method: http.MethodDelete, path: commentPath(comment.Comment.ID) + "/like"},
+		{method: http.MethodDelete, path: commentPath(comment.Comment.ID)},
+	}
+	for _, request := range requests {
+		status, response, _ = performJSON(
+			t, engine, request.method, request.path, request.body, actors.Commenter.Token,
+		)
+		require.Equal(t, http.StatusNotFound, status, "method=%s path=%s", request.method, request.path)
+		require.Equal(t, apierr.BizCommentDeleted, response.ErrorCode)
+	}
 }
 
 func testConcurrentCommentEdits(
@@ -383,6 +593,14 @@ func testCommentModerationReview(
 	require.Nil(t, stored.DeletedReason)
 	require.Nil(t, stored.DeletedBy)
 	assertCommentModerationEvidence(t, gdb, stored.ID, model.ModerationVerdictReview)
+
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.Replier.Token)
+	require.Equal(t, http.StatusOK, status)
+	var listed service.CommentList
+	decodeData(t, response, &listed)
+	require.Contains(t, commentItemIDs(listed.Comments), stored.ID,
+		"review 评论必须保持公开可见")
 }
 
 func testCommentModerationBlock(
@@ -415,6 +633,17 @@ func testCommentModerationBlock(
 	require.Nil(t, stored.DeletedBy)
 	require.Equal(t, "机审违规内容", stored.Content, "软删除不得清空或覆盖原文")
 	assertCommentModerationEvidence(t, gdb, stored.ID, model.ModerationVerdictBlock)
+	var postRow model.Post
+	require.NoError(t, gdb.First(&postRow, post.ID).Error)
+	require.Zero(t, postRow.CommentCount)
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.Replier.Token)
+	require.Equal(t, http.StatusOK, status)
+	var listed service.CommentList
+	decodeData(t, response, &listed)
+	require.Len(t, listed.Comments, 1)
+	require.True(t, listed.Comments[0].IsDeleted)
+	require.Equal(t, "该评论已删除", listed.Comments[0].Content)
 }
 
 func assertCommentModerationEvidence(
@@ -474,10 +703,26 @@ func testCommentSoftDelete(
 	require.Len(t, listed.Comments[0].Replies, 1)
 	require.Equal(t, reply.Comment.ID, listed.Comments[0].Replies[0].ID)
 
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(root.Comment.ID)+"/replies", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+	var replies service.CommentReplies
+	decodeData(t, response, &replies)
+	require.Len(t, replies.Replies, 1)
+	require.Equal(t, reply.Comment.ID, replies.Replies[0].ID)
+
 	status, response, _ = performJSON(t, engine, http.MethodDelete,
 		commentPath(root.Comment.ID), nil, actors.Commenter.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizCommentDeleted, response.ErrorCode)
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(reply.Comment.ID), nil, actors.Replier.Token)
+	require.Equal(t, http.StatusOK, status)
+	require.NoError(t, gdb.First(&rootRow, root.Comment.ID).Error)
+	require.Zero(t, rootRow.ReplyCount)
+	require.NoError(t, gdb.First(&postRow, post.ID).Error)
+	require.Zero(t, postRow.CommentCount)
 }
 
 func testCommentLikes(
@@ -522,6 +767,164 @@ func testCommentLikes(
 	require.EqualValues(t, 1, likeCount)
 	require.NoError(t, gdb.First(&stored, comment.Comment.ID).Error)
 	require.True(t, stored.UpdatedAt.Equal(updatedAt), "点赞不得改写评论内容更新时间")
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete, likePath, nil, actors.Replier.Token)
+	require.Equal(t, http.StatusOK, status)
+	const concurrentLikes = 8
+	ready := make(chan struct{}, concurrentLikes)
+	start := make(chan struct{})
+	results := make(chan asyncRequestResult, concurrentLikes)
+	for range concurrentLikes {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			requestStatus, requestResponse, raw, requestErr := performJSONRequest(
+				engine, http.MethodPost, likePath, nil, actors.Replier.Token,
+			)
+			results <- asyncRequestResult{
+				status: requestStatus, response: requestResponse, raw: raw, err: requestErr,
+			}
+		}()
+	}
+	for range concurrentLikes {
+		<-ready
+	}
+	close(start)
+	for range concurrentLikes {
+		outcome := <-results
+		require.NoError(t, outcome.err)
+		require.Equal(t, http.StatusOK, outcome.status)
+		var concurrent service.CommentLikeResult
+		decodeData(t, outcome.response, &concurrent)
+		require.EqualValues(t, 1, concurrent.LikeCount)
+	}
+	require.NoError(t, gdb.Model(&model.CommentLike{}).
+		Where("comment_id = ?", comment.Comment.ID).Count(&likeCount).Error)
+	require.EqualValues(t, 1, likeCount, "并发重复点赞只能形成一条关系")
+}
+
+func testDeletedPostCommentVisibility(
+	t *testing.T,
+	engine *server.Hertz,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "删除帖子评论可见性", []string{"删帖评论"}))
+	root := createComment(t, engine, actors.Commenter.Token, post.ID,
+		map[string]any{"content": "帖子删除后不可见的评论"})
+	reply := createComment(t, engine, actors.Replier.Token, post.ID,
+		map[string]any{"content": "帖子删除后不可见的回复", "parent_id": root.Comment.ID})
+
+	status, _, _ := performJSON(t, engine, http.MethodDelete,
+		postPath(post.ID), nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(root.Comment.ID)+"/replies", nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), map[string]any{"content": "删帖后新评论"},
+		actors.Commenter.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+
+	for _, commentID := range []uint64{root.Comment.ID, reply.Comment.ID} {
+		status, response, _ = performJSON(t, engine, http.MethodPost,
+			commentPath(commentID)+"/like", nil, actors.Mentioned.Token)
+		require.Equal(t, http.StatusConflict, status)
+		require.Equal(t, apierr.BizPostNotPublished, response.ErrorCode)
+	}
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(root.Comment.ID)+"/history", nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status, "作者仍可审计自己在已删帖子下的评论历史")
+}
+
+func testCommentModerationFailureRollback(
+	t *testing.T,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	postService := service.NewPostService(service.DirectPassContentModerator{})
+	var post *service.PostCreateResult
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var createErr error
+		post, createErr = postService.Create(
+			ctx, createPostInput(t, fixture, "评论审核故障帖子", []string{}, nil), actors.PostAuthor.User.ID,
+		)
+		return createErr
+	})
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name       string
+		content    string
+		moderation testutil.ContentModerationOutcome
+		timeout    bool
+	}{
+		{
+			name: "http 503", content: "评论审核 503 回滚",
+			moderation: testutil.ContentHTTPFailure(http.StatusServiceUnavailable),
+		},
+		{
+			name: "timeout", content: "评论审核超时回滚",
+			moderation: testutil.ContentTimeout(), timeout: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			moderation := testutil.NewMockModeration()
+			moderation.SetDefaultContent(test.moderation)
+			commentService := service.NewCommentService(moderation)
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			if test.timeout {
+				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+				defer cancel()
+			}
+			err := database.RunInTx(ctx, func(txCtx context.Context) error {
+				_, createErr := commentService.Create(txCtx, post.ID,
+					service.CreateCommentInput{Content: test.content}, actors.Commenter.User.ID)
+				return createErr
+			})
+			require.Error(t, err)
+			if test.timeout {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, apierr.As(err).Status)
+			}
+			moderation.RequireContentCalls(t, 1)
+			var commentCount int64
+			require.NoError(t, gdb.Model(&model.Comment{}).
+				Where("post_id = ? AND content = ?", post.ID, test.content).Count(&commentCount).Error)
+			require.Zero(t, commentCount)
+			var historyCount, recordCount int64
+			require.NoError(t, gdb.Model(&model.CommentHistory{}).
+				Where("content = ?", test.content).Count(&historyCount).Error)
+			require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+				Where("comment_id IN (SELECT id FROM comments WHERE content = ?)", test.content).
+				Count(&recordCount).Error)
+			require.Zero(t, historyCount)
+			require.Zero(t, recordCount)
+		})
+	}
+}
+
+func commentItemIDs(comments []service.CommentItem) []uint64 {
+	ids := make([]uint64, 0, len(comments))
+	for _, comment := range comments {
+		ids = append(ids, comment.ID)
+	}
+	return ids
 }
 
 func registerCommentActors(
