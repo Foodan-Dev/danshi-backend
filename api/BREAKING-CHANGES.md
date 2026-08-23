@@ -264,6 +264,23 @@ Python v1/旧库与 Go v2/新库并行隔离。
 
 ## 新增、勘误与行为变更（不计入上述破坏性变更）
 
+### 图片响应：新增三档图片与头像缩略图字段
+
+- **类别**：附加字段，非破坏。
+- **动机**：让信息流和详情按展示场景加载实时派生缩略图，同时保留原图 URL 作为资产身份。
+- **影响端点**：
+  - `GET /api/v2/posts`
+  - `GET /api/v2/posts/{post_id}`
+  - `GET /api/v2/users/{user_id}/posts`
+  - `GET /api/v2/users/{user_id}/favorites`
+  - `GET /api/v2/search/posts`
+- **新增字段**：帖子条目增加与 `images` 同序等长的 `image_displays`、`image_thumbs`；
+  帖子作者增加 `avatar_thumb_url`。原 `images` 与 `avatar_url` 语义不变。
+- **私有图片边界**：上传者和管理端短期签名读取响应不生成派生档位，避免追加查询参数使
+  COS 签名失效；墓碑 URL 原样保留，不追加处理参数。
+- **前端影响**：列表使用 `image_thumbs`，详情使用 `image_displays`，查看大图或保存继续使用
+  `images`；无图时三个数组均为 `[]`。
+
 ### §3.4：新增本人账号注销端点
 
 - **类别**：新增端点，非破坏。

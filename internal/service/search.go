@@ -23,9 +23,10 @@ type SearchPostsInput struct {
 
 // SearchPostAuthor 是搜索结果中的作者公开信息。
 type SearchPostAuthor struct {
-	ID        uint64  `json:"id"`
-	Name      string  `json:"name"`
-	AvatarURL *string `json:"avatar_url"`
+	ID             uint64  `json:"id"`
+	Name           string  `json:"name"`
+	AvatarURL      *string `json:"avatar_url"`
+	AvatarThumbURL *string `json:"avatar_thumb_url"`
 }
 
 // SearchPostStats 是搜索卡片使用的帖子计数。
@@ -43,15 +44,17 @@ type SearchHighlight struct {
 
 // SearchPostItem 是帖子搜索结果项。
 type SearchPostItem struct {
-	ID        uint64             `json:"id"`
-	Title     string             `json:"title"`
-	Content   string             `json:"content"`
-	Category  model.PostCategory `json:"category"`
-	Images    []string           `json:"images"`
-	Author    SearchPostAuthor   `json:"author"`
-	Stats     SearchPostStats    `json:"stats"`
-	Highlight SearchHighlight    `json:"highlight"`
-	CreatedAt ptime.Time         `json:"created_at"`
+	ID            uint64             `json:"id"`
+	Title         string             `json:"title"`
+	Content       string             `json:"content"`
+	Category      model.PostCategory `json:"category"`
+	Images        []string           `json:"images"`
+	ImageDisplays []string           `json:"image_displays"`
+	ImageThumbs   []string           `json:"image_thumbs"`
+	Author        SearchPostAuthor   `json:"author"`
+	Stats         SearchPostStats    `json:"stats"`
+	Highlight     SearchHighlight    `json:"highlight"`
+	CreatedAt     ptime.Time         `json:"created_at"`
 }
 
 // SearchPostList 是帖子搜索分页响应。
@@ -159,10 +162,15 @@ func searchPostItem(
 	if record.AuthorDeletedAt != nil {
 		name, avatarURL = "已注销用户", nil
 	}
+	images := nonNilStrings(relations.Images[record.ID])
+	imageDisplays, imageThumbs := deriveImageTiers(images)
 	return SearchPostItem{
 		ID: record.ID, Title: record.Title, Content: content, Category: record.Category,
-		Images: nonNilStrings(relations.Images[record.ID]),
-		Author: SearchPostAuthor{ID: record.AuthorID, Name: name, AvatarURL: avatarURL},
+		Images: images, ImageDisplays: imageDisplays, ImageThumbs: imageThumbs,
+		Author: SearchPostAuthor{
+			ID: record.AuthorID, Name: name, AvatarURL: avatarURL,
+			AvatarThumbURL: avatarThumbURL(avatarURL),
+		},
 		Stats: SearchPostStats{
 			LikeCount: record.LikeCount, ViewCount: record.ViewCount, CommentCount: record.CommentCount,
 		},

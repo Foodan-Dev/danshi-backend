@@ -90,10 +90,11 @@ type CanteenWindowView struct {
 
 // PostAuthorView 是帖子作者的公开信息。
 type PostAuthorView struct {
-	ID          uint64  `json:"id"`
-	Name        string  `json:"name"`
-	AvatarURL   *string `json:"avatar_url"`
-	IsFollowing *bool   `json:"is_following"`
+	ID             uint64  `json:"id"`
+	Name           string  `json:"name"`
+	AvatarURL      *string `json:"avatar_url"`
+	AvatarThumbURL *string `json:"avatar_thumb_url"`
+	IsFollowing    *bool   `json:"is_following"`
 }
 
 // PostStatsView 是帖子计数器展示。
@@ -131,6 +132,8 @@ type PostListItem struct {
 	Tags          []string           `json:"tags"`
 	Price         *money.Amount      `json:"price"`
 	Images        []string           `json:"images"`
+	ImageDisplays []string           `json:"image_displays"`
+	ImageThumbs   []string           `json:"image_thumbs"`
 	Author        PostAuthorView     `json:"author"`
 	Stats         PostStatsView      `json:"stats"`
 	IsLiked       bool               `json:"is_liked"`

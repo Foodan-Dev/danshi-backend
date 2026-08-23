@@ -23,12 +23,14 @@ func buildPostListItem(
 		amount := money.FromDecimal(*record.Price)
 		price = &amount
 	}
+	images := nonNilStrings(relations.Images[record.ID])
+	imageDisplays, imageThumbs := deriveImageTiers(images)
 	return PostListItem{
 		ID: record.ID, PostType: record.PostType, ShareType: record.ShareType,
 		Title: record.Title, Content: record.Content, Category: record.Category,
 		Canteen: buildCanteen(record), CanteenWindow: buildWindow(record), Cuisine: record.CuisineName,
 		Flavors: flavors, Tags: nonNilStrings(relations.Tags[record.ID]), Price: price,
-		Images: nonNilStrings(relations.Images[record.ID]),
+		Images: images, ImageDisplays: imageDisplays, ImageThumbs: imageThumbs,
 		Author: buildPostAuthor(record, relations, currentUserID),
 		Stats: PostStatsView{
 			LikeCount: record.LikeCount, FavoriteCount: record.FavoriteCount,
@@ -71,7 +73,8 @@ func buildPostAuthor(
 		following = &value
 	}
 	return PostAuthorView{
-		ID: record.AuthorID, Name: name, AvatarURL: avatarURL, IsFollowing: following,
+		ID: record.AuthorID, Name: name, AvatarURL: avatarURL,
+		AvatarThumbURL: avatarThumbURL(avatarURL), IsFollowing: following,
 	}
 }
 

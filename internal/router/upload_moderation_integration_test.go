@@ -298,6 +298,8 @@ func testSignedModerationQueueAndAdminUser(
 		}
 	}
 	require.NotEmpty(t, signedQueueURL)
+	require.NotContains(t, signedQueueURL, "imageMogr2",
+		"签名读取地址不得盲目追加图片处理参数")
 	_, err = storage.ReadPresignedURL(signedQueueURL)
 	require.NoError(t, err, "待人工复核队列应返回可读取私有对象的短期 URL")
 
@@ -307,6 +309,8 @@ func testSignedModerationQueueAndAdminUser(
 	var detail service.AdminUserDetail
 	decodeData(t, response, &detail)
 	require.NotNil(t, detail.AvatarURL)
+	require.NotContains(t, *detail.AvatarURL, "imageMogr2",
+		"管理端签名头像不得生成会破坏签名的缩略地址")
 	_, err = storage.ReadPresignedURL(*detail.AvatarURL)
 	require.NoError(t, err, "管理端单用户详情应签发私有头像读取 URL")
 
@@ -888,6 +892,8 @@ func testImageCallbackAccessControl(
 	var ownerView service.UploadImageView
 	decodeData(t, response, &ownerView)
 	require.Equal(t, model.ModerationStatusBlock, ownerView.Moderation)
+	require.NotContains(t, ownerView.ImageURL, "imageMogr2",
+		"上传者签名读取地址不得盲目追加图片处理参数")
 	_, err = storage.ReadPresignedURL(ownerView.ImageURL)
 	require.NoError(t, err, "上传者本人应能通过短期签名 URL 读取同一张私有图片")
 
@@ -900,6 +906,8 @@ func testImageCallbackAccessControl(
 	var reviewerView service.AdminImageView
 	decodeData(t, response, &reviewerView)
 	require.NotNil(t, reviewerView.ImageURL)
+	require.NotContains(t, *reviewerView.ImageURL, "imageMogr2",
+		"审核员签名读取地址不得盲目追加图片处理参数")
 	_, err = storage.ReadPresignedURL(*reviewerView.ImageURL)
 	require.NoError(t, err, "内容审核员应能通过短期签名 URL 读取同一张私有图片")
 	require.Equal(t, []testutil.StoragePresignGetCall{

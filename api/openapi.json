@@ -1558,6 +1558,10 @@
       },
       "PostAuthorView": {
         "properties": {
+          "avatar_thumb_url": {
+            "nullable": true,
+            "type": "string"
+          },
           "avatar_url": {
             "nullable": true,
             "type": "string"
@@ -1644,6 +1648,18 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
+          },
+          "image_displays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "image_thumbs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "images": {
             "items": {
@@ -1836,6 +1852,18 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
+          },
+          "image_displays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "image_thumbs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "images": {
             "items": {
@@ -2037,6 +2065,10 @@
       },
       "SearchPostAuthor": {
         "properties": {
+          "avatar_thumb_url": {
+            "nullable": true,
+            "type": "string"
+          },
           "avatar_url": {
             "nullable": true,
             "type": "string"
@@ -2077,6 +2109,18 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
+          },
+          "image_displays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "image_thumbs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "images": {
             "items": {
