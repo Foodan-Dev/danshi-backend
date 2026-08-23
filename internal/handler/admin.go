@@ -11,7 +11,6 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
 	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
@@ -51,7 +50,11 @@ type adminManualReviewRequest struct {
 
 // PendingPosts 返回待审帖子。
 func (h *Admin) PendingPosts(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[paginationQuery](c)
+	params, paramsErr := query.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.AdminPostList
 	if err == nil {
 		result, err = h.service.PendingPosts(ctx, params)
@@ -77,10 +80,14 @@ func (h *Admin) ReviewPost(ctx context.Context, c *app.RequestContext) {
 
 // Posts 返回全部帖子，包含软删除行。
 func (h *Admin) Posts(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[adminPostsQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.AdminPostList
 	if err == nil {
-		result, err = h.service.Posts(ctx, c.Query("status"), c.Query("post_type"), params)
+		result, err = h.service.Posts(ctx, string(query.Status), string(query.PostType), params)
 	}
 	respondAdmin(ctx, c, "请求成功", result, err)
 }
@@ -107,14 +114,18 @@ func (h *Admin) RestorePost(ctx context.Context, c *app.RequestContext) {
 
 // Users 返回全部用户，包含软删除行。
 func (h *Admin) Users(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[adminUsersQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var active *bool
 	if err == nil {
-		active, err = optionalBool(c.Query("is_active"))
+		active, err = optionalBool(query.IsActive)
 	}
 	var result *service.AdminUserList
 	if err == nil {
-		result, err = h.service.Users(ctx, c.Query("role"), active, params)
+		result, err = h.service.Users(ctx, string(query.Role), active, params)
 	}
 	respondAdmin(ctx, c, "请求成功", result, err)
 }
@@ -158,7 +169,11 @@ func (h *Admin) UpdateUserRole(ctx context.Context, c *app.RequestContext) {
 
 // Admins 返回 admin 角色用户。
 func (h *Admin) Admins(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[paginationQuery](c)
+	params, paramsErr := query.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.AdminUserList
 	if err == nil {
 		result, err = h.service.Admins(ctx, params)
@@ -168,7 +183,11 @@ func (h *Admin) Admins(ctx context.Context, c *app.RequestContext) {
 
 // SuperAdmins 返回 super_admin 角色用户。
 func (h *Admin) SuperAdmins(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[paginationQuery](c)
+	params, paramsErr := query.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.AdminUserList
 	if err == nil {
 		result, err = h.service.SuperAdmins(ctx, params)
@@ -178,10 +197,14 @@ func (h *Admin) SuperAdmins(ctx context.Context, c *app.RequestContext) {
 
 // Comments 返回全部评论，包含软删除行。
 func (h *Admin) Comments(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[adminCommentsQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var postID *uint64
-	if err == nil && c.Query("post_id") != "" {
-		value, parseErr := positivePathID(c.Query("post_id"), "post_id")
+	if err == nil && query.PostID != "" {
+		value, parseErr := positivePathID(query.PostID, "post_id")
 		postID, err = &value, parseErr
 	}
 	var result *service.AdminCommentList
@@ -213,7 +236,11 @@ func (h *Admin) RestoreComment(ctx context.Context, c *app.RequestContext) {
 
 // PendingModeration 返回通用待人工复核队列。
 func (h *Admin) PendingModeration(ctx context.Context, c *app.RequestContext) {
-	params, err := adminPagination(c)
+	query, err := bindQuery[paginationQuery](c)
+	params, paramsErr := query.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.AdminModerationList
 	if err == nil {
 		result, err = h.service.PendingModeration(ctx, params)
@@ -245,10 +272,6 @@ func adminIdentity(c *app.RequestContext, field string) (uint64, *service.Princi
 	}
 	principal, err := middleware.CurrentPrincipal(c)
 	return id, principal, err
-}
-
-func adminPagination(c *app.RequestContext) (pagination.Params, error) {
-	return pagination.Parse(c.Query("page"), c.Query("limit"))
 }
 
 func respondAdmin[T any](

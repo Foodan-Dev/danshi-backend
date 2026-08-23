@@ -38,12 +38,16 @@ type updateCommentRequest struct {
 
 // List 返回帖子楼主评论页与每楼最新两条回复预览。
 func (h *Comment) List(ctx context.Context, c *app.RequestContext) {
+	query, queryErr := bindQuery[commentListQuery](c)
 	postID, err := positivePathID(c.Param("post_id"), "post_id")
+	if err == nil {
+		err = queryErr
+	}
 	principal, principalErr := middleware.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
-	params, paramsErr := pagination.Parse(c.Query("page"), c.Query("limit"))
+	params, paramsErr := query.Pagination.params()
 	if err == nil {
 		err = paramsErr
 	}
@@ -51,7 +55,7 @@ func (h *Comment) List(ctx context.Context, c *app.RequestContext) {
 		failService(ctx, c, err)
 		return
 	}
-	result, err := h.service.List(ctx, postID, principal.User.ID, c.Query("sort_by"), params)
+	result, err := h.service.List(ctx, postID, principal.User.ID, query.SortBy, params)
 	if err != nil {
 		failService(ctx, c, err)
 		return
@@ -61,7 +65,13 @@ func (h *Comment) List(ctx context.Context, c *app.RequestContext) {
 
 // Replies 返回一楼内拍扁后的全部回复。
 func (h *Comment) Replies(ctx context.Context, c *app.RequestContext) {
-	commentID, principal, params, err := commentListIdentity(c, true)
+	query, err := bindQuery[replyPaginationQuery](c)
+	var commentID uint64
+	var principal *service.Principal
+	var params pagination.Params
+	if err == nil {
+		commentID, principal, params, err = commentListIdentity(c, query)
+	}
 	if err != nil {
 		failService(ctx, c, err)
 		return
@@ -187,14 +197,10 @@ func commentIdentity(c *app.RequestContext) (uint64, *service.Principal, error) 
 
 func commentListIdentity(
 	c *app.RequestContext,
-	repliesDefault bool,
+	query replyPaginationQuery,
 ) (uint64, *service.Principal, pagination.Params, error) {
 	commentID, principal, err := commentIdentity(c)
-	rawLimit := c.Query("limit")
-	if repliesDefault && rawLimit == "" {
-		rawLimit = "10"
-	}
-	params, paramsErr := pagination.Parse(c.Query("page"), rawLimit)
+	params, paramsErr := query.params()
 	if err == nil {
 		err = paramsErr
 	}

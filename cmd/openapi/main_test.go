@@ -44,6 +44,7 @@ func TestRepositoryRegistryGenerates79ValidOperations(t *testing.T) {
 		postConflict.Value.Content.Get("application/json").Schema.Value.Properties["error_code"].Value.Enum)
 	fieldError := document.Components.Schemas["FieldError"].Value
 	require.Equal(t, codeEnums(catalog.FieldCodes), fieldError.Properties["code"].Value.Enum)
+	assertRepositoryQueryParameters(t, document)
 	assertInferredResponses(t, document)
 }
 
@@ -90,7 +91,7 @@ func assertInferredResponses(t *testing.T, document *openapi3.T) {
 			if operation.Security != nil {
 				require.NotNil(t, operation.Responses.Value("401"), "%s 缺少鉴权 401", key)
 			}
-			if len(operation.Parameters) > 0 {
+			if hasParameterIn(operation, "path") {
 				require.NotNil(t, operation.Responses.Value("404"), "%s 缺少资源 404", key)
 				require.NotNil(t, operation.Responses.Value("422"), "%s 缺少路径校验 422", key)
 			}
@@ -102,4 +103,75 @@ func assertInferredResponses(t *testing.T, document *openapi3.T) {
 			}
 		}
 	}
+}
+
+func assertRepositoryQueryParameters(t *testing.T, document *openapi3.T) {
+	t.Helper()
+	posts := document.Paths.Value("/api/v2/posts").Get
+	require.Equal(t, []string{
+		"post_type", "share_type", "category", "canteen_code", "cuisine", "flavors", "tags",
+		"min_price", "max_price", "sort_by", "page", "limit",
+	}, parameterNames(posts))
+	require.Len(t, posts.Parameters, 12)
+	require.Equal(t, []any{"share", "seeking"}, parameterByName(t, posts, "post_type").Schema.Value.Enum)
+	require.Equal(t, []any{"latest", "hot", "trending", "price"},
+		parameterByName(t, posts, "sort_by").Schema.Value.Enum)
+	require.Equal(t, "latest", parameterByName(t, posts, "sort_by").Schema.Value.Default)
+	page := parameterByName(t, posts, "page")
+	require.Equal(t, openapi3.TypeInteger, page.Schema.Value.Type.Slice()[0])
+	require.EqualValues(t, 1, page.Schema.Value.Default)
+	require.EqualValues(t, 1, *page.Schema.Value.Min)
+	limit := parameterByName(t, posts, "limit")
+	require.EqualValues(t, 20, limit.Schema.Value.Default)
+	require.EqualValues(t, 1, *limit.Schema.Value.Min)
+	require.EqualValues(t, 100, *limit.Schema.Value.Max)
+	flavors := parameterByName(t, posts, "flavors")
+	require.Equal(t, openapi3.TypeArray, flavors.Schema.Value.Type.Slice()[0])
+	require.Equal(t, "form", flavors.Style)
+	require.NotNil(t, flavors.Explode)
+	require.False(t, *flavors.Explode)
+	require.Equal(t, `^(?:0|[0-9]{1,8})(?:\.[0-9]{1,2})?$`,
+		parameterByName(t, posts, "min_price").Schema.Value.Pattern)
+
+	searchPosts := document.Paths.Value("/api/v2/search/posts").Get
+	require.Len(t, searchPosts.Parameters, 13)
+	require.Equal(t, append([]string{"q"}, parameterNames(posts)...), parameterNames(searchPosts))
+	require.True(t, parameterByName(t, searchPosts, "q").Required)
+	require.Empty(t, parameterByName(t, searchPosts, "sort_by").Schema.Value.Enum)
+	require.Nil(t, parameterByName(t, searchPosts, "sort_by").Schema.Value.Default)
+
+	replies := document.Paths.Value("/api/v2/comments/{comment_id}/replies").Get
+	require.EqualValues(t, 10, parameterByName(t, replies, "limit").Schema.Value.Default)
+	callback := document.Paths.Value("/api/v2/moderation/tencent-ci/callback").Post
+	require.True(t, parameterByName(t, callback, "token").Required)
+}
+
+func hasParameterIn(operation *openapi3.Operation, location string) bool {
+	for _, parameter := range operation.Parameters {
+		if parameter.Value.In == location {
+			return true
+		}
+	}
+	return false
+}
+
+func parameterNames(operation *openapi3.Operation) []string {
+	names := make([]string, 0, len(operation.Parameters))
+	for _, parameter := range operation.Parameters {
+		if parameter.Value.In == "query" {
+			names = append(names, parameter.Value.Name)
+		}
+	}
+	return names
+}
+
+func parameterByName(t *testing.T, operation *openapi3.Operation, name string) *openapi3.Parameter {
+	t.Helper()
+	for _, parameter := range operation.Parameters {
+		if parameter.Value.In == "query" && parameter.Value.Name == name {
+			return parameter.Value
+		}
+	}
+	require.FailNow(t, "query 参数不存在", "name=%s", name)
+	return nil
 }

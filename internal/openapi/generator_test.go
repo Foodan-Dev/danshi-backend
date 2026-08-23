@@ -103,6 +103,44 @@ func TestCoverageGateFailsWhenRouteHasNoTypeBinding(t *testing.T) {
 	require.ErrorContains(t, err, "GET /registered")
 }
 
+func TestQueryGateFailsWhenGetRouteHasNoDeclaration(t *testing.T) {
+	runtimeRoutes := route.RoutesInfo{{Method: http.MethodGet, Path: "/registered"}}
+	declarations := []apicontract.Route{{
+		Method: http.MethodGet, Path: "/registered", ExpectedStatus: http.StatusOK,
+	}}
+	bindings := []apicontract.TypedRoute{{
+		Method: http.MethodGet, Path: "/registered",
+	}}
+	err := ValidateCoverage(runtimeRoutes, declarations, bindings)
+	require.ErrorContains(t, err, "OpenAPI query 参数门禁失败")
+	require.ErrorContains(t, err, "GET /registered")
+}
+
+func TestQueryParametersReflectTagsAndSerialization(t *testing.T) {
+	type pageQuery struct {
+		Page   string   `query:"page" query_type:"integer" query_default:"1" query_min:"1"`
+		Limit  string   `query:"limit" query_type:"integer" query_default:"20" query_min:"1" query_max:"100"`
+		Tags   []string `query:"tags" query_explode:"false"`
+		SortBy string   `query:"sort_by,required" query_enum:"latest,hot" query_default:"latest"`
+	}
+
+	parameters, err := queryParametersForValue(pageQuery{})
+	require.NoError(t, err)
+	require.Len(t, parameters, 4)
+	require.Equal(t, "page", parameters[0].Name)
+	require.Equal(t, openapi3.TypeInteger, parameters[0].Schema.Value.Type.Slice()[0])
+	require.EqualValues(t, 1, parameters[0].Schema.Value.Default)
+	require.EqualValues(t, 1, *parameters[0].Schema.Value.Min)
+	require.EqualValues(t, 100, *parameters[1].Schema.Value.Max)
+	require.Equal(t, openapi3.TypeArray, parameters[2].Schema.Value.Type.Slice()[0])
+	require.Equal(t, "form", parameters[2].Style)
+	require.NotNil(t, parameters[2].Explode)
+	require.False(t, *parameters[2].Explode)
+	require.True(t, parameters[3].Required)
+	require.Equal(t, []any{"latest", "hot"}, parameters[3].Schema.Value.Enum)
+	require.Equal(t, "latest", parameters[3].Schema.Value.Default)
+}
+
 func TestGenerateProducesValidImportableMinimum(t *testing.T) {
 	runtimeRoutes := route.RoutesInfo{{Method: http.MethodGet, Path: "/things/:thing_id"}}
 	declarations := []apicontract.Route{{
@@ -111,7 +149,7 @@ func TestGenerateProducesValidImportableMinimum(t *testing.T) {
 	}}
 	bindings := []apicontract.TypedRoute{{
 		Method: http.MethodGet, Path: "/things/:thing_id",
-		TypeBinding: apicontract.TypeBinding{Response: struct {
+		TypeBinding: apicontract.TypeBinding{Query: apicontract.NoQuery{}, Response: struct {
 			ID uint64 `json:"id"`
 		}{}},
 	}}

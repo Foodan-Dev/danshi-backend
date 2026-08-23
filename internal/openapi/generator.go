@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -122,6 +124,24 @@ func ValidateCoverage(
 	if len(missing) > 0 || len(extra) > 0 {
 		return fmt.Errorf("OpenAPI 类型覆盖门禁失败: 未绑定类型=%v, 无运行时路由的绑定=%v", missing, extra)
 	}
+	undeclaredQuery := make([]string, 0)
+	for _, runtimeRoute := range runtimeRoutes {
+		key := apicontract.Key(runtimeRoute.Method, runtimeRoute.Path)
+		binding := typed[key]
+		if runtimeRoute.Method == http.MethodGet && binding.Query == nil {
+			undeclaredQuery = append(undeclaredQuery, key)
+			continue
+		}
+		if binding.Query != nil {
+			if _, err := apicontract.QueryFields(binding.Query); err != nil {
+				return fmt.Errorf("OpenAPI query 参数门禁失败: %s: %w", key, err)
+			}
+		}
+	}
+	if len(undeclaredQuery) > 0 {
+		slices.Sort(undeclaredQuery)
+		return fmt.Errorf("OpenAPI query 参数门禁失败: 未声明 query 参数=%v", undeclaredQuery)
+	}
 	return nil
 }
 
@@ -206,6 +226,13 @@ func typedOperation(
 		parameter.Schema = &openapi3.SchemaRef{Value: openapi3.NewInt64Schema().WithMin(1)}
 		operation.AddParameter(parameter)
 	}
+	queryParameters, err := queryParametersForValue(binding.Query)
+	if err != nil {
+		return nil, fmt.Errorf("生成 query 参数: %w", err)
+	}
+	for _, parameter := range queryParameters {
+		operation.AddParameter(parameter)
+	}
 	if binding.Request != nil {
 		requestSchema, err := schemaForValue(binding.Request, schemas)
 		if err != nil {
@@ -222,6 +249,163 @@ func typedOperation(
 		operation.Security = requirements
 	}
 	return operation, nil
+}
+
+func queryParametersForValue(query any) ([]*openapi3.Parameter, error) {
+	if query == nil {
+		return nil, nil
+	}
+	fields, err := apicontract.QueryFields(query)
+	if err != nil {
+		return nil, err
+	}
+	parameters := make([]*openapi3.Parameter, 0, len(fields))
+	for _, field := range fields {
+		schema, err := querySchema(field)
+		if err != nil {
+			return nil, fmt.Errorf("参数 %s: %w", field.Name, err)
+		}
+		parameter := openapi3.NewQueryParameter(field.Name).WithRequired(field.Required)
+		parameter.Schema = &openapi3.SchemaRef{Value: schema}
+		if rawExplode, exists := field.Tag.Lookup("query_explode"); exists {
+			explode, err := strconv.ParseBool(rawExplode)
+			if err != nil {
+				return nil, fmt.Errorf("参数 %s 的 query_explode 必须是布尔值", field.Name)
+			}
+			parameter.Style = "form"
+			parameter.Explode = &explode
+		}
+		parameters = append(parameters, parameter)
+	}
+	return parameters, nil
+}
+
+func querySchema(field apicontract.QueryField) (*openapi3.Schema, error) {
+	valueType := field.Type
+	for valueType.Kind() == reflect.Pointer {
+		valueType = valueType.Elem()
+	}
+	schema, schemaType, err := queryBaseSchema(valueType, field.Tag.Get("query_type"))
+	if err != nil {
+		return nil, err
+	}
+
+	if rawEnum := field.Tag.Get("query_enum"); rawEnum != "" {
+		if schemaType != openapi3.TypeString {
+			return nil, fmt.Errorf("query_enum 只支持字符串参数")
+		}
+		values := strings.Split(rawEnum, ",")
+		enums := make([]any, 0, len(values))
+		for _, value := range values {
+			if value == "" {
+				return nil, fmt.Errorf("query_enum 不能包含空值")
+			}
+			enums = append(enums, value)
+		}
+		schema.Enum = enums
+	}
+	if rawDefault := field.Tag.Get("query_default"); rawDefault != "" {
+		value, err := queryLiteral(rawDefault, schemaType)
+		if err != nil {
+			return nil, fmt.Errorf("非法 query_default %q: %w", rawDefault, err)
+		}
+		schema.Default = value
+	}
+	if rawMinimum := field.Tag.Get("query_min"); rawMinimum != "" {
+		minimum, err := strconv.ParseFloat(rawMinimum, 64)
+		if err != nil || schemaType != openapi3.TypeInteger && schemaType != openapi3.TypeNumber {
+			return nil, fmt.Errorf("非法 query_min %q", rawMinimum)
+		}
+		schema.Min = &minimum
+	}
+	if rawMaximum := field.Tag.Get("query_max"); rawMaximum != "" {
+		maximum, err := strconv.ParseFloat(rawMaximum, 64)
+		if err != nil || schemaType != openapi3.TypeInteger && schemaType != openapi3.TypeNumber {
+			return nil, fmt.Errorf("非法 query_max %q", rawMaximum)
+		}
+		schema.Max = &maximum
+	}
+	if pattern := field.Tag.Get("query_pattern"); pattern != "" {
+		if schemaType != openapi3.TypeString {
+			return nil, fmt.Errorf("query_pattern 只支持字符串参数")
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return nil, fmt.Errorf("非法 query_pattern %q: %w", pattern, err)
+		}
+		schema.Pattern = pattern
+	}
+	return schema, nil
+}
+
+func queryBaseSchema(valueType reflect.Type, override string) (*openapi3.Schema, string, error) {
+	if valueType.Kind() != reflect.Slice && valueType.Kind() != reflect.Array {
+		return queryScalarSchema(valueType, override)
+	}
+	if override != "" {
+		return nil, "", fmt.Errorf("数组参数不能覆盖 query_type")
+	}
+	itemSchema, _, err := queryScalarSchema(valueType.Elem(), "")
+	if err != nil {
+		return nil, "", err
+	}
+	return openapi3.NewArraySchema().WithItems(itemSchema), openapi3.TypeArray, nil
+}
+
+func queryScalarSchema(valueType reflect.Type, override string) (*openapi3.Schema, string, error) {
+	for valueType.Kind() == reflect.Pointer {
+		valueType = valueType.Elem()
+	}
+	schemaType := override
+	if schemaType == "" {
+		switch valueType.Kind() {
+		case reflect.String:
+			schemaType = openapi3.TypeString
+		case reflect.Bool:
+			schemaType = openapi3.TypeBoolean
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			schemaType = openapi3.TypeInteger
+		case reflect.Float32, reflect.Float64:
+			schemaType = openapi3.TypeNumber
+		default:
+			return nil, "", fmt.Errorf("不支持的 query 字段类型 %s", valueType)
+		}
+	}
+	var schema *openapi3.Schema
+	switch schemaType {
+	case openapi3.TypeString:
+		schema = openapi3.NewStringSchema()
+	case openapi3.TypeBoolean:
+		schema = openapi3.NewBoolSchema()
+	case openapi3.TypeInteger:
+		schema = openapi3.NewInt64Schema()
+	case openapi3.TypeNumber:
+		schema = openapi3.NewFloat64Schema()
+	default:
+		return nil, "", fmt.Errorf("不支持的 query_type %q", schemaType)
+	}
+	if values := enumValues(valueType); len(values) > 0 {
+		if schemaType != openapi3.TypeString {
+			return nil, "", fmt.Errorf("枚举类型 %s 必须生成字符串参数", valueType)
+		}
+		schema.Enum = values
+	}
+	return schema, schemaType, nil
+}
+
+func queryLiteral(raw, schemaType string) (any, error) {
+	switch schemaType {
+	case openapi3.TypeString:
+		return raw, nil
+	case openapi3.TypeBoolean:
+		return strconv.ParseBool(raw)
+	case openapi3.TypeInteger:
+		return strconv.ParseInt(raw, 10, 64)
+	case openapi3.TypeNumber:
+		return strconv.ParseFloat(raw, 64)
+	default:
+		return nil, fmt.Errorf("%s 参数不支持默认值", schemaType)
+	}
 }
 
 func responseStatuses(

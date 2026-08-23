@@ -10,7 +10,6 @@ import (
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
@@ -28,18 +27,22 @@ func NewNotification(notificationService *service.NotificationService) *Notifica
 // List 返回当前用户通知列表。
 func (h *Notification) List(ctx context.Context, c *app.RequestContext) {
 	principal, err := middleware.CurrentPrincipal(c)
-	params, paramsErr := pagination.Parse(c.Query("page"), c.Query("limit"))
+	query, queryErr := bindQuery[notificationListQuery](c)
+	if err == nil {
+		err = queryErr
+	}
+	params, paramsErr := query.Pagination.params()
 	if err == nil {
 		err = paramsErr
 	}
-	isRead, readErr := optionalBool(c.Query("is_read"))
+	isRead, readErr := optionalBool(query.IsRead)
 	if err == nil {
 		err = readErr
 	}
 	var result *service.NotificationList
 	if err == nil {
 		result, err = h.service.List(ctx, principal.User.ID, service.NotificationListInput{
-			IsRead: isRead, Type: c.Query("type"), Pagination: params,
+			IsRead: isRead, Type: string(query.Type), Pagination: params,
 		})
 	}
 	if err != nil {

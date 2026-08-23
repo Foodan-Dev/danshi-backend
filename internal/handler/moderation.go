@@ -36,7 +36,12 @@ func (h *Moderation) TencentCICallback(ctx context.Context, c *app.RequestContex
 		failService(ctx, c, apierr.ServiceUnavailable("审核回调暂时不可用"))
 		return
 	}
-	provided := c.Query("token")
+	query, err := bindQuery[moderationCallbackQuery](c)
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	provided := query.Token
 	providedDigest := sha256.Sum256([]byte(provided))
 	expectedDigest := sha256.Sum256([]byte(h.token))
 	if subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) != 1 {

@@ -2748,6 +2748,29 @@
     "/api/v2/admin/admins": {
       "get": {
         "operationId": "get_api_v2_admin_admins",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4333,6 +4356,38 @@
     "/api/v2/admin/comments": {
       "get": {
         "operationId": "get_api_v2_admin_comments",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "post_id",
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5631,6 +5686,42 @@
     "/api/v2/admin/dictionary-suggestions": {
       "get": {
         "operationId": "get_api_v2_admin_dictionary_suggestions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "enum": [
+                "flavor",
+                "cuisine",
+                "canteen",
+                "canteen_window"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6980,6 +7071,29 @@
     "/api/v2/admin/moderation-records/pending": {
       "get": {
         "operationId": "get_api_v2_admin_moderation_records_pending",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7392,6 +7506,53 @@
     "/api/v2/admin/posts": {
       "get": {
         "operationId": "get_api_v2_admin_posts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "enum": [
+                "draft",
+                "pending",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "post_type",
+            "schema": {
+              "enum": [
+                "share",
+                "seeking"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7556,6 +7717,29 @@
     "/api/v2/admin/posts/pending": {
       "get": {
         "operationId": "get_api_v2_admin_posts_pending",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8413,6 +8597,29 @@
     "/api/v2/admin/super-admins": {
       "get": {
         "operationId": "get_api_v2_admin_super_admins",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8577,6 +8784,48 @@
     "/api/v2/admin/users": {
       "get": {
         "operationId": "get_api_v2_admin_users",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "role",
+            "schema": {
+              "enum": [
+                "user",
+                "admin",
+                "super_admin"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11526,6 +11775,27 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 10,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -11995,6 +12265,29 @@
     "/api/v2/dictionary-suggestions/mine": {
       "get": {
         "operationId": "get_api_v2_dictionary_suggestions_mine",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -12128,6 +12421,16 @@
     "/api/v2/moderation/tencent-ci/callback": {
       "post": {
         "operationId": "post_api_v2_moderation_tencent_ci_callback",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -12358,6 +12661,51 @@
     "/api/v2/notifications": {
       "get": {
         "operationId": "get_api_v2_notifications",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "is_read",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "schema": {
+              "enum": [
+                "like_post",
+                "like_comment",
+                "comment",
+                "reply",
+                "mention",
+                "follow"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -12874,6 +13222,130 @@
     "/api/v2/posts": {
       "get": {
         "operationId": "get_api_v2_posts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "post_type",
+            "schema": {
+              "enum": [
+                "share",
+                "seeking"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "share_type",
+            "schema": {
+              "enum": [
+                "recommend",
+                "warning"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "schema": {
+              "enum": [
+                "food",
+                "recipe"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "canteen_code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuisine",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "flavors",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "tags",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "min_price",
+            "schema": {
+              "pattern": "^(?:0|[0-9]{1,8})(?:\\.[0-9]{1,2})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_price",
+            "schema": {
+              "pattern": "^(?:0|[0-9]{1,8})(?:\\.[0-9]{1,2})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "hot",
+                "trending",
+                "price"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -14000,6 +14472,39 @@
             "required": true,
             "schema": {
               "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "schema": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "hot"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
               "minimum": 1,
               "type": "integer"
             }
@@ -15446,6 +15951,131 @@
     "/api/v2/search/posts": {
       "get": {
         "operationId": "get_api_v2_search_posts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "post_type",
+            "schema": {
+              "enum": [
+                "share",
+                "seeking"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "share_type",
+            "schema": {
+              "enum": [
+                "recommend",
+                "warning"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "schema": {
+              "enum": [
+                "food",
+                "recipe"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "canteen_code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cuisine",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "flavors",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "tags",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "min_price",
+            "schema": {
+              "pattern": "^(?:0|[0-9]{1,8})(?:\\.[0-9]{1,2})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_price",
+            "schema": {
+              "pattern": "^(?:0|[0-9]{1,8})(?:\\.[0-9]{1,2})?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -15579,6 +16209,37 @@
     "/api/v2/search/users": {
       "get": {
         "operationId": "get_api_v2_search_users",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -16649,6 +17310,27 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -17268,6 +17950,27 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -17444,6 +18147,27 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -17617,6 +18341,40 @@
             "required": true,
             "schema": {
               "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "enum": [
+                "draft",
+                "pending",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
               "minimum": 1,
               "type": "integer"
             }

@@ -12,11 +12,15 @@ func OpenAPIBindings() []apicontract.TypedRoute {
 	bindings := []apicontract.TypedRoute{
 		{
 			Method: http.MethodGet, Path: "/health",
-			TypeBinding: apicontract.TypeBinding{Response: RuntimeStatus{}},
+			TypeBinding: apicontract.TypeBinding{
+				Query: apicontract.NoQuery{}, Response: RuntimeStatus{},
+			},
 		},
 		{
 			Method: http.MethodGet, Path: "/ready",
-			TypeBinding: apicontract.TypeBinding{Response: RuntimeStatus{}},
+			TypeBinding: apicontract.TypeBinding{
+				Query: apicontract.NoQuery{}, Response: RuntimeStatus{},
+			},
 		},
 	}
 	return append(bindings, handler.OpenAPIBindings()...)

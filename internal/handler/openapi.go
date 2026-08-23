@@ -28,32 +28,32 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 			http.StatusUnauthorized, http.StatusForbidden),
 		binding(http.MethodPost, "/api/v2/auth/refresh", refreshRequest{}, service.TokenResult{},
 			http.StatusUnauthorized),
-		binding(http.MethodGet, "/api/v2/auth/me", nil, currentUserResponse{}),
+		getBinding("/api/v2/auth/me", apicontract.NoQuery{}, currentUserResponse{}),
 		binding(http.MethodPost, "/api/v2/auth/logout", nil, nil),
 		binding(http.MethodPost, "/api/v2/auth/logout-all", nil, nil),
-		binding(http.MethodGet, "/api/v2/auth/sessions", nil, sessionsResponse{}),
+		getBinding("/api/v2/auth/sessions", apicontract.NoQuery{}, sessionsResponse{}),
 		binding(http.MethodDelete, "/api/v2/auth/sessions/:id", nil, nil),
 
-		binding(http.MethodGet, "/api/v2/users/:user_id", nil, service.UserProfile{}),
+		getBinding("/api/v2/users/:user_id", apicontract.NoQuery{}, service.UserProfile{}),
 		binding(http.MethodPut, "/api/v2/users/:user_id", updateUserRequest{}, service.UserUpdateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
-		binding(http.MethodGet, "/api/v2/users/:user_id/posts", nil, service.PostList{},
+		getBinding("/api/v2/users/:user_id/posts", userPostsQuery{}, service.PostList{},
 			http.StatusForbidden),
-		binding(http.MethodGet, "/api/v2/users/:user_id/favorites", nil, service.PostList{},
+		getBinding("/api/v2/users/:user_id/favorites", paginationQuery{}, service.PostList{},
 			http.StatusForbidden),
 		binding(http.MethodPost, "/api/v2/users/:user_id/follow", nil, service.FollowActionResult{},
 			http.StatusBadRequest),
 		binding(http.MethodDelete, "/api/v2/users/:user_id/follow", nil, service.FollowActionResult{},
 			http.StatusBadRequest),
-		binding(http.MethodGet, "/api/v2/users/:user_id/following", nil, service.UserFollowList{}),
-		binding(http.MethodGet, "/api/v2/users/:user_id/followers", nil, service.UserFollowList{}),
+		getBinding("/api/v2/users/:user_id/following", paginationQuery{}, service.UserFollowList{}),
+		getBinding("/api/v2/users/:user_id/followers", paginationQuery{}, service.UserFollowList{}),
 	}
 }
 
 func postAndCommentOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
-		binding(http.MethodGet, "/api/v2/posts", nil, service.PostList{}, http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/posts/:post_id", nil, service.PostDetail{}),
+		getBinding("/api/v2/posts", listPostsQuery{}, service.PostList{}, http.StatusUnprocessableEntity),
+		getBinding("/api/v2/posts/:post_id", apicontract.NoQuery{}, service.PostDetail{}),
 		binding(http.MethodPost, "/api/v2/posts", createPostRequest{}, service.PostCreateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,
 			http.StatusConflict, http.StatusServiceUnavailable),
@@ -61,7 +61,7 @@ func postAndCommentOpenAPIBindings() []apicontract.TypedRoute {
 			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict,
 			http.StatusServiceUnavailable),
 		binding(http.MethodDelete, "/api/v2/posts/:post_id", nil, nil, http.StatusForbidden),
-		binding(http.MethodGet, "/api/v2/posts/:post_id/history", nil, service.PostHistoryList{},
+		getBinding("/api/v2/posts/:post_id/history", apicontract.NoQuery{}, service.PostHistoryList{},
 			http.StatusForbidden),
 		binding(http.MethodPost, "/api/v2/posts/:post_id/like", nil, service.PostLikeResult{},
 			http.StatusConflict),
@@ -72,13 +72,13 @@ func postAndCommentOpenAPIBindings() []apicontract.TypedRoute {
 		binding(http.MethodDelete, "/api/v2/posts/:post_id/favorite", nil, service.PostFavoriteResult{},
 			http.StatusConflict),
 
-		binding(http.MethodGet, "/api/v2/posts/:post_id/comments", nil, service.CommentList{}),
+		getBinding("/api/v2/posts/:post_id/comments", commentListQuery{}, service.CommentList{}),
 		binding(http.MethodPost, "/api/v2/posts/:post_id/comments", createCommentRequest{}, service.CommentMutationResult{},
 			http.StatusConflict, http.StatusServiceUnavailable),
-		binding(http.MethodGet, "/api/v2/comments/:comment_id/replies", nil, service.CommentReplies{}),
+		getBinding("/api/v2/comments/:comment_id/replies", replyPaginationQuery{}, service.CommentReplies{}),
 		binding(http.MethodPut, "/api/v2/comments/:comment_id", updateCommentRequest{}, service.CommentMutationResult{},
 			http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
-		binding(http.MethodGet, "/api/v2/comments/:comment_id/history", nil, service.CommentHistoryList{},
+		getBinding("/api/v2/comments/:comment_id/history", apicontract.NoQuery{}, service.CommentHistoryList{},
 			http.StatusForbidden),
 		binding(http.MethodPost, "/api/v2/comments/:comment_id/like", nil, service.CommentLikeResult{},
 			http.StatusConflict),
@@ -90,21 +90,21 @@ func postAndCommentOpenAPIBindings() []apicontract.TypedRoute {
 
 func utilityOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
-		binding(http.MethodGet, "/api/v2/notifications", nil, service.NotificationList{},
+		getBinding("/api/v2/notifications", notificationListQuery{}, service.NotificationList{},
 			http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/notifications/unread-count", nil, service.NotificationStats{}),
+		getBinding("/api/v2/notifications/unread-count", apicontract.NoQuery{}, service.NotificationStats{}),
 		binding(http.MethodPut, "/api/v2/notifications/read-all", nil, service.NotificationMarked{}),
 		binding(http.MethodPut, "/api/v2/notifications/:notification_id/read", nil, nil),
 
-		binding(http.MethodGet, "/api/v2/search/posts", nil, service.SearchPostList{},
+		getBinding("/api/v2/search/posts", searchPostsQuery{}, service.SearchPostList{},
 			http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/search/users", nil, service.SearchUserList{},
+		getBinding("/api/v2/search/users", searchUsersQuery{}, service.SearchUserList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPost, "/api/v2/uploads/presign", uploadPresignRequest{}, service.UploadPresignResult{},
 			http.StatusServiceUnavailable),
 		binding(http.MethodPost, "/api/v2/uploads/:upload_id/complete", nil, service.UploadCompleteResult{},
 			http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
-		binding(http.MethodGet, "/api/v2/config", nil, service.ExploreConfig{}),
+		getBinding("/api/v2/config", apicontract.NoQuery{}, service.ExploreConfig{}),
 	}
 }
 
@@ -112,9 +112,9 @@ func dictionaryOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
 		binding(http.MethodPost, "/api/v2/dictionary-suggestions", createSuggestionRequest{}, service.SuggestionView{},
 			http.StatusForbidden, http.StatusNotFound, http.StatusConflict),
-		binding(http.MethodGet, "/api/v2/dictionary-suggestions/mine", nil, service.SuggestionList{},
+		getBinding("/api/v2/dictionary-suggestions/mine", paginationQuery{}, service.SuggestionList{},
 			http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/admin/dictionary-suggestions", nil, service.SuggestionList{},
+		getBinding("/api/v2/admin/dictionary-suggestions", dictionaryPendingQuery{}, service.SuggestionList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPost, "/api/v2/admin/dictionary-suggestions/:suggestion_id/approve", approveSuggestionRequest{}, service.SuggestionView{},
 			http.StatusConflict),
@@ -149,33 +149,34 @@ func dictionaryOpenAPIBindings() []apicontract.TypedRoute {
 
 func moderationAndAdminOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
-		binding(http.MethodPost, "/api/v2/moderation/tencent-ci/callback", json.RawMessage{}, service.ImageModerationApplyResult{},
+		queryBinding(http.MethodPost, "/api/v2/moderation/tencent-ci/callback", moderationCallbackQuery{},
+			json.RawMessage{}, service.ImageModerationApplyResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,
 			http.StatusConflict, http.StatusServiceUnavailable),
 
-		binding(http.MethodGet, "/api/v2/admin/posts/pending", nil, service.AdminPostList{},
+		getBinding("/api/v2/admin/posts/pending", paginationQuery{}, service.AdminPostList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPut, "/api/v2/admin/posts/:post_id/review", adminPostReviewRequest{}, service.AdminPostReviewResult{},
 			http.StatusConflict),
-		binding(http.MethodGet, "/api/v2/admin/posts", nil, service.AdminPostList{},
+		getBinding("/api/v2/admin/posts", adminPostsQuery{}, service.AdminPostList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodDelete, "/api/v2/admin/posts/:post_id", nil, service.AdminPostDeleteResult{}),
 		binding(http.MethodPut, "/api/v2/admin/posts/:post_id/restore", nil, service.AdminPostRestoreResult{},
 			http.StatusConflict),
-		binding(http.MethodGet, "/api/v2/admin/users", nil, service.AdminUserList{},
+		getBinding("/api/v2/admin/users", adminUsersQuery{}, service.AdminUserList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPut, "/api/v2/admin/users/:user_id/status", adminUserStatusRequest{}, service.AdminUserStatusResult{}),
 		binding(http.MethodPut, "/api/v2/admin/users/:user_id/role", adminUserRoleRequest{}, service.AdminUserRoleResult{}),
-		binding(http.MethodGet, "/api/v2/admin/admins", nil, service.AdminUserList{},
+		getBinding("/api/v2/admin/admins", paginationQuery{}, service.AdminUserList{},
 			http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/admin/super-admins", nil, service.AdminUserList{},
+		getBinding("/api/v2/admin/super-admins", paginationQuery{}, service.AdminUserList{},
 			http.StatusUnprocessableEntity),
-		binding(http.MethodGet, "/api/v2/admin/comments", nil, service.AdminCommentList{},
+		getBinding("/api/v2/admin/comments", adminCommentsQuery{}, service.AdminCommentList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodDelete, "/api/v2/admin/comments/:comment_id", nil, service.AdminCommentDeleteResult{}),
 		binding(http.MethodPut, "/api/v2/admin/comments/:comment_id/restore", nil, service.AdminCommentRestoreResult{},
 			http.StatusConflict),
-		binding(http.MethodGet, "/api/v2/admin/moderation-records/pending", nil, service.AdminModerationList{},
+		getBinding("/api/v2/admin/moderation-records/pending", paginationQuery{}, service.AdminModerationList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPut, "/api/v2/admin/moderation-records/:moderation_record_id/review", adminManualReviewRequest{}, service.AdminReviewResult{},
 			http.StatusConflict),
@@ -183,10 +184,23 @@ func moderationAndAdminOpenAPIBindings() []apicontract.TypedRoute {
 }
 
 func binding(method, path string, request, response any, additionalErrors ...int) apicontract.TypedRoute {
+	return queryBinding(method, path, nil, request, response, additionalErrors...)
+}
+
+func getBinding(path string, query, response any, additionalErrors ...int) apicontract.TypedRoute {
+	return queryBinding(http.MethodGet, path, query, nil, response, additionalErrors...)
+}
+
+func queryBinding(
+	method, path string,
+	query, request, response any,
+	additionalErrors ...int,
+) apicontract.TypedRoute {
 	return apicontract.TypedRoute{
 		Method: method, Path: path,
 		TypeBinding: apicontract.TypeBinding{
-			Request: request, Response: response, AdditionalErrorStatuses: additionalErrors,
+			Query: query, Request: request, Response: response,
+			AdditionalErrorStatuses: additionalErrors,
 		},
 	}
 }

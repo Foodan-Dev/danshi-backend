@@ -14,7 +14,6 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
@@ -63,7 +62,12 @@ func (h *Post) List(ctx context.Context, c *app.RequestContext) {
 		failService(ctx, c, err)
 		return
 	}
-	input, err := listPostsInput(c)
+	query, err := bindQuery[listPostsQuery](c)
+	if err != nil {
+		middleware.Fail(ctx, c, err)
+		return
+	}
+	input, err := listPostsInput(query.Filters, query.SortBy, query.Pagination)
 	if err != nil {
 		middleware.Fail(ctx, c, err)
 		return
@@ -266,25 +270,29 @@ func optionalPrice(raw json.RawMessage) (*money.Amount, error) {
 	return &amount, nil
 }
 
-func listPostsInput(c *app.RequestContext) (service.ListPostsInput, error) {
-	params, err := pagination.Parse(c.Query("page"), c.Query("limit"))
+func listPostsInput(
+	query postFiltersQuery,
+	sortBy string,
+	paginationQuery paginationQuery,
+) (service.ListPostsInput, error) {
+	params, err := paginationQuery.params()
 	if err != nil {
 		return service.ListPostsInput{}, err
 	}
-	minPrice, err := queryPrice(c.Query("min_price"), "min_price")
+	minPrice, err := queryPrice(query.MinPrice, "min_price")
 	if err != nil {
 		return service.ListPostsInput{}, err
 	}
-	maxPrice, err := queryPrice(c.Query("max_price"), "max_price")
+	maxPrice, err := queryPrice(query.MaxPrice, "max_price")
 	if err != nil {
 		return service.ListPostsInput{}, err
 	}
 	return service.ListPostsInput{
-		PostType: c.Query("post_type"), ShareType: c.Query("share_type"),
-		Category: c.Query("category"), CanteenCode: c.Query("canteen_code"),
-		Cuisine: c.Query("cuisine"), Flavors: splitQueryList(c.Query("flavors")),
-		Tags: splitQueryList(c.Query("tags")), MinPrice: minPrice, MaxPrice: maxPrice,
-		SortBy: c.Query("sort_by"), Pagination: params,
+		PostType: string(query.PostType), ShareType: string(query.ShareType),
+		Category: string(query.Category), CanteenCode: query.CanteenCode,
+		Cuisine: query.Cuisine, Flavors: query.Flavors,
+		Tags: query.Tags, MinPrice: minPrice, MaxPrice: maxPrice,
+		SortBy: sortBy, Pagination: params,
 	}, nil
 }
 

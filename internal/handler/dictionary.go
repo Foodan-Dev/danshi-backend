@@ -8,7 +8,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
@@ -134,7 +133,11 @@ func (h *Dictionary) CreateSuggestion(ctx context.Context, c *app.RequestContext
 // Mine 返回当前用户的提议历史。
 func (h *Dictionary) Mine(ctx context.Context, c *app.RequestContext) {
 	principal, err := middleware.CurrentPrincipal(c)
-	params, paramsErr := pagination.Parse(c.Query("page"), c.Query("limit"))
+	query, queryErr := bindQuery[paginationQuery](c)
+	if err == nil {
+		err = queryErr
+	}
+	params, paramsErr := query.params()
 	if err == nil {
 		err = paramsErr
 	}
@@ -147,10 +150,14 @@ func (h *Dictionary) Mine(ctx context.Context, c *app.RequestContext) {
 
 // Pending 返回管理员待审提议。
 func (h *Dictionary) Pending(ctx context.Context, c *app.RequestContext) {
-	params, err := pagination.Parse(c.Query("page"), c.Query("limit"))
+	query, err := bindQuery[dictionaryPendingQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
 	var result *service.SuggestionList
 	if err == nil {
-		result, err = h.service.Pending(ctx, c.Query("kind"), params)
+		result, err = h.service.Pending(ctx, string(query.Kind), params)
 	}
 	respondDictionary(ctx, c, result, err, "请求成功")
 }

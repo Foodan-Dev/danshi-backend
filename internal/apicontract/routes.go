@@ -14,15 +14,20 @@ type Route struct {
 	ExpectedStatus int
 }
 
-// TypeBinding 保存一条端点的 JSON 请求体与成功响应 data 的 Go 类型实例。
+// TypeBinding 保存一条端点的 query、JSON 请求体与成功响应 data 的 Go 类型实例。
+// nil Query 表示尚未声明 query 契约；无 query 的 GET 必须显式使用 NoQuery。
 // nil Request 表示没有 JSON 请求体；nil Response 表示成功响应 data 固定为 null。
 type TypeBinding struct {
+	Query    any
 	Request  any
 	Response any
 	// AdditionalErrorStatuses 只登记无法从鉴权、请求体、路径参数和管理端命名空间
 	// 推导出的业务错误状态；生成器会拒绝重复登记规则已覆盖的状态。
 	AdditionalErrorStatuses []int
 }
+
+// NoQuery 显式声明端点不读取任何 query 参数。
+type NoQuery struct{}
 
 // TypedRoute 把类型绑定关联到一条明确的 method + Hertz path。
 type TypedRoute struct {

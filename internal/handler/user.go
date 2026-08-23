@@ -98,10 +98,16 @@ func (h *User) Update(ctx context.Context, c *app.RequestContext) {
 
 // Posts 返回用户帖子列表。
 func (h *User) Posts(ctx context.Context, c *app.RequestContext) {
-	userID, principal, params, err := userListIdentity(c)
+	query, err := bindQuery[userPostsQuery](c)
+	var userID uint64
+	var principal *service.Principal
+	var params pagination.Params
+	if err == nil {
+		userID, principal, params, err = userListIdentity(c, query.Pagination)
+	}
 	var result *service.PostList
 	if err == nil {
-		result, err = h.service.Posts(ctx, userID, c.Query("status"), params, principal.User.ID)
+		result, err = h.service.Posts(ctx, userID, string(query.Status), params, principal.User.ID)
 	}
 	if err != nil {
 		failService(ctx, c, err)
@@ -112,7 +118,13 @@ func (h *User) Posts(ctx context.Context, c *app.RequestContext) {
 
 // Favorites 返回本人收藏列表。
 func (h *User) Favorites(ctx context.Context, c *app.RequestContext) {
-	userID, principal, params, err := userListIdentity(c)
+	query, err := bindQuery[paginationQuery](c)
+	var userID uint64
+	var principal *service.Principal
+	var params pagination.Params
+	if err == nil {
+		userID, principal, params, err = userListIdentity(c, query)
+	}
 	var result *service.PostList
 	if err == nil {
 		result, err = h.service.Favorites(ctx, userID, params, principal.User.ID)
@@ -164,7 +176,13 @@ func (h *User) followAction(ctx context.Context, c *app.RequestContext, follow b
 }
 
 func (h *User) followList(ctx context.Context, c *app.RequestContext, following bool) {
-	userID, principal, params, err := userListIdentity(c)
+	query, err := bindQuery[paginationQuery](c)
+	var userID uint64
+	var principal *service.Principal
+	var params pagination.Params
+	if err == nil {
+		userID, principal, params, err = userListIdentity(c, query)
+	}
 	var result *service.UserFollowList
 	if err == nil && following {
 		result, err = h.service.Following(ctx, userID, params, principal.User.ID)
@@ -191,11 +209,12 @@ func userRequestIdentity(c *app.RequestContext) (uint64, *service.Principal, err
 
 func userListIdentity(
 	c *app.RequestContext,
+	query paginationQuery,
 ) (uint64, *service.Principal, pagination.Params, error) {
 	userID, principal, err := userRequestIdentity(c)
 	if err != nil {
 		return 0, nil, pagination.Params{}, err
 	}
-	params, err := pagination.Parse(c.Query("page"), c.Query("limit"))
+	params, err := query.params()
 	return userID, principal, params, err
 }
