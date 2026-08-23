@@ -22,7 +22,7 @@ jobs:
           fi
       - name: OpenAPI 漂移与覆盖门禁
         run: make openapi
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with: {version: v2.13.1}
 
   test:
