@@ -42,7 +42,12 @@ type UserOverride func(*model.User)
 
 // WithUserRole 覆写用户角色。
 func WithUserRole(role model.UserRole) UserOverride {
-	return func(user *model.User) { user.Role = role }
+	return func(user *model.User) { user.Roles = []model.UserRole{role} }
+}
+
+// WithUserRoles 覆写用户的多角色绑定。
+func WithUserRoles(roles ...model.UserRole) UserOverride {
+	return func(user *model.User) { user.Roles = append([]model.UserRole{}, roles...) }
 }
 
 // WithBannedUser 构造永久或限时封禁用户。
@@ -73,12 +78,16 @@ func (f *Fixtures) CreateUser(overrides ...UserOverride) model.User {
 		Email:        fmt.Sprintf("fixture-user-%04d@fdueat.com", sequence),
 		PasswordHash: fixturePasswordHash,
 		Name:         fmt.Sprintf("夹具用户 %04d", sequence),
-		Role:         model.UserRoleUser,
 	}
 	for _, override := range overrides {
 		override(&user)
 	}
 	f.mustCreate(&user, "创建用户夹具")
+	for _, role := range user.Roles {
+		f.mustCreate(&model.UserRoleBinding{
+			UserID: user.ID, Role: role, GrantedAt: time.Now().UTC(),
+		}, "创建用户角色夹具")
+	}
 	return user
 }
 
@@ -470,7 +479,7 @@ func (f *Fixtures) CompleteWorld(config appconfig.Config) *CompleteWorld {
 	f.t.Helper()
 	world := &CompleteWorld{}
 	world.Users.Ordinary = f.CreateActor(config)
-	world.Users.Admin = f.CreateActor(config, WithUserRole(model.UserRoleAdmin))
+	world.Users.Admin = f.CreateActor(config, WithUserRole(model.UserRoleModerator))
 	world.Users.SuperAdmin = f.CreateActor(config, WithUserRole(model.UserRoleSuperAdmin))
 	until := time.Now().UTC().Add(24 * time.Hour)
 	world.Users.Banned = f.CreateActor(config, WithBannedUser(

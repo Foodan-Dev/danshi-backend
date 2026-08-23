@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/stretchr/testify/require"
@@ -23,18 +24,22 @@ func TestDictionaryDomainAgainstPostgres(t *testing.T) {
 	proposer := registerPostTestUser(t, engine, sender, "dict-proposer@fdueat.com", "词条提议人")
 	ordinary := registerPostTestUser(t, engine, sender, "dict-ordinary@fdueat.com", "普通用户")
 	admin := registerPostTestUser(t, engine, sender, "dict-admin@fdueat.com", "词条管理员")
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", admin.User.ID).
-		UpdateColumn("role", model.UserRoleAdmin).Error)
+	moderator := registerPostTestUser(t, engine, sender, "dict-moderator@fdueat.com", "内容管理员")
+	super := registerPostTestUser(t, engine, sender, "dict-super@fdueat.com", "超级管理员")
+	require.NoError(t, gdb.Create(&model.UserRoleBinding{
+		UserID: admin.User.ID, Role: model.UserRoleDictReviewer, GrantedAt: time.Now().UTC(),
+	}).Error)
+	require.NoError(t, gdb.Create(&[]model.UserRoleBinding{
+		{UserID: moderator.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC()},
+		{UserID: super.User.ID, Role: model.UserRoleSuperAdmin, GrantedAt: time.Now().UTC()},
+	}).Error)
 	fixture := loadPostFixture(t, gdb)
 	post := createPost(t, engine, proposer.Token,
 		sharePostPayload(fixture, "词条提议回绑帖子", []string{"词条回绑"}))
 
 	t.Run("dictionary route inventory and role guard", func(t *testing.T) {
 		testDictionaryRouteInventory(t, engine)
-		status, response, _ := performJSON(t, engine, http.MethodPost,
-			"/api/v2/admin/flavors", map[string]any{"name": "越权口味"}, ordinary.Token)
-		require.Equal(t, http.StatusForbidden, status)
-		require.Equal(t, apierr.BizPermissionDenied, response.ErrorCode)
+		testDictionaryRBACMatrix(t, engine, ordinary, admin, moderator, super)
 	})
 
 	t.Run("joint suggestion order approval binding and terminal freeze", func(t *testing.T) {
@@ -56,6 +61,58 @@ func TestDictionaryDomainAgainstPostgres(t *testing.T) {
 	t.Run("dictionary crud and in-use delete semantics", func(t *testing.T) {
 		testDictionaryCRUD(t, engine, gdb, ordinary, admin, fixture)
 	})
+}
+
+func testDictionaryRBACMatrix(
+	t *testing.T,
+	engine *server.Hertz,
+	ordinary service.AuthResult,
+	reviewer service.AuthResult,
+	moderator service.AuthResult,
+	super service.AuthResult,
+) {
+	t.Helper()
+	const missingID = "9223372036854775807"
+	routes := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{method: http.MethodGet, path: "/api/v2/admin/dictionary-suggestions"},
+		{method: http.MethodPost, path: "/api/v2/admin/dictionary-suggestions/" + missingID + "/approve", body: map[string]any{}},
+		{method: http.MethodPost, path: "/api/v2/admin/dictionary-suggestions/" + missingID + "/reject", body: map[string]any{"reason": "矩阵测试"}},
+		{method: http.MethodPost, path: "/api/v2/admin/flavors", body: map[string]any{"name": "矩阵口味"}},
+		{method: http.MethodPatch, path: "/api/v2/admin/flavors/" + missingID, body: map[string]any{"name": "矩阵口味"}},
+		{method: http.MethodDelete, path: "/api/v2/admin/flavors/" + missingID},
+		{method: http.MethodPost, path: "/api/v2/admin/cuisines", body: map[string]any{"name": "矩阵菜系"}},
+		{method: http.MethodPatch, path: "/api/v2/admin/cuisines/" + missingID, body: map[string]any{"name": "矩阵菜系"}},
+		{method: http.MethodDelete, path: "/api/v2/admin/cuisines/" + missingID},
+		{method: http.MethodPost, path: "/api/v2/admin/canteens", body: map[string]any{"code": "matrix", "name": "矩阵食堂", "campus": "测试校区"}},
+		{method: http.MethodPatch, path: "/api/v2/admin/canteens/" + missingID, body: map[string]any{"name": "矩阵食堂"}},
+		{method: http.MethodDelete, path: "/api/v2/admin/canteens/" + missingID},
+		{method: http.MethodPost, path: "/api/v2/admin/canteens/" + missingID + "/windows", body: map[string]any{"name": "矩阵窗口"}},
+		{method: http.MethodPatch, path: "/api/v2/admin/canteen-windows/" + missingID, body: map[string]any{"name": "矩阵窗口"}},
+		{method: http.MethodDelete, path: "/api/v2/admin/canteen-windows/" + missingID},
+	}
+	for _, route := range routes {
+		name := route.method + " " + route.path
+		t.Run(name, func(t *testing.T) {
+			for _, actor := range []service.AuthResult{ordinary, moderator} {
+				status, response, _ := performJSON(
+					t, engine, route.method, route.path, route.body, actor.Token,
+				)
+				require.Equal(t, http.StatusForbidden, status)
+				require.Equal(t, apierr.BizPermissionDenied, response.ErrorCode)
+			}
+			for _, actor := range []service.AuthResult{reviewer, super} {
+				status, _, _ := performJSON(
+					t, engine, route.method, route.path, route.body, actor.Token,
+				)
+				require.NotEqual(t, http.StatusUnauthorized, status)
+				require.NotEqual(t, http.StatusForbidden, status)
+			}
+		})
+	}
 }
 
 func testDictionaryRouteInventory(t *testing.T, engine *server.Hertz) {
@@ -521,8 +578,9 @@ func testDictionaryCRUD(
 			"父餐厅停用后自身及其仍启用窗口都不能出现在配置中")
 	}
 
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", ordinary.User.ID).
-		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
+	require.NoError(t, gdb.Create(&model.UserRoleBinding{
+		UserID: ordinary.User.ID, Role: model.UserRoleSuperAdmin, GrantedAt: time.Now().UTC(),
+	}).Error)
 	superFlavor := createAdminFlavor(t, engine, ordinary.Token, "超级管理员口味")
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/flavors/%d", superFlavor.ID), nil, ordinary.Token)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -38,6 +39,22 @@ func (UserRepository) FindByEmail(
 // Create 创建用户，唯一性依赖 schema 的 lower(email) 唯一索引。
 func (UserRepository) Create(ctx context.Context, user *model.User) error {
 	return db.FromContext(ctx).Create(user).Error
+}
+
+// FindRoles 返回用户当前绑定的全部管理角色，顺序稳定。
+func (UserRepository) FindRoles(ctx context.Context, userID uint64) ([]model.UserRole, error) {
+	var row struct {
+		Roles pq.StringArray `gorm:"column:roles;type:text[]"`
+	}
+	result := db.FromContext(ctx).Raw(`
+		SELECT ARRAY(
+			SELECT role FROM user_roles WHERE user_id = ? ORDER BY role
+		) AS roles
+	`, userID).Scan(&row)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return roleValues(row.Roles), nil
 }
 
 // FindAvatarURL 返回用户当前头像资产的公开地址；未设置头像时返回 nil。
@@ -149,8 +166,8 @@ type identityRow struct {
 	Name             string     `gorm:"column:name"`
 	Gender           *model.Gender
 	Bio              *string
-	AvatarID         *uint64 `gorm:"column:avatar_image_asset_id"`
-	Role             model.UserRole
+	AvatarID         *uint64        `gorm:"column:avatar_image_asset_id"`
+	Roles            pq.StringArray `gorm:"column:roles;type:text[]"`
 	BanIsPermanent   bool
 	BannedUntil      *time.Time
 	BanReason        *string
@@ -174,14 +191,20 @@ func (SessionRepository) FindActiveIdentity(
 			s.last_seen_at AS session_last_seen_at, s.expires_at AS session_expires_at,
 			s.revoked_at AS session_revoked_at,
 			u.id AS user_id, u.email, u.password_hash, u.name, u.gender, u.bio,
-			u.avatar_image_asset_id, u.role, u.ban_is_permanent, u.banned_until,
-			u.ban_reason, u.banned_by, u.deleted_at, u.created_at, u.updated_at
+			u.avatar_image_asset_id, u.ban_is_permanent, u.banned_until,
+			u.ban_reason, u.banned_by, u.deleted_at, u.created_at, u.updated_at,
+			COALESCE(
+				array_agg(ur.role ORDER BY ur.role) FILTER (WHERE ur.role IS NOT NULL),
+				ARRAY[]::varchar[]
+			) AS roles
 		FROM user_sessions AS s
 		JOIN users AS u ON u.id = s.user_id
+		LEFT JOIN user_roles AS ur ON ur.user_id = u.id
 		WHERE s.id = ? AND s.user_id = ?
 		  AND s.revoked_at IS NULL AND s.expires_at > ?
 		  AND u.deleted_at IS NULL
 		  AND NOT (u.ban_is_permanent OR COALESCE(u.banned_until > ?, false))
+		GROUP BY s.id, u.id
 	`, sessionID, userID, now, now).Scan(&row)
 	if result.Error != nil {
 		return nil, result.Error
@@ -207,14 +230,20 @@ func (SessionRepository) FindRefreshIdentity(
 			s.last_seen_at AS session_last_seen_at, s.expires_at AS session_expires_at,
 			s.revoked_at AS session_revoked_at,
 			u.id AS user_id, u.email, u.password_hash, u.name, u.gender, u.bio,
-			u.avatar_image_asset_id, u.role, u.ban_is_permanent, u.banned_until,
-			u.ban_reason, u.banned_by, u.deleted_at, u.created_at, u.updated_at
+			u.avatar_image_asset_id, u.ban_is_permanent, u.banned_until,
+			u.ban_reason, u.banned_by, u.deleted_at, u.created_at, u.updated_at,
+			COALESCE(
+				array_agg(ur.role ORDER BY ur.role) FILTER (WHERE ur.role IS NOT NULL),
+				ARRAY[]::varchar[]
+			) AS roles
 		FROM user_sessions AS s
 		JOIN users AS u ON u.id = s.user_id
+		LEFT JOIN user_roles AS ur ON ur.user_id = u.id
 		WHERE s.id = ? AND s.user_id = ? AND s.refresh_token_digest = ?
 		  AND s.revoked_at IS NULL AND s.expires_at > ?
 		  AND u.deleted_at IS NULL
 		  AND NOT (u.ban_is_permanent OR COALESCE(u.banned_until > ?, false))
+		GROUP BY s.id, u.id
 	`, sessionID, userID, digest, now, now).Scan(&row)
 	if result.Error != nil {
 		return nil, result.Error
@@ -298,12 +327,21 @@ func (row identityRow) identity() *Identity {
 		},
 		User: model.User{
 			ID: row.UserID, Email: row.Email, PasswordHash: row.PasswordHash, Name: row.Name,
-			Gender: row.Gender, Bio: row.Bio, AvatarImageAssetID: row.AvatarID, Role: row.Role,
+			Gender: row.Gender, Bio: row.Bio, AvatarImageAssetID: row.AvatarID,
+			Roles:          roleValues(row.Roles),
 			BanIsPermanent: row.BanIsPermanent, BannedUntil: row.BannedUntil,
 			BanReason: row.BanReason, BannedBy: row.BannedBy, DeletedAt: row.DeletedAt,
 			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		},
 	}
+}
+
+func roleValues(values []string) []model.UserRole {
+	roles := make([]model.UserRole, 0, len(values))
+	for _, value := range values {
+		roles = append(roles, model.UserRole(value))
+	}
+	return roles
 }
 
 const zeroDigest = "0000000000000000000000000000000000000000000000000000000000000000"

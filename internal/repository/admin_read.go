@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 
 	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
@@ -17,6 +18,7 @@ type AdminRepository struct{}
 type AdminPostFilter struct {
 	Status   *model.PostStatus
 	PostType *model.PostType
+	AuthorID *uint64
 }
 
 // AdminPostRecord 是管理端帖子列表的一行，包含作者与批量加载的图片。
@@ -43,7 +45,8 @@ type AdminUserFilter struct {
 // AdminUserRecord 是用户主体、头像及统计数据的一次查询结果。
 type AdminUserRecord struct {
 	model.User
-	AvatarURL      *string `gorm:"column:avatar_url"`
+	Roles          pq.StringArray `gorm:"column:roles;type:text[]"`
+	AvatarURL      *string        `gorm:"column:avatar_url"`
 	PostCount      int64
 	LikeCount      int64
 	FavoriteCount  int64
@@ -75,6 +78,9 @@ func (AdminRepository) FindPostPage(
 	}
 	if filter.PostType != nil {
 		query = query.Where("p.post_type = ?", *filter.PostType)
+	}
+	if filter.AuthorID != nil {
+		query = query.Where("p.author_id = ?", *filter.AuthorID)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -135,7 +141,13 @@ func (AdminRepository) FindUserPage(
 		query = query.Where("u.deleted_at IS NULL")
 	}
 	if filter.Role != nil {
-		query = query.Where("u.role = ?", *filter.Role)
+		if *filter.Role == model.UserRoleUser {
+			query = query.Where("NOT EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id)")
+		} else {
+			query = query.Where(`EXISTS (
+				SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role = ?
+			)`, *filter.Role)
+		}
 	}
 	if filter.IsActive != nil {
 		active := `u.deleted_at IS NULL AND NOT (
@@ -160,6 +172,40 @@ func (AdminRepository) FindUserPage(
 		return nil, pagination.Meta{}, err
 	}
 	return records, pagination.NewMeta(params, total), nil
+}
+
+// FindUserByID 返回管理端单用户详情所需的主体、角色、头像与统计。
+func (AdminRepository) FindUserByID(
+	ctx context.Context,
+	userID uint64,
+	opts QueryOptions,
+) (*AdminUserRecord, error) {
+	query := db.FromContext(ctx).Table("users AS u").Where("u.id = ?", userID)
+	if !opts.IncludeDeleted {
+		query = query.Where("u.deleted_at IS NULL")
+	}
+	var record AdminUserRecord
+	result := query.Select(adminUserColumns).
+		Joins("LEFT JOIN image_assets AS avatar ON avatar.id = u.avatar_image_asset_id").
+		Scan(&record)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	return &record, nil
+}
+
+// FindUserBanRecords 返回目标用户完整封禁历史，最新动作在前。
+func (AdminRepository) FindUserBanRecords(
+	ctx context.Context,
+	userID uint64,
+) ([]model.UserBanRecord, error) {
+	records := make([]model.UserBanRecord, 0)
+	err := db.FromContext(ctx).Where("user_id = ?", userID).
+		Order("created_at DESC, id DESC").Find(&records).Error
+	return records, err
 }
 
 // FindPendingModerationPage 返回尚未被 supersedes_id 指过的机器 review 记录。
@@ -243,6 +289,7 @@ func loadAdminPostImages(ctx context.Context, records []AdminPostRecord) error {
 
 const adminUserColumns = `
 	u.*, avatar.public_url AS avatar_url,
+	ARRAY(SELECT ur.role FROM user_roles AS ur WHERE ur.user_id = u.id ORDER BY ur.role) AS roles,
 	(SELECT count(*) FROM posts AS p
 	 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS post_count,
 	(SELECT COALESCE(sum(p.like_count), 0) FROM posts AS p

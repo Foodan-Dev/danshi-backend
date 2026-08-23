@@ -14,9 +14,9 @@ func TestCompleteWorldSatisfiesRealSchemaConstraints(t *testing.T) {
 	harness := testutil.NewHarness(t)
 	world := harness.CompleteWorld()
 
-	require.Equal(t, model.UserRoleUser, world.Users.Ordinary.User.Role)
-	require.Equal(t, model.UserRoleAdmin, world.Users.Admin.User.Role)
-	require.Equal(t, model.UserRoleSuperAdmin, world.Users.SuperAdmin.User.Role)
+	require.Empty(t, world.Users.Ordinary.User.Roles)
+	require.Equal(t, []model.UserRole{model.UserRoleModerator}, world.Users.Admin.User.Roles)
+	require.Equal(t, []model.UserRole{model.UserRoleSuperAdmin}, world.Users.SuperAdmin.User.Roles)
 	require.NotNil(t, world.Users.Banned.User.BannedUntil)
 	require.NotNil(t, world.Users.Banned.User.BanReason)
 	require.NotNil(t, world.Users.Deleted.User.DeletedAt)
@@ -55,9 +55,8 @@ func TestCompleteWorldSatisfiesRealSchemaConstraints(t *testing.T) {
 	).Error)
 	require.EqualValues(t, 2, storedRoot.ReplyCount)
 
-	invalid := model.User{
-		Email: "invalid-role@fdueat.com", PasswordHash: "test",
-		Role: model.UserRole("invalid"),
+	invalid := model.UserRoleBinding{
+		UserID: world.Users.Ordinary.User.ID, Role: model.UserRole("invalid"),
 	}
 	require.Error(t, harness.Database.GORM.Create(&invalid).Error,
 		"真实 schema 必须拒绝夹具无法表示的非法角色")

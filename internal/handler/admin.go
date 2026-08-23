@@ -38,7 +38,8 @@ type adminUserStatusRequest struct {
 }
 
 type adminUserRoleRequest struct {
-	Role string `json:"role"`
+	Role   model.UserRole       `json:"role"`
+	Action model.UserRoleAction `json:"action"`
 }
 
 type adminManualReviewRequest struct {
@@ -130,6 +131,36 @@ func (h *Admin) Users(ctx context.Context, c *app.RequestContext) {
 	respondAdmin(ctx, c, "请求成功", result, err)
 }
 
+// User 返回单个用户详情与历史封禁记录。
+func (h *Admin) User(ctx context.Context, c *app.RequestContext) {
+	userID, _, err := adminIdentity(c, "user_id")
+	var result *service.AdminUserDetail
+	if err == nil {
+		result, err = h.service.User(ctx, userID)
+	}
+	respondAdmin(ctx, c, "请求成功", result, err)
+}
+
+// UserPosts 返回目标用户全部帖子，包含未通过与软删除内容。
+func (h *Admin) UserPosts(ctx context.Context, c *app.RequestContext) {
+	userID, _, err := adminIdentity(c, "user_id")
+	query, queryErr := bindQuery[adminPostsQuery](c)
+	if err == nil {
+		err = queryErr
+	}
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var result *service.AdminPostList
+	if err == nil {
+		result, err = h.service.UserPosts(
+			ctx, userID, string(query.Status), string(query.PostType), params,
+		)
+	}
+	respondAdmin(ctx, c, "请求成功", result, err)
+}
+
 // UpdateUserStatus 永久封禁、限时封禁或解封用户。
 func (h *Admin) UpdateUserStatus(ctx context.Context, c *app.RequestContext) {
 	userID, principal, err := adminIdentity(c, "user_id")
@@ -155,14 +186,16 @@ func (h *Admin) UpdateUserStatus(ctx context.Context, c *app.RequestContext) {
 
 // UpdateUserRole 调整用户角色。
 func (h *Admin) UpdateUserRole(ctx context.Context, c *app.RequestContext) {
-	userID, _, err := adminIdentity(c, "user_id")
+	userID, principal, err := adminIdentity(c, "user_id")
 	var request adminUserRoleRequest
 	if err == nil {
 		err = bindJSON(c, &request)
 	}
 	var result *service.AdminUserRoleResult
 	if err == nil {
-		result, err = h.service.UpdateUserRole(ctx, userID, request.Role)
+		result, err = h.service.UpdateUserRole(
+			ctx, userID, principal.User.ID, request.Role, request.Action,
+		)
 	}
 	respondAdmin(ctx, c, "权限更新成功", result, err)
 }

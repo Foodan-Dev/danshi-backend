@@ -561,7 +561,9 @@ func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, s
 
 func enumValues(valueType reflect.Type) []any {
 	values := map[reflect.Type][]any{
-		reflect.TypeFor[model.UserRole]():          {"user", "admin", "super_admin"},
+		reflect.TypeFor[model.UserRole]():          {"dict_reviewer", "moderator", "super_admin"},
+		reflect.TypeFor[model.UserRoleAction]():    {"grant", "revoke"},
+		reflect.TypeFor[model.UserBanAction]():     {"ban", "unban"},
 		reflect.TypeFor[model.Gender]():            {"male", "female", "other"},
 		reflect.TypeFor[model.ModerationStatus]():  {"pending", "pass", "review", "block"},
 		reflect.TypeFor[model.ImagePurpose]():      {"post", "avatar"},

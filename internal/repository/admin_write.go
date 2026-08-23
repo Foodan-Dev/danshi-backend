@@ -59,22 +59,47 @@ func (AdminRepository) UpdateUserBan(
 	return nil
 }
 
-// UpdateUserRole 更新目标用户角色。
-func (AdminRepository) UpdateUserRole(
+// CreateUserBanRecord 追加一条不可变封禁状态变更记录。
+func (AdminRepository) CreateUserBanRecord(
+	ctx context.Context,
+	record *model.UserBanRecord,
+) error {
+	return db.FromContext(ctx).Create(record).Error
+}
+
+// GrantUserRole 幂等创建角色绑定，并报告是否发生真实状态变更。
+func (AdminRepository) GrantUserRole(
 	ctx context.Context,
 	userID uint64,
 	role model.UserRole,
+	actorID uint64,
 	now time.Time,
+) (bool, error) {
+	result := db.FromContext(ctx).Exec(`
+		INSERT INTO user_roles (user_id, role, granted_by, granted_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT DO NOTHING
+	`, userID, role, actorID, now)
+	return result.RowsAffected == 1, result.Error
+}
+
+// RevokeUserRole 幂等物理删除角色绑定，并报告是否发生真实状态变更。
+func (AdminRepository) RevokeUserRole(
+	ctx context.Context,
+	userID uint64,
+	role model.UserRole,
+) (bool, error) {
+	result := db.FromContext(ctx).Where("user_id = ? AND role = ?", userID, role).
+		Delete(&model.UserRoleBinding{})
+	return result.RowsAffected == 1, result.Error
+}
+
+// CreateUserRoleRecord 追加一条不可变角色变更记录。
+func (AdminRepository) CreateUserRoleRecord(
+	ctx context.Context,
+	record *model.UserRoleRecord,
 ) error {
-	result := db.FromContext(ctx).Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", userID).
-		UpdateColumns(map[string]any{"role": role, "updated_at": now})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return db.FromContext(ctx).Create(record).Error
 }
 
 // SoftDeletePost 标记管理员删除帖子，不触碰帖子内容、计数或关联。

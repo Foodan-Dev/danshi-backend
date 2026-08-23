@@ -361,7 +361,7 @@ func testConcurrentSessionRevocation(t *testing.T, harness *testutil.Harness) {
 
 	victim := registerPostTestUser(t, harness.Engine, harness.Email,
 		"concurrent-ban-refresh@fdueat.com", "并发封禁用户")
-	admin := harness.Fixtures.CreateActor(harness.Config, testutil.WithUserRole(model.UserRoleAdmin))
+	admin := harness.Fixtures.CreateActor(harness.Config, testutil.WithUserRole(model.UserRoleModerator))
 	banWave := runHTTPBarrier(t, harness.Engine, concurrencyWidth, func(index int) (string, string, any, string) {
 		if index == 0 {
 			return http.MethodPut, fmt.Sprintf("/api/v2/admin/users/%d/status", victim.User.ID),
@@ -460,12 +460,12 @@ func testConcurrentVerificationUse(t *testing.T, harness *testutil.Harness) {
 func testConcurrentDictionaryApprovals(t *testing.T, harness *testutil.Harness) {
 	t.Helper()
 	proposer := harness.Fixtures.CreateActor(harness.Config)
-	admin := harness.Fixtures.CreateActor(harness.Config, testutil.WithUserRole(model.UserRoleAdmin))
+	reviewer := harness.Fixtures.CreateActor(harness.Config, testutil.WithUserRole(model.UserRoleDictReviewer))
 	suggestion := createSuggestion(t, harness.Engine, proposer.Token, map[string]any{
 		"kind": model.SuggestionKindCuisine, "proposed_name": "十六路审批菜系",
 	})
 	approvals := runHTTPBarrier(t, harness.Engine, concurrencyWidth, func(_ int) (string, string, any, string) {
-		return http.MethodPost, suggestionApprovePath(suggestion.ID), map[string]any{}, admin.Token
+		return http.MethodPost, suggestionApprovePath(suggestion.ID), map[string]any{}, reviewer.Token
 	})
 	approved, closed := 0, 0
 	for _, outcome := range approvals {
@@ -501,9 +501,9 @@ func testConcurrentDictionaryApprovals(t *testing.T, harness *testutil.Harness) 
 		if index == 0 {
 			return http.MethodPost, suggestionApprovePath(parent.ID), map[string]any{
 				"code": "concurrent-parent-canteen", "campus": "并发校区",
-			}, admin.Token
+			}, reviewer.Token
 		}
-		return http.MethodPost, suggestionApprovePath(child.ID), map[string]any{"floor": "2F"}, admin.Token
+		return http.MethodPost, suggestionApprovePath(child.ID), map[string]any{"floor": "2F"}, reviewer.Token
 	})
 	require.NoError(t, parentChild[0].err)
 	require.Equal(t, http.StatusOK, parentChild[0].status)
@@ -511,7 +511,7 @@ func testConcurrentDictionaryApprovals(t *testing.T, harness *testutil.Harness) 
 	if parentChild[1].status == http.StatusConflict {
 		require.Equal(t, apierr.BizSuggestionParentPending, parentChild[1].response.ErrorCode)
 		status, response, _ := performJSON(t, harness.Engine, http.MethodPost,
-			suggestionApprovePath(child.ID), map[string]any{"floor": "2F"}, admin.Token)
+			suggestionApprovePath(child.ID), map[string]any{"floor": "2F"}, reviewer.Token)
 		require.Equal(t, http.StatusOK, status,
 			"error_code=%s message=%s", response.ErrorCode, response.Message)
 	} else {

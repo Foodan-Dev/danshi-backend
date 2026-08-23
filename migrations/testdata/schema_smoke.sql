@@ -1,5 +1,5 @@
--- 00001_init.sql + 00002_seed_dictionaries.sql 的 schema 回归测试。
--- 用法：对一个刚跑完两个迁移的空库执行；任一断言失败即以非 0 退出。
+-- 全量正式迁移的 schema 回归测试。
+-- 用法：对一个刚跑完全部迁移的空库执行；任一断言失败即以非 0 退出。
 --   psql -X -v ON_ERROR_STOP=1 -f migrations/testdata/schema_smoke.sql
 --
 -- ⚠ CI 必须跑**两条独立链路**，不要串成一条：
@@ -60,10 +60,12 @@ END $$;
 
 \echo ''
 \echo '########## 装载基础数据 ##########'
-INSERT INTO users (id,email,password_hash,name,gender,role) VALUES
- (1,'Alice@m.fudan.edu.cn','$2b$12$x','alice','female','user'),
- (2,'bob@m.fudan.edu.cn','$2b$12$x','bob','male','user'),
- (3,'admin@fdueat.com','$2b$12$x','admin',NULL,'admin');
+INSERT INTO users (id,email,password_hash,name,gender) VALUES
+ (1,'Alice@m.fudan.edu.cn','$2b$12$x','alice','female'),
+ (2,'bob@m.fudan.edu.cn','$2b$12$x','bob','male'),
+ (3,'admin@fdueat.com','$2b$12$x','admin',NULL);
+INSERT INTO user_roles (user_id,role,granted_by) VALUES (3,'moderator',3);
+INSERT INTO user_role_records (user_id,role,action,actor_id) VALUES (3,'moderator','grant',3);
 INSERT INTO image_assets (id,uploader_id,purpose,object_key,public_url,content_type,status) VALUES
  (101,1,'post','posts/a/1.jpg','https://img/1.jpg','image/jpeg','ready'),
  (102,1,'avatar','avatars/a/1.jpg','https://img/av.jpg','image/jpeg','ready');
@@ -88,8 +90,8 @@ INSERT INTO post_histories (id,post_id,revision,edited_by,snapshot,edit_reason)
 \echo ''
 \echo '########## 1. users / image_assets / posts 枚举与范围约束 ##########'
 DO $$ BEGIN
-  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,role) VALUES ('r@fdueat.com','x','root')$q$,
-    ARRAY['23514'], 'users.role 枚举收敛');
+  PERFORM _assert_rejects($q$INSERT INTO user_roles (user_id,role) VALUES (1,'admin')$q$,
+    ARRAY['23514'], 'user_roles.role 枚举收敛且 admin 已消失');
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash) VALUES ('noatsign','x')$q$,
     ARRAY['23514'], 'users.email 必须含 @');
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,gender) VALUES ('g@fdueat.com','x','男')$q$,
@@ -135,6 +137,23 @@ DO $$ BEGIN
     ARRAY['23514'], 'post_images.position < 9');
   PERFORM _assert_rejects($q$INSERT INTO follows (follower_id,following_id) VALUES (1,1)$q$,
     ARRAY['23514'], '禁止自关注');
+END $$;
+
+\echo ''
+\echo '########## 1a-1. RBAC 关联与角色流水 ##########'
+DELETE FROM user_roles WHERE user_id=3 AND role='moderator';
+INSERT INTO user_role_records (user_id,role,action,actor_id) VALUES (3,'moderator','revoke',3);
+INSERT INTO user_roles (user_id,role,granted_by) VALUES (3,'moderator',3);
+INSERT INTO user_role_records (user_id,role,action,actor_id) VALUES (3,'moderator','grant',3);
+DO $$ BEGIN
+  PERFORM _assert((SELECT count(*) FROM user_roles WHERE user_id=3 AND role='moderator')=1,
+                  '角色撤销后可再次授予');
+  PERFORM _assert((SELECT count(*) FROM user_role_records WHERE user_id=3 AND role='moderator')=3,
+                  'grant/revoke/grant 三次动作完整留痕');
+  PERFORM _assert_rejects($q$UPDATE user_role_records SET action='revoke' WHERE id=(SELECT min(id) FROM user_role_records)$q$,
+    ARRAY['23001'], 'user_role_records 禁止 UPDATE');
+  PERFORM _assert_rejects($q$DELETE FROM user_role_records WHERE id=(SELECT min(id) FROM user_role_records)$q$,
+    ARRAY['23001'], 'user_role_records 禁止 DELETE');
 END $$;
 
 -- 草稿豁免：正例
@@ -344,6 +363,9 @@ DO $$ BEGIN
 END $$;
 -- 限时封禁 7 天
 UPDATE users SET banned_until=now()+interval '7 days', ban_reason='发布无关内容', banned_by=3 WHERE id=2;
+INSERT INTO user_ban_records
+  (user_id,action,ban_is_permanent,banned_until,reason,actor_id)
+SELECT id,'ban',ban_is_permanent,banned_until,ban_reason,banned_by FROM users WHERE id=2;
 DO $$ BEGIN
   PERFORM _assert_rejects($q$DELETE FROM users WHERE id=3$q$,
     ARRAY['23001','23503'], '执行过封禁的管理员不可删除（留痕不能丢）');
@@ -363,8 +385,23 @@ DO $$ BEGIN
 END $$;
 -- 解封：所有封禁字段一起清空
 UPDATE users SET ban_is_permanent=false, banned_until=NULL, ban_reason=NULL, banned_by=NULL WHERE id=2;
+INSERT INTO user_ban_records (user_id,action,actor_id) VALUES (2,'unban',3);
 DO $$ BEGIN
   PERFORM _assert(NOT (SELECT ban_is_permanent OR coalesce(banned_until > now(), false) FROM users WHERE id=2), '解封清空封禁字段');
+END $$;
+UPDATE users SET ban_is_permanent=true, ban_reason='再次违规', banned_by=3 WHERE id=2;
+INSERT INTO user_ban_records
+  (user_id,action,ban_is_permanent,banned_until,reason,actor_id)
+SELECT id,'ban',ban_is_permanent,banned_until,ban_reason,banned_by FROM users WHERE id=2;
+DO $$ BEGIN
+  PERFORM _assert((SELECT count(*) FROM user_ban_records WHERE user_id=2)=3,
+                  '封禁、解封、再封禁三次动作完整留痕');
+  PERFORM _assert((SELECT reason FROM user_ban_records WHERE user_id=2 ORDER BY id LIMIT 1)='发布无关内容',
+                  '第一次封禁理由永久保留');
+  PERFORM _assert_rejects($q$UPDATE user_ban_records SET reason='篡改' WHERE user_id=2$q$,
+    ARRAY['23001'], 'user_ban_records 禁止 UPDATE');
+  PERFORM _assert_rejects($q$DELETE FROM user_ban_records WHERE user_id=2$q$,
+    ARRAY['23001'], 'user_ban_records 禁止 DELETE');
 END $$;
 
 \echo ''
@@ -927,6 +964,7 @@ BEGIN
   FOREACH want IN ARRAY ARRAY[
     'idx_posts_window_created','idx_post_tags_tag','idx_post_flavors_flavor',
     'idx_ds_pending','idx_user_sessions_active','idx_user_sessions_expires',
+    'idx_user_roles_role','idx_user_ban_records_user','idx_user_role_records_user',
     'uq_users_email_lower','uq_tags_name_lower','uq_user_sessions_digest',
     'uq_image_assets_object_key','uq_image_assets_public_url','uq_evc_email_purpose'
   ] LOOP
@@ -941,6 +979,8 @@ BEGIN
     'trg_post_likes_sync_count','trg_favorites_sync_count','trg_comment_likes_sync_count','trg_comments_sync_counts',
     'trg_post_likes_keys_immutable','trg_favorites_keys_immutable','trg_comment_likes_keys_immutable','trg_comments_keys_immutable',
     'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_image_assets_forbid_delete'
+    ,'trg_user_ban_records_immutable','trg_user_ban_records_forbid_delete'
+    ,'trg_user_role_records_immutable','trg_user_role_records_forbid_delete'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE NOT tgisinternal AND tgname=want) THEN
       missing := missing || want;
@@ -957,7 +997,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 24, '业务表共 24 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 27, '业务表共 27 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

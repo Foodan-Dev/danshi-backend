@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/authz"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
 	"github.com/jingyijun/danshi_backend_go/internal/repository"
@@ -30,6 +31,17 @@ func (s *AdminService) UpdateUserStatus(
 	if err := s.admin.UpdateUserBan(ctx, userID, state, now); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizNotFound, "用户")
 	}
+	action := model.UserBanActionUnban
+	if banned {
+		action = model.UserBanActionBan
+	}
+	actor := actorID
+	if err := s.admin.CreateUserBanRecord(ctx, &model.UserBanRecord{
+		UserID: userID, Action: action, BanIsPermanent: state.IsPermanent,
+		BannedUntil: state.Until, Reason: state.Reason, ActorID: &actor, CreatedAt: now,
+	}); err != nil {
+		return nil, apierr.Internal(err)
+	}
 	if banned {
 		if err := s.sessions.RevokeAll(ctx, userID, now); err != nil {
 			return nil, apierr.Internal(err)
@@ -42,23 +54,57 @@ func (s *AdminService) UpdateUserStatus(
 	}, nil
 }
 
-// UpdateUserRole 调整用户角色；super_admin 权限由路由中间件单独把关。
+// UpdateUserRole 授予或撤销一项用户角色；能力权限由路由中间件把关。
 func (s *AdminService) UpdateUserRole(
 	ctx context.Context,
 	userID uint64,
-	rawRole string,
+	actorID uint64,
+	rawRole model.UserRole,
+	rawAction model.UserRoleAction,
 ) (*AdminUserRoleResult, error) {
-	role, err := adminRole(rawRole, false)
-	if err != nil {
-		return nil, err
+	role := model.UserRole(strings.TrimSpace(string(rawRole)))
+	if !authz.IsManagedRole(role) {
+		return nil, apierr.InvalidField(
+			"role", apierr.FieldInvalidEnum,
+			"role 必须是 dict_reviewer、moderator 或 super_admin",
+		)
+	}
+	action := model.UserRoleAction(strings.TrimSpace(string(rawAction)))
+	if action != model.UserRoleActionGrant && action != model.UserRoleActionRevoke {
+		return nil, apierr.InvalidField(
+			"action", apierr.FieldInvalidEnum, "action 必须是 grant 或 revoke",
+		)
 	}
 	if _, err := s.admin.LockUserByID(ctx, userID, repository.QueryOptions{}); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizNotFound, "用户")
 	}
-	if err := s.admin.UpdateUserRole(ctx, userID, *role, time.Now().UTC()); err != nil {
-		return nil, repository.ToAPIError(err, apierr.BizNotFound, "用户")
+	now := time.Now().UTC()
+	var changed bool
+	var err error
+	if action == model.UserRoleActionGrant {
+		changed, err = s.admin.GrantUserRole(ctx, userID, role, actorID, now)
+	} else {
+		changed, err = s.admin.RevokeUserRole(ctx, userID, role)
 	}
-	return &AdminUserRoleResult{UserID: userID, Role: *role}, nil
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if changed {
+		actor := actorID
+		err = s.admin.CreateUserRoleRecord(ctx, &model.UserRoleRecord{
+			UserID: userID, Role: role, Action: action, ActorID: &actor, CreatedAt: now,
+		})
+		if err != nil {
+			return nil, apierr.Internal(err)
+		}
+	}
+	roles, err := s.users.FindRoles(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	return &AdminUserRoleResult{
+		UserID: userID, Role: role, Action: action, Changed: changed, Roles: roles,
+	}, nil
 }
 
 func normalizeAdminBan(

@@ -32,6 +32,7 @@ var hotPathSelectBudgets = map[string]int64{
 	"GET /api/v2/admin/posts/pending":              4,
 	"GET /api/v2/admin/posts":                      4,
 	"GET /api/v2/admin/users":                      3,
+	"GET /api/v2/admin/users/:user_id/posts":       5,
 	"GET /api/v2/admin/admins":                     3,
 	"GET /api/v2/admin/super-admins":               3,
 	"GET /api/v2/admin/comments":                   3,
@@ -47,6 +48,7 @@ var queryBudgetExemptGETRoutes = map[string]string{
 	"GET /api/v2/comments/:comment_id/history": "单资源的完整版本历史，不接受分页参数",
 	"GET /api/v2/notifications/unread-count":   "单值聚合，不接受分页参数",
 	"GET /api/v2/config":                       "公共静态配置，不接受分页参数",
+	"GET /api/v2/admin/users/:user_id":         "单用户取证详情，不接受分页参数",
 }
 
 type queryBudgetCase struct {
@@ -128,7 +130,7 @@ func seedQueryBudgetFixture(
 
 		user := model.User{
 			Email: fmt.Sprintf("query-budget-user-%d@fdueat.com", index), PasswordHash: "$2b$12$test",
-			Name: fmt.Sprintf("查询预算用户 %d", index), Role: model.UserRoleUser,
+			Name: fmt.Sprintf("查询预算用户 %d", index),
 		}
 		require.NoError(t, gdb.Create(&user).Error)
 		require.NoError(t, gdb.Create(&model.Follow{
@@ -203,11 +205,16 @@ func queryBudgetCases(fixture queryBudgetFixture) []queryBudgetCase {
 		},
 		{
 			operation: "GET /api/v2/admin/dictionary-suggestions",
-			path:      "/api/v2/admin/dictionary-suggestions", token: actors.Admin.Token,
+			path:      "/api/v2/admin/dictionary-suggestions", token: actors.Dict.Token,
 		},
 		{operation: "GET /api/v2/admin/posts/pending", path: "/api/v2/admin/posts/pending", token: actors.Admin.Token},
 		{operation: "GET /api/v2/admin/posts", path: "/api/v2/admin/posts", token: actors.Admin.Token},
 		{operation: "GET /api/v2/admin/users", path: "/api/v2/admin/users", token: actors.Super.Token},
+		{
+			operation: "GET /api/v2/admin/users/:user_id/posts",
+			path:      fmt.Sprintf("/api/v2/admin/users/%d/posts", actors.Author.User.ID),
+			token:     actors.Admin.Token,
+		},
 		{operation: "GET /api/v2/admin/admins", path: "/api/v2/admin/admins", token: actors.Super.Token},
 		{operation: "GET /api/v2/admin/super-admins", path: "/api/v2/admin/super-admins", token: actors.Super.Token},
 		{operation: "GET /api/v2/admin/comments", path: "/api/v2/admin/comments", token: actors.Admin.Token},

@@ -99,9 +99,59 @@ func (s *AdminService) Users(
 	return &AdminUserList{Users: users, Pagination: meta}, nil
 }
 
-// Admins 返回 admin 角色用户。
+// User 返回单个用户详情及其完整封禁历史。
+func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetail, error) {
+	row, err := s.admin.FindUserByID(ctx, userID, repository.QueryOptions{IncludeDeleted: true})
+	if err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizNotFound, "用户")
+	}
+	records, err := s.admin.FindUserBanRecords(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	views := make([]AdminUserBanRecordView, 0, len(records))
+	for _, record := range records {
+		views = append(views, AdminUserBanRecordView{
+			ID: record.ID, Action: record.Action, BanIsPermanent: record.BanIsPermanent,
+			BannedUntil: ptime.Ptr(record.BannedUntil), Reason: record.Reason,
+			ActorID: record.ActorID, CreatedAt: ptime.Time(record.CreatedAt),
+		})
+	}
+	return &AdminUserDetail{
+		AdminUserView: adminUserView(row, time.Now().UTC()), BanRecords: views,
+	}, nil
+}
+
+// UserPosts 返回目标用户全部帖子，包括未通过与软删除内容。
+func (s *AdminService) UserPosts(
+	ctx context.Context,
+	userID uint64,
+	rawStatus string,
+	rawPostType string,
+	params pagination.Params,
+) (*AdminPostList, error) {
+	if _, err := s.admin.FindUserByID(
+		ctx, userID, repository.QueryOptions{IncludeDeleted: true},
+	); err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizNotFound, "用户")
+	}
+	filter, err := adminPostFilter(rawStatus, rawPostType)
+	if err != nil {
+		return nil, err
+	}
+	filter.AuthorID = &userID
+	rows, meta, err := s.admin.FindPostPage(
+		ctx, filter, params, repository.QueryOptions{IncludeDeleted: true},
+	)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	return adminPostList(rows, meta, true), nil
+}
+
+// Admins 返回 moderator 角色用户。
 func (s *AdminService) Admins(ctx context.Context, params pagination.Params) (*AdminUserList, error) {
-	return s.Users(ctx, string(model.UserRoleAdmin), nil, params)
+	return s.Users(ctx, string(model.UserRoleModerator), nil, params)
 }
 
 // SuperAdmins 返回 super_admin 角色用户。
@@ -189,9 +239,11 @@ func adminRole(raw string, optional bool) (*model.UserRole, error) {
 		return nil, nil
 	}
 	role := model.UserRole(raw)
-	if role != model.UserRoleUser && role != model.UserRoleAdmin && role != model.UserRoleSuperAdmin {
+	if role != model.UserRoleUser && role != model.UserRoleDictReviewer &&
+		role != model.UserRoleModerator && role != model.UserRoleSuperAdmin {
 		return nil, apierr.InvalidField(
-			"role", apierr.FieldInvalidEnum, "role 必须是 user、admin 或 super_admin",
+			"role", apierr.FieldInvalidEnum,
+			"role 必须是 user、dict_reviewer、moderator 或 super_admin",
 		)
 	}
 	return &role, nil
@@ -200,7 +252,7 @@ func adminRole(raw string, optional bool) (*model.UserRole, error) {
 func adminUserView(row *repository.AdminUserRecord, now time.Time) AdminUserView {
 	banned := isCurrentlyBanned(&row.User, now)
 	return AdminUserView{
-		ID: row.ID, Name: row.Name, Email: row.Email, Role: row.Role,
+		ID: row.ID, Name: row.Name, Email: row.Email, Roles: roleStrings(row.Roles),
 		IsActive: row.DeletedAt == nil && !banned, IsBanned: banned,
 		BanIsPermanent: row.BanIsPermanent, BannedUntil: ptime.Ptr(row.BannedUntil),
 		BanReason: row.BanReason, BannedBy: row.BannedBy, AvatarURL: row.AvatarURL, Bio: row.Bio,
@@ -210,6 +262,14 @@ func adminUserView(row *repository.AdminUserRecord, now time.Time) AdminUserView
 		},
 		DeletedAt: ptime.Ptr(row.DeletedAt), CreatedAt: ptime.Time(row.CreatedAt),
 	}
+}
+
+func roleStrings(values []string) []model.UserRole {
+	roles := make([]model.UserRole, 0, len(values))
+	for _, value := range values {
+		roles = append(roles, model.UserRole(value))
+	}
+	return roles
 }
 
 func adminContentPreview(content string) string {

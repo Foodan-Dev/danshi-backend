@@ -380,6 +380,114 @@
         },
         "type": "object"
       },
+      "AdminUserBanRecordView": {
+        "properties": {
+          "action": {
+            "enum": [
+              "ban",
+              "unban"
+            ],
+            "type": "string"
+          },
+          "actor_id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "ban_is_permanent": {
+            "type": "boolean"
+          },
+          "banned_until": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdminUserDetail": {
+        "properties": {
+          "avatar_url": {
+            "nullable": true,
+            "type": "string"
+          },
+          "ban_is_permanent": {
+            "type": "boolean"
+          },
+          "ban_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "ban_records": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserBanRecordView"
+            },
+            "type": "array"
+          },
+          "banned_by": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "banned_until": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "bio": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "deleted_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "is_banned": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "dict_reviewer",
+                "moderator",
+                "super_admin"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/UserStats"
+          }
+        },
+        "type": "object"
+      },
       "AdminUserList": {
         "properties": {
           "pagination": {
@@ -396,13 +504,34 @@
       },
       "AdminUserRoleResult": {
         "properties": {
+          "action": {
+            "enum": [
+              "grant",
+              "revoke"
+            ],
+            "type": "string"
+          },
+          "changed": {
+            "type": "boolean"
+          },
           "role": {
             "enum": [
-              "user",
-              "admin",
+              "dict_reviewer",
+              "moderator",
               "super_admin"
             ],
             "type": "string"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "dict_reviewer",
+                "moderator",
+                "super_admin"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "user_id": {
             "maximum": 18446744073709552000,
@@ -493,13 +622,16 @@
           "name": {
             "type": "string"
           },
-          "role": {
-            "enum": [
-              "user",
-              "admin",
-              "super_admin"
-            ],
-            "type": "string"
+          "roles": {
+            "items": {
+              "enum": [
+                "dict_reviewer",
+                "moderator",
+                "super_admin"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
@@ -2082,14 +2214,17 @@
           "name": {
             "type": "string"
           },
-          "role": {
-            "enum": [
-              "user",
-              "admin",
-              "super_admin"
-            ],
+          "roles": {
+            "items": {
+              "enum": [
+                "dict_reviewer",
+                "moderator",
+                "super_admin"
+              ],
+              "type": "string"
+            },
             "nullable": true,
-            "type": "string"
+            "type": "array"
           },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
@@ -2160,13 +2295,16 @@
           "name": {
             "type": "string"
           },
-          "role": {
-            "enum": [
-              "user",
-              "admin",
-              "super_admin"
-            ],
-            "type": "string"
+          "roles": {
+            "items": {
+              "enum": [
+                "dict_reviewer",
+                "moderator",
+                "super_admin"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -2208,7 +2346,19 @@
       },
       "adminUserRoleRequest": {
         "properties": {
+          "action": {
+            "enum": [
+              "grant",
+              "revoke"
+            ],
+            "type": "string"
+          },
           "role": {
+            "enum": [
+              "dict_reviewer",
+              "moderator",
+              "super_admin"
+            ],
             "type": "string"
           }
         },
@@ -8791,7 +8941,8 @@
             "schema": {
               "enum": [
                 "user",
-                "admin",
+                "dict_reviewer",
+                "moderator",
                 "super_admin"
               ],
               "type": "string"
@@ -8982,6 +9133,465 @@
           }
         ],
         "summary": "GET /api/v2/admin/users",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v2/admin/users/{user_id}": {
+      "get": {
+        "operationId": "get_api_v2_admin_users_user_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AdminUserDetail"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v2/admin/users/:user_id",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v2/admin/users/{user_id}/posts": {
+      "get": {
+        "operationId": "get_api_v2_admin_users_user_id_posts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "enum": [
+                "draft",
+                "pending",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "post_type",
+            "schema": {
+              "enum": [
+                "share",
+                "seeking"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AdminPostList"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v2/admin/users/:user_id/posts",
         "tags": [
           "admin"
         ]

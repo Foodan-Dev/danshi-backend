@@ -17,7 +17,7 @@ import (
 
 const repositoryCodesPath = "../../internal/apierr/codes.go"
 
-func TestRepositoryRegistryGenerates79ValidOperations(t *testing.T) {
+func TestRepositoryRegistryGenerates81ValidOperations(t *testing.T) {
 	hlog.SetOutput(io.Discard)
 	encoded, err := generateSpec(repositoryCodesPath)
 	require.NoError(t, err)
@@ -31,7 +31,7 @@ func TestRepositoryRegistryGenerates79ValidOperations(t *testing.T) {
 	for _, item := range document.Paths.Map() {
 		operations += len(item.Operations())
 	}
-	require.Equal(t, 79, operations)
+	require.Equal(t, 81, operations)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts").Post.RequestBody)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts/{post_id}").Get.Security)
 	require.Nil(t, document.Paths.Value("/api/v2/config").Get.Security)

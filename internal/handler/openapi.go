@@ -165,6 +165,8 @@ func moderationAndAdminOpenAPIBindings() []apicontract.TypedRoute {
 			http.StatusConflict),
 		getBinding("/api/v2/admin/users", adminUsersQuery{}, service.AdminUserList{},
 			http.StatusUnprocessableEntity),
+		getBinding("/api/v2/admin/users/:user_id", apicontract.NoQuery{}, service.AdminUserDetail{}),
+		getBinding("/api/v2/admin/users/:user_id/posts", adminPostsQuery{}, service.AdminPostList{}),
 		binding(http.MethodPut, "/api/v2/admin/users/:user_id/status", adminUserStatusRequest{}, service.AdminUserStatusResult{}),
 		binding(http.MethodPut, "/api/v2/admin/users/:user_id/role", adminUserRoleRequest{}, service.AdminUserRoleResult{}),
 		getBinding("/api/v2/admin/admins", paginationQuery{}, service.AdminUserList{},

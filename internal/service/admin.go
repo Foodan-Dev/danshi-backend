@@ -69,27 +69,44 @@ type AdminCommentList struct {
 
 // AdminUserView 是管理端用户项，兼容 is_active 并暴露完整封禁形态。
 type AdminUserView struct {
-	ID             uint64         `json:"id"`
-	Name           string         `json:"name"`
-	Email          string         `json:"email"`
-	Role           model.UserRole `json:"role"`
-	IsActive       bool           `json:"is_active"`
-	IsBanned       bool           `json:"is_banned"`
-	BanIsPermanent bool           `json:"ban_is_permanent"`
-	BannedUntil    *ptime.Time    `json:"banned_until"`
-	BanReason      *string        `json:"ban_reason"`
-	BannedBy       *uint64        `json:"banned_by"`
-	AvatarURL      *string        `json:"avatar_url"`
-	Bio            *string        `json:"bio"`
-	Stats          UserStats      `json:"stats"`
-	DeletedAt      *ptime.Time    `json:"deleted_at"`
-	CreatedAt      ptime.Time     `json:"created_at"`
+	ID             uint64           `json:"id"`
+	Name           string           `json:"name"`
+	Email          string           `json:"email"`
+	Roles          []model.UserRole `json:"roles"`
+	IsActive       bool             `json:"is_active"`
+	IsBanned       bool             `json:"is_banned"`
+	BanIsPermanent bool             `json:"ban_is_permanent"`
+	BannedUntil    *ptime.Time      `json:"banned_until"`
+	BanReason      *string          `json:"ban_reason"`
+	BannedBy       *uint64          `json:"banned_by"`
+	AvatarURL      *string          `json:"avatar_url"`
+	Bio            *string          `json:"bio"`
+	Stats          UserStats        `json:"stats"`
+	DeletedAt      *ptime.Time      `json:"deleted_at"`
+	CreatedAt      ptime.Time       `json:"created_at"`
 }
 
 // AdminUserList 是管理端用户页。
 type AdminUserList struct {
 	Users      []AdminUserView `json:"users"`
 	Pagination pagination.Meta `json:"pagination"`
+}
+
+// AdminUserBanRecordView 是管理端单用户取证可见的一次封禁状态变更。
+type AdminUserBanRecordView struct {
+	ID             uint64              `json:"id"`
+	Action         model.UserBanAction `json:"action"`
+	BanIsPermanent bool                `json:"ban_is_permanent"`
+	BannedUntil    *ptime.Time         `json:"banned_until"`
+	Reason         *string             `json:"reason"`
+	ActorID        *uint64             `json:"actor_id"`
+	CreatedAt      ptime.Time          `json:"created_at"`
+}
+
+// AdminUserDetail 是单用户取证详情及其完整封禁历史。
+type AdminUserDetail struct {
+	AdminUserView
+	BanRecords []AdminUserBanRecordView `json:"ban_records"`
 }
 
 // AdminModerationView 是通用待人工复核队列的一项。
@@ -138,8 +155,11 @@ type AdminUserStatusResult struct {
 
 // AdminUserRoleResult 是角色调整结果。
 type AdminUserRoleResult struct {
-	UserID uint64         `json:"user_id"`
-	Role   model.UserRole `json:"role"`
+	UserID  uint64               `json:"user_id"`
+	Role    model.UserRole       `json:"role"`
+	Action  model.UserRoleAction `json:"action"`
+	Changed bool                 `json:"changed"`
+	Roles   []model.UserRole     `json:"roles"`
 }
 
 // AdminPostReviewInput 是基线帖子审核端点的输入。
@@ -201,6 +221,7 @@ type AdminService struct {
 	posts      repository.PostRepository
 	comments   repository.CommentRepository
 	sessions   repository.SessionRepository
+	users      repository.UserRepository
 	moderation *ModerationService
 }
 

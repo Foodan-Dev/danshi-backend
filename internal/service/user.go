@@ -27,18 +27,18 @@ type UserStats struct {
 	FollowingCount int64 `json:"following_count"`
 }
 
-// UserProfile 是用户主页。email 与 role 仅在本人视角非空并参与序列化。
+// UserProfile 是用户主页。email 与 roles 仅在本人视角非空并参与序列化。
 type UserProfile struct {
-	ID          uint64          `json:"id"`
-	Email       *string         `json:"email,omitempty"`
-	Name        string          `json:"name"`
-	AvatarURL   *string         `json:"avatar_url"`
-	Bio         *string         `json:"bio"`
-	Gender      *model.Gender   `json:"gender"`
-	Role        *model.UserRole `json:"role,omitempty"`
-	Stats       UserStats       `json:"stats"`
-	IsFollowing bool            `json:"is_following"`
-	CreatedAt   ptime.Time      `json:"created_at"`
+	ID          uint64            `json:"id"`
+	Email       *string           `json:"email,omitempty"`
+	Name        string            `json:"name"`
+	AvatarURL   *string           `json:"avatar_url"`
+	Bio         *string           `json:"bio"`
+	Gender      *model.Gender     `json:"gender"`
+	Roles       *[]model.UserRole `json:"roles,omitempty"`
+	Stats       UserStats         `json:"stats"`
+	IsFollowing bool              `json:"is_following"`
+	CreatedAt   ptime.Time        `json:"created_at"`
 }
 
 // UpdateUserInput 是带字段存在性的局部资料更新输入。
@@ -100,7 +100,7 @@ func NewUserService(moderator ContentModerator, alerter UserModerationAlerter) *
 	return &UserService{moderator: moderator, alerter: alerter}
 }
 
-// Profile 返回用户主页，并只在本人视角附带 email 与 role。
+// Profile 返回用户主页，并只在本人视角附带 email 与 roles。
 func (s *UserService) Profile(ctx context.Context, userID, currentUserID uint64) (*UserProfile, error) {
 	record, err := s.users.FindProfile(ctx, userID, currentUserID)
 	if err != nil {
@@ -108,8 +108,12 @@ func (s *UserService) Profile(ctx context.Context, userID, currentUserID uint64)
 	}
 	profile := buildUserProfile(record)
 	if userID == currentUserID {
-		email, role := record.Email, record.Role
-		profile.Email, profile.Role = &email, &role
+		roles, rolesErr := s.users.FindRoles(ctx, userID)
+		if rolesErr != nil {
+			return nil, apierr.Internal(rolesErr)
+		}
+		email := record.Email
+		profile.Email, profile.Roles = &email, &roles
 	}
 	return &profile, nil
 }

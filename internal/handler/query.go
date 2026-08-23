@@ -96,7 +96,7 @@ type adminPostsQuery struct {
 }
 
 type adminUsersQuery struct {
-	Role       model.UserRole `query:"role"`
+	Role       model.UserRole `query:"role" query_enum:"user,dict_reviewer,moderator,super_admin"`
 	IsActive   string         `query:"is_active" query_type:"boolean"`
 	Pagination paginationQuery
 }

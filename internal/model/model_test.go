@@ -53,16 +53,29 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 
 	author := &model.User{
 		Email: "model-author@fdueat.com", PasswordHash: "$2b$12$modeltest",
-		Name: "模型作者", Role: model.UserRoleUser,
+		Name: "模型作者",
 	}
 	insertAndSelect(t, gdb, author)
 
 	actor := &model.User{
 		Email: "model-actor@fdueat.com", PasswordHash: "$2b$12$modeltest",
 		Name: "模型互动者", Gender: ptr(model.GenderOther), Bio: ptr("模型层集成测试"),
-		Role: model.UserRoleAdmin,
 	}
 	require.NoError(t, gdb.Create(actor).Error)
+
+	roleBinding := &model.UserRoleBinding{
+		UserID: actor.ID, Role: model.UserRoleModerator, GrantedBy: &actor.ID, GrantedAt: now,
+	}
+	insertAndSelect(t, gdb, roleBinding)
+	roleRecord := &model.UserRoleRecord{
+		UserID: actor.ID, Role: model.UserRoleModerator, Action: model.UserRoleActionGrant,
+		ActorID: &actor.ID, CreatedAt: now,
+	}
+	insertAndSelect(t, gdb, roleRecord)
+	banRecord := &model.UserBanRecord{
+		UserID: actor.ID, Action: model.UserBanActionUnban, ActorID: &actor.ID, CreatedAt: now,
+	}
+	insertAndSelect(t, gdb, banRecord)
 
 	size := int64(1024)
 	asset := &model.ImageAsset{
@@ -267,7 +280,7 @@ func tableName(t *testing.T, gdb *gorm.DB, value any) string {
 func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	catalog := modelCatalog()
-	require.Len(t, catalog, 24)
+	require.Len(t, catalog, 27)
 
 	var actualTables []string
 	require.NoError(t, gdb.Raw(`
@@ -310,7 +323,8 @@ func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 func modelCatalog() []any {
 	return []any{
 		&model.Canteen{}, &model.CanteenWindow{}, &model.Cuisine{}, &model.Flavor{},
-		&model.Tag{}, &model.User{}, &model.ImageAsset{}, &model.Post{},
+		&model.Tag{}, &model.User{}, &model.UserRoleBinding{}, &model.UserBanRecord{},
+		&model.UserRoleRecord{}, &model.ImageAsset{}, &model.Post{},
 		&model.PostTag{}, &model.PostFlavor{}, &model.PostImage{}, &model.Comment{},
 		&model.CommentMention{}, &model.Follow{}, &model.Favorite{}, &model.PostLike{},
 		&model.CommentLike{}, &model.Notification{}, &model.EmailVerificationCode{},

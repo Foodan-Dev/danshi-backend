@@ -5,9 +5,28 @@ type UserRole string
 
 // 用户角色枚举值。
 const (
-	UserRoleUser       UserRole = "user"
-	UserRoleAdmin      UserRole = "admin"
-	UserRoleSuperAdmin UserRole = "super_admin"
+	UserRoleUser         UserRole = "user"
+	UserRoleDictReviewer UserRole = "dict_reviewer"
+	UserRoleModerator    UserRole = "moderator"
+	UserRoleSuperAdmin   UserRole = "super_admin"
+)
+
+// UserRoleAction 是一次角色绑定变更动作。
+type UserRoleAction string
+
+// 角色绑定动作枚举值。
+const (
+	UserRoleActionGrant  UserRoleAction = "grant"
+	UserRoleActionRevoke UserRoleAction = "revoke"
+)
+
+// UserBanAction 是一次封禁状态变更动作。
+type UserBanAction string
+
+// 封禁状态动作枚举值。
+const (
+	UserBanActionBan   UserBanAction = "ban"
+	UserBanActionUnban UserBanAction = "unban"
 )
 
 // Gender 是用户性别。

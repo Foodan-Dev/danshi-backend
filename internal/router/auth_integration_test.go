@@ -340,7 +340,7 @@ func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB
 	email := "commit-error-500@fdueat.com"
 	engine.POST("/commit-error-500", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: email, PasswordHash: "$2b$12$test", Name: "rollback", Role: model.UserRoleUser,
+			Email: email, PasswordHash: "$2b$12$test", Name: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			routermiddleware.Fail(ctx, c, apierr.Internal(err))
@@ -369,7 +369,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	committedEmail := "post-commit-success@fdueat.com"
 	engine.POST("/post-commit-success", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: committedEmail, PasswordHash: "$2b$12$test", Name: "commit", Role: model.UserRoleUser,
+			Email: committedEmail, PasswordHash: "$2b$12$test", Name: "commit",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			routermiddleware.Fail(ctx, c, apierr.Internal(err))
@@ -390,7 +390,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	rolledBackEmail := "post-commit-rollback@fdueat.com"
 	engine.POST("/post-commit-rollback", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Name: "rollback", Role: model.UserRoleUser,
+			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Name: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			routermiddleware.Fail(ctx, c, apierr.Internal(err))
@@ -422,9 +422,9 @@ func testRepositoryBase(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	users := []model.User{
-		{Email: "repo-base-a@fdueat.com", PasswordHash: "$2b$12$test", Name: "A", Role: model.UserRoleUser},
-		{Email: "repo-base-b@fdueat.com", PasswordHash: "$2b$12$test", Name: "B", Role: model.UserRoleUser},
-		{Email: "repo-base-deleted@fdueat.com", PasswordHash: "$2b$12$test", Name: "D", Role: model.UserRoleUser, DeletedAt: &now},
+		{Email: "repo-base-a@fdueat.com", PasswordHash: "$2b$12$test", Name: "A"},
+		{Email: "repo-base-b@fdueat.com", PasswordHash: "$2b$12$test", Name: "B"},
+		{Email: "repo-base-deleted@fdueat.com", PasswordHash: "$2b$12$test", Name: "D", DeletedAt: &now},
 	}
 	for index := range users {
 		require.NoError(t, gdb.Create(&users[index]).Error)
@@ -519,7 +519,7 @@ func testRegisteredEmailRateLimit(
 	t.Helper()
 	email := "registered-rate-limit@fdueat.com"
 	require.NoError(t, gdb.Create(&model.User{
-		Email: email, PasswordHash: "$2b$12$test", Name: "registered", Role: model.UserRoleUser,
+		Email: email, PasswordHash: "$2b$12$test", Name: "registered",
 	}).Error)
 
 	status, _, _ := performJSON(t, engine, http.MethodPost,
@@ -920,7 +920,7 @@ func testSessionSecurityLifecycle(
 	victim := registerPostTestUser(t, engine, sender, victimEmail, "封禁会话用户")
 	victimClaims, err := jwtx.NewCodec(integrationSecret).Parse(victim.Token, jwtx.TypeAccess)
 	require.NoError(t, err)
-	admin := fixtures.CreateActor(cfg, testutil.WithUserRole(model.UserRoleAdmin))
+	admin := fixtures.CreateActor(cfg, testutil.WithUserRole(model.UserRoleModerator))
 	status, response, _ = performJSON(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/v2/admin/users/%d/status", victim.User.ID),
 		map[string]any{"ban_is_permanent": true, "ban_reason": "会话撤销组合测试"}, admin.Token)

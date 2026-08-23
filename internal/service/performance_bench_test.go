@@ -68,7 +68,7 @@ func BenchmarkAssertCurrentMatchesLatest(b *testing.B) {
 	gdb, database := openSnapshotBenchmarkDatabase(b)
 	user := model.User{
 		Email: "snapshot-benchmark@fdueat.com", PasswordHash: "benchmark-hash",
-		Name: "快照基准用户", Role: model.UserRoleUser,
+		Name: "快照基准用户",
 	}
 	if err := gdb.Create(&user).Error; err != nil {
 		b.Fatal(err)

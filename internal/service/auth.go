@@ -60,13 +60,13 @@ type ClientInfo struct {
 
 // UserView 是只对用户本人返回的账号信息。
 type UserView struct {
-	ID        uint64         `json:"id"`
-	Email     string         `json:"email"`
-	Name      string         `json:"name"`
-	Gender    *model.Gender  `json:"gender"`
-	Bio       *string        `json:"bio"`
-	Role      model.UserRole `json:"role"`
-	AvatarURL *string        `json:"avatar_url"`
+	ID        uint64           `json:"id"`
+	Email     string           `json:"email"`
+	Name      string           `json:"name"`
+	Gender    *model.Gender    `json:"gender"`
+	Bio       *string          `json:"bio"`
+	Roles     []model.UserRole `json:"roles"`
+	AvatarURL *string          `json:"avatar_url"`
 }
 
 // AuthResult 是注册和登录的 token 对与当前用户。
@@ -233,7 +233,7 @@ func (s *AuthService) Register(
 
 	user := &model.User{
 		Email: input.Email, PasswordHash: passwordHash, Name: valueOrEmpty(input.Name),
-		Gender: genderValue(input.Gender), Role: model.UserRoleUser,
+		Gender: genderValue(input.Gender),
 	}
 	if err := s.users.Create(ctx, user); err != nil {
 		if repository.IsUniqueViolation(err, "uq_users_email_lower") {
@@ -421,9 +421,16 @@ func (s *AuthService) userView(ctx context.Context, user *model.User) (UserView,
 	if err != nil {
 		return UserView{}, apierr.Internal(err)
 	}
+	roles := user.Roles
+	if roles == nil {
+		roles, err = s.users.FindRoles(ctx, user.ID)
+		if err != nil {
+			return UserView{}, apierr.Internal(err)
+		}
+	}
 	return UserView{
 		ID: user.ID, Email: user.Email, Name: user.Name, Gender: user.Gender,
-		Bio: user.Bio, Role: user.Role, AvatarURL: avatarURL,
+		Bio: user.Bio, Roles: append([]model.UserRole{}, roles...), AvatarURL: avatarURL,
 	}, nil
 }
 

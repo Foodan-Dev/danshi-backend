@@ -123,7 +123,7 @@ func testUserProfileAndFollows(
 	var public map[string]any
 	decodeData(t, response, &public)
 	require.NotContains(t, public, "email")
-	require.NotContains(t, public, "role")
+	require.NotContains(t, public, "roles")
 	require.NotContains(t, public, "hometown")
 
 	status, response, _ = performJSON(t, engine, http.MethodGet, path, nil, owner.Token)
@@ -131,7 +131,7 @@ func testUserProfileAndFollows(
 	var own map[string]any
 	decodeData(t, response, &own)
 	require.Equal(t, owner.User.Email, own["email"])
-	require.Equal(t, string(owner.User.Role), own["role"])
+	require.Equal(t, []any{}, own["roles"])
 	require.NotContains(t, own, "hometown")
 
 	followPath := path + "/follow"

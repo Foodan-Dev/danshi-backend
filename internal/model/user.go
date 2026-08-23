@@ -11,7 +11,7 @@ type User struct {
 	Gender             *Gender
 	Bio                *string
 	AvatarImageAssetID *uint64
-	Role               UserRole
+	Roles              []UserRole `gorm:"-"`
 	BanIsPermanent     bool
 	BannedUntil        *time.Time
 	BanReason          *string
@@ -23,6 +23,45 @@ type User struct {
 
 // TableName 返回用户表名。
 func (User) TableName() string { return "users" }
+
+// UserRoleBinding 是用户当前生效的一项管理角色绑定。
+type UserRoleBinding struct {
+	UserID    uint64   `gorm:"primaryKey;autoIncrement:false"`
+	Role      UserRole `gorm:"primaryKey"`
+	GrantedBy *uint64
+	GrantedAt time.Time
+}
+
+// TableName 返回用户角色绑定表名。
+func (UserRoleBinding) TableName() string { return "user_roles" }
+
+// UserBanRecord 是一次追加不可篡改的封禁或解封事实。
+type UserBanRecord struct {
+	ID             uint64 `gorm:"primaryKey"`
+	UserID         uint64
+	Action         UserBanAction
+	BanIsPermanent bool
+	BannedUntil    *time.Time
+	Reason         *string
+	ActorID        *uint64
+	CreatedAt      time.Time
+}
+
+// TableName 返回用户封禁记录表名。
+func (UserBanRecord) TableName() string { return "user_ban_records" }
+
+// UserRoleRecord 是一次追加不可篡改的角色授予或撤销事实。
+type UserRoleRecord struct {
+	ID        uint64 `gorm:"primaryKey"`
+	UserID    uint64
+	Role      UserRole
+	Action    UserRoleAction
+	ActorID   *uint64
+	CreatedAt time.Time
+}
+
+// TableName 返回用户角色记录表名。
+func (UserRoleRecord) TableName() string { return "user_role_records" }
 
 // Follow 是用户之间的单向关注关系。
 type Follow struct {

@@ -8,7 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/jingyijun/danshi_backend_go/internal/authz"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -39,32 +39,16 @@ func RequireAuth(auth Authenticator) app.HandlerFunc {
 	}
 }
 
-// RequireAdmin 要求已认证身份具有 admin 或 super_admin 角色。
-func RequireAdmin() app.HandlerFunc {
+// RequireCapability 要求已认证身份的角色并集包含指定业务能力。
+func RequireCapability(capability authz.Capability) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		principal, err := CurrentPrincipal(c)
 		if err != nil {
 			Fail(ctx, c, err)
 			return
 		}
-		if principal.User.Role != model.UserRoleAdmin && principal.User.Role != model.UserRoleSuperAdmin {
-			Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "需要管理员权限"))
-			return
-		}
-		c.Next(ctx)
-	}
-}
-
-// RequireSuperAdmin 要求已认证身份具有 super_admin 角色。
-func RequireSuperAdmin() app.HandlerFunc {
-	return func(ctx context.Context, c *app.RequestContext) {
-		principal, err := CurrentPrincipal(c)
-		if err != nil {
-			Fail(ctx, c, err)
-			return
-		}
-		if principal.User.Role != model.UserRoleSuperAdmin {
-			Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "需要超级管理员权限"))
+		if !authz.HasCapability(principal.User.Roles, capability) {
+			Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "没有执行该操作的权限"))
 			return
 		}
 		c.Next(ctx)

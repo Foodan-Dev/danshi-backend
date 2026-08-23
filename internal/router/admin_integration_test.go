@@ -27,6 +27,8 @@ import (
 type adminActors struct {
 	Super     service.AuthResult
 	Admin     service.AuthResult
+	Dict      service.AuthResult
+	Multi     service.AuthResult
 	Ordinary  service.AuthResult
 	Permanent service.AuthResult
 	Timed     service.AuthResult
@@ -51,6 +53,21 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 	t.Run("route inventory and role guards", func(t *testing.T) {
 		testAdminRouteInventory(t, engine)
 		testAdminRoleGuards(t, engine, actors)
+	})
+
+	t.Run("multi-role union and targeted evidence", func(t *testing.T) {
+		status, _, _ := performJSON(t, engine, http.MethodGet,
+			"/api/v2/admin/posts", nil, actors.Multi.Token)
+		require.Equal(t, http.StatusOK, status)
+		status, _, _ = performJSON(t, engine, http.MethodGet,
+			"/api/v2/admin/dictionary-suggestions", nil, actors.Multi.Token)
+		require.Equal(t, http.StatusOK, status)
+		status, _, _ = performJSON(t, engine, http.MethodGet,
+			"/api/v2/admin/users", nil, actors.Admin.Token)
+		require.Equal(t, http.StatusForbidden, status)
+		status, _, _ = performJSON(t, engine, http.MethodGet,
+			fmt.Sprintf("/api/v2/admin/users/%d", actors.Ordinary.User.ID), nil, actors.Admin.Token)
+		require.Equal(t, http.StatusOK, status)
 	})
 
 	t.Run("permanent timed unban constraint and session revocation", func(t *testing.T) {
@@ -80,8 +97,8 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
-	require.Len(t, engine.Routes(), 79, "P2 全域应注册 77 条业务路由与 2 条 runtime 路由")
-	operations := make([]string, 0, 15)
+	require.Len(t, engine.Routes(), 81, "应注册 79 条业务路由与 2 条 runtime 路由")
+	operations := make([]string, 0, 17)
 	for _, route := range engine.Routes() {
 		if isAdminDomainPath(route.Path) {
 			operations = append(operations, route.Method+" "+route.Path)
@@ -94,6 +111,8 @@ func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 		"DELETE /api/v2/admin/posts/:post_id",
 		"PUT /api/v2/admin/posts/:post_id/restore",
 		"GET /api/v2/admin/users",
+		"GET /api/v2/admin/users/:user_id",
+		"GET /api/v2/admin/users/:user_id/posts",
 		"PUT /api/v2/admin/users/:user_id/status",
 		"PUT /api/v2/admin/users/:user_id/role",
 		"GET /api/v2/admin/admins",
@@ -122,26 +141,28 @@ func testAdminRoleGuards(t *testing.T, engine *server.Hertz, actors adminActors)
 		method        string
 		path          string
 		body          any
-		superOnly     bool
+		moderator     bool
 		allowedStatus int
 		allowedCode   apierr.BizCode
 	}
 	routes := []routeCase{
-		{name: "pending posts", method: http.MethodGet, path: "/api/v2/admin/posts/pending", allowedStatus: http.StatusOK},
-		{name: "review post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/review", body: map[string]any{"status": model.PostStatusApproved}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
-		{name: "posts", method: http.MethodGet, path: "/api/v2/admin/posts", allowedStatus: http.StatusOK},
-		{name: "delete post", method: http.MethodDelete, path: "/api/v2/admin/posts/" + missingID, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
-		{name: "restore post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/restore", allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "pending posts", method: http.MethodGet, path: "/api/v2/admin/posts/pending", moderator: true, allowedStatus: http.StatusOK},
+		{name: "review post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/review", body: map[string]any{"status": model.PostStatusApproved}, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "posts", method: http.MethodGet, path: "/api/v2/admin/posts", moderator: true, allowedStatus: http.StatusOK},
+		{name: "delete post", method: http.MethodDelete, path: "/api/v2/admin/posts/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "restore post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/restore", moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
 		{name: "users", method: http.MethodGet, path: "/api/v2/admin/users", allowedStatus: http.StatusOK},
-		{name: "update user status", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/status", body: map[string]any{"ban_is_permanent": false}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
-		{name: "update user role", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/role", body: map[string]any{"role": model.UserRoleUser}, superOnly: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
-		{name: "admins", method: http.MethodGet, path: "/api/v2/admin/admins", superOnly: true, allowedStatus: http.StatusOK},
-		{name: "super admins", method: http.MethodGet, path: "/api/v2/admin/super-admins", superOnly: true, allowedStatus: http.StatusOK},
-		{name: "comments", method: http.MethodGet, path: "/api/v2/admin/comments", allowedStatus: http.StatusOK},
-		{name: "delete comment", method: http.MethodDelete, path: "/api/v2/admin/comments/" + missingID, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
-		{name: "restore comment", method: http.MethodPut, path: "/api/v2/admin/comments/" + missingID + "/restore", allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
-		{name: "pending moderation", method: http.MethodGet, path: "/api/v2/admin/moderation-records/pending", allowedStatus: http.StatusOK},
-		{name: "manual review", method: http.MethodPut, path: "/api/v2/admin/moderation-records/" + missingID + "/review", body: map[string]any{"verdict": model.ModerationVerdictPass}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "user detail", method: http.MethodGet, path: "/api/v2/admin/users/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "user posts", method: http.MethodGet, path: "/api/v2/admin/users/" + missingID + "/posts", moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "update user status", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/status", body: map[string]any{"ban_is_permanent": false}, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "update user role", method: http.MethodPut, path: "/api/v2/admin/users/" + missingID + "/role", body: map[string]any{"role": model.UserRoleModerator, "action": model.UserRoleActionGrant}, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
+		{name: "admins", method: http.MethodGet, path: "/api/v2/admin/admins", allowedStatus: http.StatusOK},
+		{name: "super admins", method: http.MethodGet, path: "/api/v2/admin/super-admins", allowedStatus: http.StatusOK},
+		{name: "comments", method: http.MethodGet, path: "/api/v2/admin/comments", moderator: true, allowedStatus: http.StatusOK},
+		{name: "delete comment", method: http.MethodDelete, path: "/api/v2/admin/comments/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
+		{name: "restore comment", method: http.MethodPut, path: "/api/v2/admin/comments/" + missingID + "/restore", moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizCommentNotFound},
+		{name: "pending moderation", method: http.MethodGet, path: "/api/v2/admin/moderation-records/pending", moderator: true, allowedStatus: http.StatusOK},
+		{name: "manual review", method: http.MethodPut, path: "/api/v2/admin/moderation-records/" + missingID + "/review", body: map[string]any{"verdict": model.ModerationVerdictPass}, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
 	}
 	for _, route := range routes {
 		t.Run(route.name, func(t *testing.T) {
@@ -149,12 +170,14 @@ func testAdminRoleGuards(t *testing.T, engine *server.Hertz, actors adminActors)
 				http.StatusUnauthorized, apierr.BizUnauthorized)
 			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
 				actors.Ordinary.Token, http.StatusForbidden, apierr.BizPermissionDenied)
-			if route.superOnly {
-				assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
-					actors.Admin.Token, http.StatusForbidden, apierr.BizPermissionDenied)
-			} else {
+			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+				actors.Dict.Token, http.StatusForbidden, apierr.BizPermissionDenied)
+			if route.moderator {
 				assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
 					actors.Admin.Token, route.allowedStatus, route.allowedCode)
+			} else {
+				assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
+					actors.Admin.Token, http.StatusForbidden, apierr.BizPermissionDenied)
 			}
 			assertAdminMatrixResponse(t, engine, route.method, route.path, route.body,
 				actors.Super.Token, route.allowedStatus, route.allowedCode)
@@ -225,9 +248,28 @@ func testAdminBanStates(
 	require.Nil(t, unbanned.BannedUntil)
 	require.Nil(t, unbanned.BanReason)
 	require.Nil(t, unbanned.BannedBy)
+	status, _, _ = performJSON(t, engine, http.MethodPut, timedPath, map[string]any{
+		"ban_is_permanent": true, "ban_reason": "再次封禁集成测试",
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var banRecords []model.UserBanRecord
+	require.NoError(t, gdb.Where("user_id = ?", actors.Timed.User.ID).Order("id").Find(&banRecords).Error)
+	require.Len(t, banRecords, 3)
+	require.Equal(t, "限时封禁集成测试", *banRecords[0].Reason)
+	require.Equal(t, model.UserBanActionUnban, banRecords[1].Action)
+	require.Equal(t, "再次封禁集成测试", *banRecords[2].Reason)
+	require.Error(t, gdb.Model(&model.UserBanRecord{}).Where("id = ?", banRecords[0].ID).
+		UpdateColumn("reason", "篡改").Error)
+	require.Error(t, gdb.Delete(&model.UserBanRecord{}, banRecords[0].ID).Error)
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/admin/users/%d", actors.Timed.User.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var detail service.AdminUserDetail
+	decodeData(t, response, &detail)
+	require.Len(t, detail.BanRecords, 3)
 
 	illegalPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Illegal.User.ID)
-	status, response, _ := performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+	status, response, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
 		"ban_is_permanent": true,
 	}, actors.Admin.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
@@ -294,14 +336,29 @@ func testAdminRoleUpdate(
 	t.Helper()
 	path := fmt.Sprintf("/api/v2/admin/users/%d/role", actors.Ordinary.User.ID)
 	status, _, _ := performJSON(t, engine, http.MethodPut, path,
-		map[string]any{"role": model.UserRoleAdmin}, actors.Admin.Token)
+		map[string]any{"role": model.UserRoleModerator, "action": model.UserRoleActionGrant}, actors.Admin.Token)
 	require.Equal(t, http.StatusForbidden, status)
 	status, _, _ = performJSON(t, engine, http.MethodPut, path,
-		map[string]any{"role": model.UserRoleAdmin}, actors.Super.Token)
+		map[string]any{"role": model.UserRoleModerator, "action": model.UserRoleActionGrant}, actors.Super.Token)
 	require.Equal(t, http.StatusOK, status)
-	var ordinary model.User
-	require.NoError(t, gdb.First(&ordinary, actors.Ordinary.User.ID).Error)
-	require.Equal(t, model.UserRoleAdmin, ordinary.Role)
+	status, _, _ = performJSON(t, engine, http.MethodPut, path,
+		map[string]any{"role": model.UserRoleModerator, "action": model.UserRoleActionRevoke}, actors.Super.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, _, _ = performJSON(t, engine, http.MethodPut, path,
+		map[string]any{"role": model.UserRoleModerator, "action": model.UserRoleActionGrant}, actors.Super.Token)
+	require.Equal(t, http.StatusOK, status)
+	var bindings []model.UserRoleBinding
+	require.NoError(t, gdb.Where("user_id = ?", actors.Ordinary.User.ID).Find(&bindings).Error)
+	require.Equal(t, []model.UserRole{model.UserRoleModerator}, []model.UserRole{bindings[0].Role})
+	var records []model.UserRoleRecord
+	require.NoError(t, gdb.Where("user_id = ?", actors.Ordinary.User.ID).Order("id").Find(&records).Error)
+	require.Len(t, records, 3)
+	require.Equal(t, model.UserRoleActionGrant, records[0].Action)
+	require.Equal(t, model.UserRoleActionRevoke, records[1].Action)
+	require.Equal(t, model.UserRoleActionGrant, records[2].Action)
+	require.Error(t, gdb.Model(&model.UserRoleRecord{}).Where("id = ?", records[0].ID).
+		UpdateColumn("action", model.UserRoleActionRevoke).Error)
+	require.Error(t, gdb.Delete(&model.UserRoleRecord{}, records[0].ID).Error)
 }
 
 func testAdminPostReview(
@@ -496,11 +553,35 @@ func testAdminListsAndDeletion(
 	decodeData(t, response, &comments)
 	require.True(t, adminCommentPresent(comments.Comments, commentIDs[0]))
 	status, response, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/admin/users?limit=100", nil, actors.Admin.Token)
+		"/api/v2/admin/users?limit=100", nil, actors.Super.Token)
 	require.Equal(t, http.StatusOK, status)
 	var users service.AdminUserList
 	decodeData(t, response, &users)
 	require.True(t, adminUserPresent(users.Users, actors.Illegal.User.ID))
+
+	require.NoError(t, gdb.Model(&model.Post{}).Where("id = ?", postIDs[1]).
+		UpdateColumn("status", model.PostStatusPending).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/admin/users/%d/posts?limit=100", actors.Author.User.ID),
+		nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var evidence service.AdminPostList
+	decodeData(t, response, &evidence)
+	require.True(t, adminPostPresent(evidence.Posts, postIDs[0]), "取证列表必须包含软删除帖子")
+	require.True(t, adminPostPresent(evidence.Posts, postIDs[1]), "取证列表必须包含未通过帖子")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/users/%d/posts?limit=100", actors.Author.User.ID),
+		nil, actors.Ordinary.Token)
+	require.Equal(t, http.StatusOK, status)
+	var public service.PostList
+	decodeData(t, response, &public)
+	publicIDs := make([]uint64, 0, len(public.Posts))
+	for _, post := range public.Posts {
+		publicIDs = append(publicIDs, post.ID)
+	}
+	require.NotContains(t, publicIDs, postIDs[0])
+	require.NotContains(t, publicIDs, postIDs[1])
 }
 
 func testAdminPostRestore(
@@ -572,21 +653,25 @@ func registerAdminActors(
 		return registerPostTestUser(t, engine, sender, local+"@fdueat.com", name)
 	}
 	actors := adminActors{
-		Super: register("admin-super", "超级管理员"), Admin: register("admin-normal", "管理员"),
+		Super: register("admin-super", "超级管理员"), Admin: register("admin-normal", "内容管理员"),
+		Dict:     register("admin-dict", "词表管理员"),
+		Multi:    register("admin-multi", "复合角色管理员"),
 		Ordinary: register("admin-ordinary", "普通用户"), Permanent: register("admin-permanent", "永久封禁用户"),
 		Timed: register("admin-timed", "限时封禁用户"), Illegal: register("admin-illegal", "非法组合用户"),
 		Author: register("admin-author", "内容作者"), Commenter: register("admin-commenter", "评论作者"),
 		SelfAdmin: register("admin-self-ban", "自封管理员"),
 		SuperUser: register("admin-super-target", "被封超级管理员"),
 	}
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.Super.User.ID).
-		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.Admin.User.ID).
-		UpdateColumn("role", model.UserRoleAdmin).Error)
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.SelfAdmin.User.ID).
-		UpdateColumn("role", model.UserRoleAdmin).Error)
-	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", actors.SuperUser.User.ID).
-		UpdateColumn("role", model.UserRoleSuperAdmin).Error)
+	bindings := []model.UserRoleBinding{
+		{UserID: actors.Super.User.ID, Role: model.UserRoleSuperAdmin, GrantedAt: time.Now().UTC()},
+		{UserID: actors.Admin.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC()},
+		{UserID: actors.Dict.User.ID, Role: model.UserRoleDictReviewer, GrantedAt: time.Now().UTC()},
+		{UserID: actors.Multi.User.ID, Role: model.UserRoleDictReviewer, GrantedAt: time.Now().UTC()},
+		{UserID: actors.Multi.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC()},
+		{UserID: actors.SelfAdmin.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC()},
+		{UserID: actors.SuperUser.User.ID, Role: model.UserRoleSuperAdmin, GrantedAt: time.Now().UTC()},
+	}
+	require.NoError(t, gdb.Create(&bindings).Error)
 	return actors
 }
 
