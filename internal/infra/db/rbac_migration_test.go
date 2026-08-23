@@ -14,6 +14,8 @@ import (
 func TestRBACMigrationMapsLegacyRolesAndDropsSourceColumn(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
+	// 回到 v2 才能装载仍含 users.role 的旧 schema 数据：v4 是搜索索引，v3 才是 RBAC 迁移。
+	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 
 	_, err := database.SQL.ExecContext(ctx, `

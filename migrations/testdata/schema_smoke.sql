@@ -963,6 +963,7 @@ DECLARE want text; missing text[] := '{}';
 BEGIN
   FOREACH want IN ARRAY ARRAY[
     'idx_posts_window_created','idx_post_tags_tag','idx_post_flavors_flavor',
+    'idx_posts_title_trgm','idx_posts_content_trgm','idx_users_name_trgm',
     'idx_ds_pending','idx_user_sessions_active','idx_user_sessions_expires',
     'idx_user_roles_role','idx_user_ban_records_user','idx_user_role_records_user',
     'uq_users_email_lower','uq_tags_name_lower','uq_user_sessions_digest',
@@ -973,6 +974,46 @@ BEGIN
     END IF;
   END LOOP;
   PERFORM _assert(cardinality(missing)=0, format('关键索引齐全（缺失：%s）', missing));
+
+  PERFORM _assert(EXISTS (
+    SELECT 1 FROM pg_extension WHERE extname='pg_trgm'
+  ), 'pg_trgm 扩展已启用');
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
+      JOIN pg_class idx ON idx.oid=i.indexrelid
+      JOIN pg_am am ON am.oid=idx.relam
+     WHERE i.indexrelid='idx_posts_title_trgm'::regclass
+       AND i.indrelid='posts'::regclass
+       AND i.indisvalid AND i.indisready
+       AND am.amname='gin'
+       AND pg_get_indexdef(i.indexrelid)=
+           'CREATE INDEX idx_posts_title_trgm ON public.posts USING gin (title gin_trgm_ops)'
+  ), 'posts.title 使用可用的 gin_trgm_ops GIN 索引');
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
+      JOIN pg_class idx ON idx.oid=i.indexrelid
+      JOIN pg_am am ON am.oid=idx.relam
+     WHERE i.indexrelid='idx_posts_content_trgm'::regclass
+       AND i.indrelid='posts'::regclass
+       AND i.indisvalid AND i.indisready
+       AND am.amname='gin'
+       AND pg_get_indexdef(i.indexrelid)=
+           'CREATE INDEX idx_posts_content_trgm ON public.posts USING gin (content gin_trgm_ops)'
+  ), 'posts.content 使用可用的 gin_trgm_ops GIN 索引');
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
+      JOIN pg_class idx ON idx.oid=i.indexrelid
+      JOIN pg_am am ON am.oid=idx.relam
+     WHERE i.indexrelid='idx_users_name_trgm'::regclass
+       AND i.indrelid='users'::regclass
+       AND i.indisvalid AND i.indisready
+       AND am.amname='gin'
+       AND pg_get_indexdef(i.indexrelid)=
+           'CREATE INDEX idx_users_name_trgm ON public.users USING gin (name gin_trgm_ops)'
+  ), 'users.name 使用可用的 gin_trgm_ops GIN 索引');
 
   missing := '{}';
   FOREACH want IN ARRAY ARRAY[
