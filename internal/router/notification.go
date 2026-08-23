@@ -9,7 +9,9 @@ import (
 )
 
 func registerNotification(api *route.RouterGroup, deps Deps) {
-	notificationHandler := handler.NewNotification(service.NewNotificationService())
+	notificationHandler := handler.NewNotification(
+		service.NewNotificationServiceWithCursorSecret(deps.Config.JWTSecretKey),
+	)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 	notifications := api.Group("/notifications")

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -110,9 +111,9 @@ func assertRepositoryQueryParameters(t *testing.T, document *openapi3.T) {
 	posts := document.Paths.Value("/api/v2/posts").Get
 	require.Equal(t, []string{
 		"post_type", "share_type", "category", "canteen_code", "cuisine", "flavors", "tags",
-		"min_price", "max_price", "sort_by", "page", "limit",
+		"min_price", "max_price", "sort_by", "cursor", "page", "limit",
 	}, parameterNames(posts))
-	require.Len(t, posts.Parameters, 12)
+	require.Len(t, posts.Parameters, 13)
 	require.Equal(t, []any{"share", "seeking"}, parameterByName(t, posts, "post_type").Schema.Value.Enum)
 	require.Equal(t, []any{"latest", "hot", "trending", "price"},
 		parameterByName(t, posts, "sort_by").Schema.Value.Enum)
@@ -132,16 +133,33 @@ func assertRepositoryQueryParameters(t *testing.T, document *openapi3.T) {
 	require.False(t, *flavors.Explode)
 	require.Equal(t, `^(?:0|[0-9]{1,8})(?:\.[0-9]{1,2})?$`,
 		parameterByName(t, posts, "min_price").Schema.Value.Pattern)
+	require.Equal(t, openapi3.TypeString,
+		parameterByName(t, posts, "cursor").Schema.Value.Type.Slice()[0])
 
 	searchPosts := document.Paths.Value("/api/v2/search/posts").Get
 	require.Len(t, searchPosts.Parameters, 13)
-	require.Equal(t, append([]string{"q"}, parameterNames(posts)...), parameterNames(searchPosts))
+	require.Equal(t, []string{
+		"q", "post_type", "share_type", "category", "canteen_code", "cuisine", "flavors", "tags",
+		"min_price", "max_price", "sort_by", "page", "limit",
+	}, parameterNames(searchPosts))
 	require.True(t, parameterByName(t, searchPosts, "q").Required)
 	require.Empty(t, parameterByName(t, searchPosts, "sort_by").Schema.Value.Enum)
 	require.Nil(t, parameterByName(t, searchPosts, "sort_by").Schema.Value.Default)
 
 	replies := document.Paths.Value("/api/v2/comments/{comment_id}/replies").Get
 	require.EqualValues(t, 10, parameterByName(t, replies, "limit").Schema.Value.Default)
+	notifications := document.Paths.Value("/api/v2/notifications").Get
+	require.Equal(t, []string{"is_read", "type", "cursor", "limit"}, parameterNames(notifications))
+	require.Nil(t, findParameter(notifications, "page"))
+
+	hybrid := document.Components.Schemas["HybridMeta"]
+	require.NotNil(t, hybrid)
+	require.Len(t, hybrid.Value.OneOf, 2, "帖子响应必须显式声明 offset/cursor 分页联合契约")
+	require.Contains(t, hybrid.Value.OneOf[0].Value.Properties, "total")
+	require.Contains(t, hybrid.Value.OneOf[1].Value.Properties, "next_cursor")
+	cursorMeta := document.Components.Schemas["CursorMeta"]
+	require.NotNil(t, cursorMeta)
+	require.Equal(t, []string{"has_more", "limit", "next_cursor"}, sortedPropertyNames(cursorMeta.Value))
 	callback := document.Paths.Value("/api/v2/moderation/tencent-ci/callback").Post
 	require.True(t, parameterByName(t, callback, "token").Required)
 }
@@ -174,4 +192,22 @@ func parameterByName(t *testing.T, operation *openapi3.Operation, name string) *
 	}
 	require.FailNow(t, "query 参数不存在", "name=%s", name)
 	return nil
+}
+
+func findParameter(operation *openapi3.Operation, name string) *openapi3.Parameter {
+	for _, parameter := range operation.Parameters {
+		if parameter.Value.In == "query" && parameter.Value.Name == name {
+			return parameter.Value
+		}
+	}
+	return nil
+}
+
+func sortedPropertyNames(schema *openapi3.Schema) []string {
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }

@@ -967,6 +967,26 @@
         },
         "type": "object"
       },
+      "CursorMeta": {
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "next_cursor",
+          "has_more"
+        ],
+        "type": "object"
+      },
       "Decimal": {
         "type": "string"
       },
@@ -1160,6 +1180,54 @@
         },
         "type": "object"
       },
+      "HybridMeta": {
+        "oneOf": [
+          {
+            "properties": {
+              "limit": {
+                "type": "integer"
+              },
+              "page": {
+                "type": "integer"
+              },
+              "total": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "total_pages": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "page",
+              "limit",
+              "total",
+              "total_pages"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "integer"
+              },
+              "next_cursor": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "limit",
+              "next_cursor",
+              "has_more"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ImageModerationApplyResult": {
         "properties": {
           "approved_posts": {
@@ -1262,7 +1330,7 @@
             "type": "array"
           },
           "pagination": {
-            "$ref": "#/components/schemas/Meta"
+            "$ref": "#/components/schemas/CursorMeta"
           },
           "unread_count": {
             "format": "int64",
@@ -1466,6 +1534,20 @@
           },
           "is_favorited": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "PostFeedList": {
+        "properties": {
+          "pagination": {
+            "$ref": "#/components/schemas/HybridMeta"
+          },
+          "posts": {
+            "items": {
+              "$ref": "#/components/schemas/PostListItem"
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -13296,12 +13378,9 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "cursor",
             "schema": {
-              "default": 1,
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
+              "type": "string"
             }
           },
           {
@@ -13936,6 +14015,13 @@
           },
           {
             "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "page",
             "schema": {
               "default": 1,
@@ -13966,7 +14052,7 @@
                       "type": "integer"
                     },
                     "data": {
-                      "$ref": "#/components/schemas/PostList"
+                      "$ref": "#/components/schemas/PostFeedList"
                     },
                     "message": {
                       "type": "string"

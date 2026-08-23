@@ -1,7 +1,12 @@
 package pagination_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
@@ -31,6 +36,67 @@ func TestStrictRejection(t *testing.T) {
 			t.Fatalf("期望字段 %s，实际 %+v", c.wantField, e.Fields)
 		}
 	}
+}
+
+func TestCursorCodecRoundTripScopeAndTamperDetection(t *testing.T) {
+	codec := pagination.NewCursorCodec("cursor-test-secret", "posts.latest")
+	value := pagination.Cursor{
+		CreatedAt: time.Date(2026, time.August, 23, 1, 2, 3, 456789000, time.UTC),
+		ID:        42,
+	}
+	token, err := codec.Encode(value)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+	require.NotContains(t, token, "2026", "游标不得暴露时间字段")
+
+	decoded, err := codec.Decode(token)
+	require.NoError(t, err)
+	require.Equal(t, value.CreatedAt, decoded.CreatedAt)
+	require.Equal(t, value.ID, decoded.ID)
+
+	_, err = pagination.NewCursorCodec("cursor-test-secret", "notifications").Decode(token)
+	require.ErrorIs(t, err, pagination.ErrInvalidCursor, "端点作用域必须绑定到认证标签")
+
+	tampered := token[:len(token)-1] + differentCursorCharacter(token[len(token)-1])
+	_, err = codec.Decode(tampered)
+	require.ErrorIs(t, err, pagination.ErrInvalidCursor)
+
+	_, err = codec.DecodeRequest(pagination.CursorRequest{Token: tampered, Limit: 20})
+	fieldErr := apierr.As(err)
+	require.Equal(t, 422, fieldErr.Status)
+	require.Equal(t, "cursor", fieldErr.Fields[0].Field)
+	require.Equal(t, apierr.FieldInvalidFormat, fieldErr.Fields[0].Code)
+}
+
+func TestCursorRequestAndMetaContracts(t *testing.T) {
+	request, err := pagination.ParseCursorRequest("opaque", "")
+	require.NoError(t, err)
+	require.Equal(t, pagination.DefaultLimit, request.Limit)
+	_, err = pagination.ParseCursorRequest("opaque", "101")
+	require.Error(t, err)
+	require.Equal(t, "limit", apierr.As(err).Fields[0].Field)
+
+	next := "next"
+	encoded, err := json.Marshal(pagination.NewCursorHybridMeta(pagination.CursorMeta{
+		Limit: 2, NextCursor: &next, HasMore: true,
+	}))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"limit":2,"next_cursor":"next","has_more":true}`, string(encoded))
+	require.False(t, strings.Contains(string(encoded), "total"))
+
+	encoded, err = json.Marshal(pagination.NewOffsetHybridMeta(
+		pagination.NewMeta(pagination.Params{Page: 2, Limit: 2}, 5),
+	))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"page":2,"limit":2,"total":5,"total_pages":3}`, string(encoded))
+	require.False(t, strings.Contains(string(encoded), "cursor"))
+}
+
+func differentCursorCharacter(value byte) string {
+	if value == 'A' {
+		return "B"
+	}
+	return "A"
 }
 
 func TestDefaultsAndOffset(t *testing.T) {

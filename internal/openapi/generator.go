@@ -22,6 +22,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
+	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
 )
 
@@ -549,6 +550,12 @@ func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, s
 			schema.Pattern = `^(?:0|[0-9]+)(?:\.[0-9]{1,2})?$`
 			nullable = true
 		}
+	case reflect.TypeFor[pagination.HybridMeta]():
+		*schema = *openapi3.NewOneOfSchema(offsetPaginationSchema(), cursorPaginationSchema())
+		// openapi3gen 只导出 Properties 非 nil 的结构体组件；空 map 让 oneOf 组件进入注册表。
+		schema.Properties = openapi3.Schemas{}
+	case reflect.TypeFor[pagination.CursorMeta]():
+		*schema = *cursorPaginationSchema()
 	default:
 		if values := enumValues(valueType); len(values) > 0 {
 			schema.Type = &openapi3.Types{openapi3.TypeString}
@@ -557,6 +564,23 @@ func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, s
 	}
 	schema.Nullable = nullable
 	return nil
+}
+
+func offsetPaginationSchema() *openapi3.Schema {
+	return openapi3.NewObjectSchema().
+		WithProperty("page", openapi3.NewIntegerSchema()).
+		WithProperty("limit", openapi3.NewIntegerSchema()).
+		WithProperty("total", openapi3.NewInt64Schema()).
+		WithProperty("total_pages", openapi3.NewIntegerSchema()).
+		WithRequired([]string{"page", "limit", "total", "total_pages"})
+}
+
+func cursorPaginationSchema() *openapi3.Schema {
+	return openapi3.NewObjectSchema().
+		WithProperty("limit", openapi3.NewIntegerSchema()).
+		WithProperty("next_cursor", openapi3.NewStringSchema().WithNullable()).
+		WithProperty("has_more", openapi3.NewBoolSchema()).
+		WithRequired([]string{"limit", "next_cursor", "has_more"})
 }
 
 func enumValues(valueType reflect.Type) []any {

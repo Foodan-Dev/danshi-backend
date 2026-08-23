@@ -71,6 +71,7 @@ type ListPostsInput struct {
 	MaxPrice    *money.Amount
 	SortBy      string
 	Pagination  pagination.Params
+	Cursor      pagination.CursorRequest
 }
 
 // CanteenView 是帖子响应中的餐厅对象。
@@ -153,6 +154,12 @@ type PostList struct {
 	Pagination pagination.Meta `json:"pagination"`
 }
 
+// PostFeedList 是 GET /posts 的列表响应；latest 与其它排序使用不同分页分支。
+type PostFeedList struct {
+	Posts      []PostListItem        `json:"posts"`
+	Pagination pagination.HybridMeta `json:"pagination"`
+}
+
 // PostCreateResult 是创建、编辑成功后的稳定摘要。
 type PostCreateResult struct {
 	ID       uint64           `json:"id"`
@@ -193,10 +200,32 @@ type PostService struct {
 	alerter       ModerationAlerter
 	posts         repository.PostRepository
 	notifications repository.NotificationRepository
+	cursor        *pagination.CursorCodec
 }
 
 // NewPostService 创建帖子服务。
 func NewPostService(moderator ContentModerator, alerters ...ModerationAlerter) *PostService {
+	return newPostService(
+		moderator, pagination.NewEphemeralCursorCodec("posts.latest"), alerters...,
+	)
+}
+
+// NewPostServiceWithCursorSecret 创建使用运行时密钥认证游标的帖子服务。
+func NewPostServiceWithCursorSecret(
+	moderator ContentModerator,
+	cursorSecret string,
+	alerters ...ModerationAlerter,
+) *PostService {
+	return newPostService(
+		moderator, pagination.NewCursorCodec(cursorSecret, "posts.latest"), alerters...,
+	)
+}
+
+func newPostService(
+	moderator ContentModerator,
+	cursor *pagination.CursorCodec,
+	alerters ...ModerationAlerter,
+) *PostService {
 	if moderator == nil {
 		moderator = UnavailableContentModerator{}
 	}
@@ -204,7 +233,9 @@ func NewPostService(moderator ContentModerator, alerters ...ModerationAlerter) *
 	if len(alerters) > 0 && alerters[0] != nil {
 		alerter = alerters[0]
 	}
-	return &PostService{moderator: moderator, alerter: alerter}
+	return &PostService{
+		moderator: moderator, alerter: alerter, cursor: cursor,
+	}
 }
 
 // List 返回公开且未删除的信息流，并批量预加载全部关联。
@@ -212,14 +243,14 @@ func (s *PostService) List(
 	ctx context.Context,
 	input ListPostsInput,
 	currentUserID uint64,
-) (*PostList, error) {
+) (*PostFeedList, error) {
 	filter, err := normalizePostFilter(input)
 	if err != nil {
 		return nil, err
 	}
-	records, meta, err := s.posts.FindPage(ctx, filter, input.Pagination)
+	records, meta, err := s.findListPage(ctx, filter, input)
 	if err != nil {
-		return nil, apierr.Internal(err)
+		return nil, err
 	}
 	relations, err := s.loadRelations(ctx, records, currentUserID)
 	if err != nil {
@@ -229,7 +260,64 @@ func (s *PostService) List(
 	for index := range records {
 		items = append(items, buildPostListItem(&records[index], relations, currentUserID))
 	}
-	return &PostList{Posts: items, Pagination: meta}, nil
+	return &PostFeedList{Posts: items, Pagination: meta}, nil
+}
+
+func (s *PostService) findListPage(
+	ctx context.Context,
+	filter repository.PostFilter,
+	input ListPostsInput,
+) ([]repository.PostRecord, pagination.HybridMeta, error) {
+	if filter.SortBy != "latest" {
+		records, meta, err := s.posts.FindPage(ctx, filter, input.Pagination)
+		if err != nil {
+			return nil, pagination.HybridMeta{}, apierr.Internal(err)
+		}
+		return records, pagination.NewOffsetHybridMeta(meta), nil
+	}
+	params, err := s.cursor.DecodeRequest(postCursorRequest(input))
+	if err != nil {
+		return nil, pagination.HybridMeta{}, err
+	}
+	records, hasMore, err := s.posts.FindLatestPage(ctx, filter, params)
+	if err != nil {
+		return nil, pagination.HybridMeta{}, apierr.Internal(err)
+	}
+	meta, err := s.postCursorMeta(records, params.Limit, hasMore)
+	if err != nil {
+		return nil, pagination.HybridMeta{}, err
+	}
+	return records, pagination.NewCursorHybridMeta(meta), nil
+}
+
+func postCursorRequest(input ListPostsInput) pagination.CursorRequest {
+	request := input.Cursor
+	if request.Limit != 0 {
+		return request
+	}
+	request.Limit = input.Pagination.Limit
+	if request.Limit == 0 {
+		request.Limit = pagination.DefaultLimit
+	}
+	return request
+}
+
+func (s *PostService) postCursorMeta(
+	records []repository.PostRecord,
+	limit int,
+	hasMore bool,
+) (pagination.CursorMeta, error) {
+	meta := pagination.CursorMeta{Limit: limit, HasMore: hasMore}
+	if !hasMore || len(records) == 0 {
+		return meta, nil
+	}
+	last := records[len(records)-1]
+	token, err := s.cursor.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	if err != nil {
+		return pagination.CursorMeta{}, apierr.Internal(err)
+	}
+	meta.NextCursor = &token
+	return meta, nil
 }
 
 // Get 返回详情并原子增加浏览数；浏览不会改变 updated_at。

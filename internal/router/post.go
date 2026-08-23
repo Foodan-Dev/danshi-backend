@@ -9,7 +9,9 @@ import (
 )
 
 func registerPost(api *route.RouterGroup, deps Deps) {
-	postService := service.NewPostService(deps.ContentModerator, deps.ModerationAlerter)
+	postService := service.NewPostServiceWithCursorSecret(
+		deps.ContentModerator, deps.Config.JWTSecretKey, deps.ModerationAlerter,
+	)
 	postHandler := handler.NewPost(postService)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)

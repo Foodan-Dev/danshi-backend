@@ -15,6 +15,7 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
+	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -67,7 +68,7 @@ func (h *Post) List(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
-	input, err := listPostsInput(query.Filters, query.SortBy, query.Pagination)
+	input, err := feedListPostsInput(query.Filters, query.SortBy, query.Cursor, query.Pagination)
 	if err != nil {
 		httpx.Fail(ctx, c, err)
 		return
@@ -294,6 +295,37 @@ func listPostsInput(
 		Tags: query.Tags, MinPrice: minPrice, MaxPrice: maxPrice,
 		SortBy: sortBy, Pagination: params,
 	}, nil
+}
+
+func feedListPostsInput(
+	query postFiltersQuery,
+	sortBy string,
+	rawCursor string,
+	paginationQuery paginationQuery,
+) (service.ListPostsInput, error) {
+	input, err := listPostsInput(query, sortBy, paginationQuery)
+	if err != nil {
+		return service.ListPostsInput{}, err
+	}
+	effectiveSort := sortBy
+	if effectiveSort == "" {
+		effectiveSort = "latest"
+	}
+	if effectiveSort == "latest" {
+		if input.Pagination.Page != pagination.DefaultPage {
+			return service.ListPostsInput{}, apierr.InvalidField(
+				"page", apierr.FieldConflict, "latest 排序使用 cursor 分页",
+			)
+		}
+		input.Cursor = pagination.CursorRequest{Token: rawCursor, Limit: input.Pagination.Limit}
+		return input, nil
+	}
+	if rawCursor != "" {
+		return service.ListPostsInput{}, apierr.InvalidField(
+			"cursor", apierr.FieldConflict, "cursor 仅适用于 latest 排序",
+		)
+	}
+	return input, nil
 }
 
 func queryPrice(raw, field string) (*money.Amount, error) {

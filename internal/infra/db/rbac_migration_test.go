@@ -14,11 +14,17 @@ import (
 func TestRBACMigrationMapsLegacyRolesAndDropsSourceColumn(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
-	// 回到 v2 才能装载仍含 users.role 的旧 schema 数据：v4 是搜索索引，v3 才是 RBAC 迁移。
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+	// 明确回到 v2 才能装载仍含 users.role 的旧 schema 数据；不能假设 RBAC 永远是最新迁移。
+	version, err := dbinfra.Version(ctx, database.SQL)
+	require.NoError(t, err)
+	for version > 2 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
+	require.EqualValues(t, 2, version)
 
-	_, err := database.SQL.ExecContext(ctx, `
+	_, err = database.SQL.ExecContext(ctx, `
 		INSERT INTO users (id, email, password_hash, name, role) VALUES
 			(10001, 'migration-user@fdueat.com', 'x', 'user', 'user'),
 			(10002, 'migration-admin@fdueat.com', 'x', 'admin', 'admin'),
@@ -27,7 +33,7 @@ func TestRBACMigrationMapsLegacyRolesAndDropsSourceColumn(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dbinfra.Up(ctx, database.SQL))
 
-	version, err := dbinfra.Version(ctx, database.SQL)
+	version, err = dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, err)
 	require.Equal(t, dbinfra.ExpectedVersion, version)
 

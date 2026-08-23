@@ -1,10 +1,10 @@
 # API 变更登记表
 
 本登记表逐条对应 `go-rewrite-plan.md` §4 的实际标注。按小节标题中的
-“**破坏性**”重新计数，共 **12 项**；编号和计划小节保持一一对应，便于后续
-OpenAPI 差异审计。新增端点、附加字段和行为变更另列在文末，不计入 12 项。
+“**破坏性**”重新计数，原重写计划共 **12 项**；后续产品批次确认的破坏性变更继续编号。
+新增端点、附加字段和非破坏行为变更另列在文末。
 
-## 破坏性变更（12 项）
+## 破坏性变更（13 项）
 
 ### BC-001 / §4.3：分页参数改为严格校验
 
@@ -238,7 +238,31 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - [ ] 角色管理 UI 对每个角色分别发送 `grant` / `revoke`，并以响应的 `roles` 为准刷新状态。
 - [ ] 删除所有 `admin` 角色分支；需要兼任词表与内容管理时同时绑定两个角色。
 
-## 新增、勘误与行为变更（不计入破坏性 12 项）
+### BC-013 / 信息流与通知：offset 改为复合游标分页
+
+**动机**：信息流与通知是持续变化的瀑布流。offset 在两次请求之间发生插入时会重复上一页
+边界项，发生删除时会跳过未读项；`(created_at, id)` 复合游标为现有倒序建立稳定全序。
+
+| 场景 | 旧契约 | 新契约 |
+|---|---|---|
+| `GET /api/v2/posts?sort_by=latest` 请求 | `page`、`limit` | `cursor`、`limit`；不传 cursor 从最新开始 |
+| `GET /api/v2/notifications` 请求 | `page`、`limit` | `cursor`、`limit` |
+| 上述响应 `pagination` | `{page,limit,total,total_pages}` | `{limit,next_cursor,has_more}` |
+| `GET /api/v2/posts` 的 `hot/trending/price` | offset | 仍为 offset，本批不变 |
+| 评论、搜索、用户页、管理端、词表 | offset | 仍为 offset，本批不变 |
+
+游标是加密认证的不透明字符串；无效、跨端点使用或被篡改时返回 422，字段为 `cursor`、
+代码为 `invalid_format`。`latest` 下显式请求 `page > 1` 返回 422，避免把旧客户端请求静默
+解释成第一页；`page=1` 等价于不传 page，便于只显式指定首页的客户端迁移。
+
+**前端影响清单**：
+
+- [ ] 信息流 latest 与通知状态删除页码和总页数依赖，保存 `next_cursor` 并按 `has_more` 续取。
+- [ ] 刷新时清空旧 cursor；加载更多时原样回传，不解析、不拼接、不跨筛选条件复用。
+- [ ] `next_cursor=null` 或 `has_more=false` 时停止加载。
+- [ ] 帖子非 latest 排序继续使用 `page`；评论继续使用 offset，不切换到 cursor。
+
+## 新增、勘误与行为变更（不计入上述破坏性变更）
 
 ### RBAC：新增单用户取证端点
 

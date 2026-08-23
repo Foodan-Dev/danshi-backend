@@ -55,7 +55,7 @@ func (CommentRepository) FindRootPage(
 	if sortBy == "hot" {
 		query = query.Order("like_count DESC, created_at DESC, id DESC")
 	} else {
-		query = query.Order("created_at DESC, id DESC")
+		query = query.Order("created_at ASC, id ASC")
 	}
 	comments := make([]model.Comment, 0, params.Limit)
 	if err := query.Offset(params.Offset()).Limit(params.Limit).Find(&comments).Error; err != nil {

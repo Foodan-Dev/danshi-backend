@@ -963,6 +963,7 @@ DECLARE want text; missing text[] := '{}';
 BEGIN
   FOREACH want IN ARRAY ARRAY[
     'idx_posts_window_created','idx_post_tags_tag','idx_post_flavors_flavor',
+    'idx_posts_status_created_id','idx_notifications_recipient_created_id',
     'idx_posts_title_trgm','idx_posts_content_trgm','idx_users_name_trgm',
     'idx_ds_pending','idx_user_sessions_active','idx_user_sessions_expires',
     'idx_user_roles_role','idx_user_ban_records_user','idx_user_role_records_user',
@@ -1014,6 +1015,25 @@ BEGIN
        AND pg_get_indexdef(i.indexrelid)=
            'CREATE INDEX idx_users_name_trgm ON public.users USING gin (name gin_trgm_ops)'
   ), 'users.name 使用可用的 gin_trgm_ops GIN 索引');
+
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
+     WHERE i.indexrelid='idx_posts_status_created_id'::regclass
+       AND i.indrelid='posts'::regclass
+       AND i.indisvalid AND i.indisready
+       AND pg_get_indexdef(i.indexrelid)=
+           'CREATE INDEX idx_posts_status_created_id ON public.posts USING btree (status, created_at DESC, id DESC) WHERE (deleted_at IS NULL)'
+  ), '帖子 latest 游标使用 status + created_at + id 复合索引');
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
+     WHERE i.indexrelid='idx_notifications_recipient_created_id'::regclass
+       AND i.indrelid='notifications'::regclass
+       AND i.indisvalid AND i.indisready
+       AND pg_get_indexdef(i.indexrelid)=
+           'CREATE INDEX idx_notifications_recipient_created_id ON public.notifications USING btree (recipient_id, created_at DESC, id DESC)'
+  ), '通知游标使用 recipient_id + created_at + id 复合索引');
 
   missing := '{}';
   FOREACH want IN ARRAY ARRAY[

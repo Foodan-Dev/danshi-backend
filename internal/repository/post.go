@@ -113,6 +113,33 @@ func (PostRepository) FindPage(
 	return records, pagination.NewMeta(params, total), nil
 }
 
+// FindLatestPage 以 (created_at, id) 复合游标返回公开信息流，不执行全表 COUNT。
+func (PostRepository) FindLatestPage(
+	ctx context.Context,
+	filter PostFilter,
+	params pagination.CursorParams,
+) ([]PostRecord, bool, error) {
+	query := db.FromContext(ctx).Table("posts AS p").
+		Where("p.deleted_at IS NULL AND p.status = ?", model.PostStatusApproved)
+	query = applyPostFilter(query, filter)
+	if params.After != nil {
+		query = query.Where(
+			"(p.created_at, p.id) < (?, ?)", params.After.CreatedAt, params.After.ID,
+		)
+	}
+	query = addPostRecordJoins(query).Select(postRecordColumns).
+		Order("p.created_at DESC, p.id DESC")
+	records := make([]PostRecord, 0, params.Limit+1)
+	if err := query.Limit(params.Limit + 1).Scan(&records).Error; err != nil {
+		return nil, false, err
+	}
+	hasMore := len(records) > params.Limit
+	if hasMore {
+		records = records[:params.Limit]
+	}
+	return records, hasMore, nil
+}
+
 // FindAuthorPage 返回指定作者的未删除帖子；status 为 nil 时不限制审核状态。
 func (PostRepository) FindAuthorPage(
 	ctx context.Context,

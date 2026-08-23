@@ -231,7 +231,7 @@ func testSearchFilterParity(
 		status, response, _ := performJSON(t, engine, http.MethodGet,
 			"/api/v2/posts?"+feedQuery.Encode(), nil, author.Token)
 		require.Equal(t, http.StatusOK, status, "feed filter=%s", filter.Encode())
-		var feed service.PostList
+		var feed service.PostFeedList
 		decodeData(t, response, &feed)
 
 		searchQuery := cloneSearchValues(feedQuery)

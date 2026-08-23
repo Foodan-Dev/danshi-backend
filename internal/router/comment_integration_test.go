@@ -88,6 +88,10 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentSoftDelete(t, engine, gdb, actors, fixture)
 	})
 
+	t.Run("default ascending offset keeps deleted placeholders", func(t *testing.T) {
+		testCommentAscendingPaginationWithDeletedPlaceholder(t, engine, gdb, actors, fixture)
+	})
+
 	t.Run("like is idempotent and recreatable", func(t *testing.T) {
 		testCommentLikes(t, engine, gdb, actors, fixture)
 	})
@@ -723,6 +727,59 @@ func testCommentSoftDelete(
 	require.Zero(t, rootRow.ReplyCount)
 	require.NoError(t, gdb.First(&postRow, post.ID).Error)
 	require.Zero(t, postRow.CommentCount)
+}
+
+func testCommentAscendingPaginationWithDeletedPlaceholder(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	actors commentActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, actors.PostAuthor.Token,
+		sharePostPayload(fixture, "评论正序稳定分页", []string{"评论正序分页"}))
+	createdAt := time.Date(2026, time.August, 23, 14, 0, 0, 111111000, time.UTC)
+	comments := make([]service.CommentMutationResult, 0, 4)
+	for index := range 4 {
+		comment := createComment(t, engine, actors.Commenter.Token, post.ID,
+			map[string]any{"content": fmt.Sprintf("正序评论 %d", index)})
+		require.NoError(t, gdb.Model(&model.Comment{}).Where("id = ?", comment.Comment.ID).
+			UpdateColumn("created_at", createdAt.Add(time.Duration(index)*time.Microsecond)).Error)
+		comments = append(comments, comment)
+	}
+
+	path := fmt.Sprintf("/api/v2/posts/%d/comments", post.ID)
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		path+"?page=1&limit=2", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+	var first service.CommentList
+	decodeData(t, response, &first)
+	require.Equal(t, []uint64{comments[0].Comment.ID, comments[1].Comment.ID},
+		commentItemIDs(first.Comments), "默认顺序必须是 created_at ASC, id ASC")
+
+	status, _, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(comments[0].Comment.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		path+"?page=2&limit=2", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+	var second service.CommentList
+	decodeData(t, response, &second)
+	require.EqualValues(t, 4, second.Pagination.Total, "软删除行必须继续占据 offset 位置")
+	require.Equal(t, []uint64{comments[2].Comment.ID, comments[3].Comment.ID},
+		commentItemIDs(second.Comments), "删除第一页评论不得让第二页跳过未读评论")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		path+"?limit=100", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status)
+	var all service.CommentList
+	decodeData(t, response, &all)
+	require.Len(t, all.Comments, 4)
+	require.True(t, all.Comments[0].IsDeleted)
+	require.Equal(t, "该评论已删除", all.Comments[0].Content,
+		"软删除评论必须以占位符留在结果集")
 }
 
 func testCommentLikes(

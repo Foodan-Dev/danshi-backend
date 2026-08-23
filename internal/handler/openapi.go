@@ -52,7 +52,7 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 
 func postAndCommentOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
-		getBinding("/api/v2/posts", listPostsQuery{}, service.PostList{}, http.StatusUnprocessableEntity),
+		getBinding("/api/v2/posts", listPostsQuery{}, service.PostFeedList{}, http.StatusUnprocessableEntity),
 		getBinding("/api/v2/posts/:post_id", apicontract.NoQuery{}, service.PostDetail{}),
 		binding(http.MethodPost, "/api/v2/posts", createPostRequest{}, service.PostCreateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,

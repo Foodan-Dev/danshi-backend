@@ -210,7 +210,7 @@ func testPostCreateContract(
 		"&flavors=" + url.QueryEscape(fixture.Flavors[0].Name) + "&tags=spicy&min_price=18.50&max_price=18.50"
 	status, response, _ = performJSON(t, engine, http.MethodGet, listPath, nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
-	var list service.PostList
+	var list service.PostFeedList
 	decodeData(t, response, &list)
 	require.Len(t, list.Posts, 1)
 	require.Equal(t, post.ID, list.Posts[0].ID)
@@ -869,7 +869,7 @@ func testPostListMatrix(
 			t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
 		)
 		require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
-		var result service.PostList
+		var result service.PostFeedList
 		decodeData(t, response, &result)
 		ids := postListIDs(result.Posts)
 		for _, id := range included {
@@ -908,7 +908,7 @@ func testPostListMatrix(
 		t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
 	)
 	require.Equal(t, http.StatusOK, status)
-	var latest service.PostList
+	var latest service.PostFeedList
 	decodeData(t, response, &latest)
 	require.Equal(t, []uint64{third.ID, second.ID, first.ID}, postListIDs(latest.Posts),
 		"created_at 相同时必须用 id DESC 稳定排序")
@@ -916,7 +916,7 @@ func testPostListMatrix(
 	values.Set("sort_by", "price")
 	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
-	var byPrice service.PostList
+	var byPrice service.PostFeedList
 	decodeData(t, response, &byPrice)
 	require.Equal(t, []uint64{first.ID, second.ID, third.ID}, postListIDs(byPrice.Posts),
 		"价格排序应升序且空价格稳定置后")
@@ -927,16 +927,16 @@ func testPostListMatrix(
 			t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token,
 		)
 		require.Equal(t, http.StatusOK, status)
-		var sorted service.PostList
+		var sorted service.PostFeedList
 		decodeData(t, response, &sorted)
 		require.Equal(t, []uint64{third.ID, second.ID, first.ID}, postListIDs(sorted.Posts),
 			"sort_by=%s 在分数与时间相同时必须按 id DESC 稳定排序", sortBy)
 	}
 
-	values = url.Values{"tags": {groupTag}, "sort_by": {"latest"}, "page": {"2"}, "limit": {"2"}}
+	values = url.Values{"tags": {groupTag}, "sort_by": {"hot"}, "page": {"2"}, "limit": {"2"}}
 	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/posts?"+values.Encode(), nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
-	var secondPage service.PostList
+	var secondPage offsetPostFeed
 	decodeData(t, response, &secondPage)
 	require.Equal(t, []uint64{first.ID}, postListIDs(secondPage.Posts))
 	require.EqualValues(t, 3, secondPage.Pagination.Total)
@@ -962,7 +962,7 @@ func testPostListMatrix(
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		"/api/v2/posts?tags="+url.QueryEscape("注销作者帖"), nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
-	var departedList service.PostList
+	var departedList service.PostFeedList
 	decodeData(t, response, &departedList)
 	require.Len(t, departedList.Posts, 1)
 	require.Equal(t, departedPost.Post.ID, departedList.Posts[0].ID)
@@ -1177,7 +1177,7 @@ func testPostSoftDelete(
 		t, engine, http.MethodGet, "/api/v2/posts?tags="+url.QueryEscape("删除"), nil, author.Token,
 	)
 	require.Equal(t, http.StatusOK, status)
-	var list service.PostList
+	var list service.PostFeedList
 	decodeData(t, response, &list)
 	require.NotContains(t, postListIDs(list.Posts), post.ID)
 
@@ -1380,7 +1380,7 @@ func assertPostAbsentFromList(
 		t, engine, http.MethodGet, "/api/v2/posts?tags="+url.QueryEscape(tag), nil, token,
 	)
 	require.Equal(t, http.StatusOK, status)
-	var list service.PostList
+	var list service.PostFeedList
 	decodeData(t, response, &list)
 	require.NotContains(t, postListIDs(list.Posts), postID)
 }

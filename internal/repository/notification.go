@@ -32,13 +32,13 @@ type NotificationRecord struct {
 	CommentPostID   *uint64    `gorm:"column:comment_post_id"`
 }
 
-// FindPage 分页返回收件人的通知，并批量带出发送者和评论所属帖子。
+// FindPage 以 (created_at, id) 复合游标返回收件人的通知，不执行全表 COUNT。
 func (NotificationRepository) FindPage(
 	ctx context.Context,
 	recipientID uint64,
 	filter NotificationFilter,
-	params pagination.Params,
-) ([]NotificationRecord, pagination.Meta, error) {
+	params pagination.CursorParams,
+) ([]NotificationRecord, bool, error) {
 	query := db.FromContext(ctx).Table("notifications AS n").Where("n.recipient_id = ?", recipientID)
 	if filter.IsRead != nil {
 		query = query.Where("n.is_read = ?", *filter.IsRead)
@@ -46,21 +46,26 @@ func (NotificationRepository) FindPage(
 	if filter.Type != nil {
 		query = query.Where("n.type = ?", *filter.Type)
 	}
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, pagination.Meta{}, err
+	if params.After != nil {
+		query = query.Where(
+			"(n.created_at, n.id) < (?, ?)", params.After.CreatedAt, params.After.ID,
+		)
 	}
-	rows := make([]NotificationRecord, 0, params.Limit)
+	rows := make([]NotificationRecord, 0, params.Limit+1)
 	err := query.Select(notificationRecordColumns).
 		Joins("JOIN users AS sender ON sender.id = n.sender_id").
 		Joins("LEFT JOIN image_assets AS sender_avatar ON sender_avatar.id = sender.avatar_image_asset_id").
 		Joins("LEFT JOIN comments AS related_comment ON related_comment.id = n.related_comment_id").
-		Order("n.created_at DESC, n.id DESC").Offset(params.Offset()).Limit(params.Limit).
+		Order("n.created_at DESC, n.id DESC").Limit(params.Limit + 1).
 		Scan(&rows).Error
 	if err != nil {
-		return nil, pagination.Meta{}, err
+		return nil, false, err
 	}
-	return rows, pagination.NewMeta(params, total), nil
+	hasMore := len(rows) > params.Limit
+	if hasMore {
+		rows = rows[:params.Limit]
+	}
+	return rows, hasMore, nil
 }
 
 // UnreadCount 返回收件人的全部未读数，不受列表筛选影响。

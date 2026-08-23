@@ -6,6 +6,8 @@
 package pagination
 
 import (
+	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
@@ -63,6 +65,38 @@ type Meta struct {
 	Limit      int   `json:"limit"`
 	Total      int64 `json:"total"`
 	TotalPages int   `json:"total_pages"`
+}
+
+// CursorMeta 是游标分页的响应元信息。最后一页的 next_cursor 明确为 null，
+// 客户端应以 has_more 判断是否继续请求。
+type CursorMeta struct {
+	Limit      int     `json:"limit"`
+	NextCursor *string `json:"next_cursor"`
+	HasMore    bool    `json:"has_more"`
+}
+
+// HybridMeta 表达 GET /posts 的条件分页契约：latest 使用游标，其余排序仍使用偏移量。
+// 私有字段避免两套互斥字段同时泄漏到 JSON；OpenAPI 生成器会将本类型展开为 oneOf。
+type HybridMeta struct {
+	offset *Meta
+	cursor *CursorMeta
+}
+
+// NewOffsetHybridMeta 构造偏移量分页分支。
+func NewOffsetHybridMeta(meta Meta) HybridMeta { return HybridMeta{offset: &meta} }
+
+// NewCursorHybridMeta 构造游标分页分支。
+func NewCursorHybridMeta(meta CursorMeta) HybridMeta { return HybridMeta{cursor: &meta} }
+
+// MarshalJSON 只输出当前生效的一套分页字段。
+func (m HybridMeta) MarshalJSON() ([]byte, error) {
+	if m.cursor != nil {
+		return json.Marshal(m.cursor)
+	}
+	if m.offset != nil {
+		return json.Marshal(m.offset)
+	}
+	return nil, errors.New("分页元信息未初始化")
 }
 
 // NewMeta 根据分页参数和总记录数构造分页元信息。
