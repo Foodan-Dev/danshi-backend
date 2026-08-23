@@ -58,8 +58,9 @@ type Deps struct {
 
 // Register 装配全部路由。
 //
-// 中间件顺序是有讲究的，改之前先想清楚：
-//  1. Recovery     最外层，要能兜住后面所有中间件里的 panic
+// main 在调用 Register 前挂载只读的 metrics/tracing wrapper，以便观测 Recovery
+// 转换后的 500；以下顺序描述会改变请求行为的路由中间件：
+//  1. Recovery     最外层，要能兜住后面所有业务中间件里的 panic
 //  2. RequestID    尽早分配，后续日志才带得上
 //  3. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
 //  4. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求

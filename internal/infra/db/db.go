@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -26,8 +27,27 @@ type DB struct {
 	*gorm.DB
 }
 
+type openOptions struct {
+	tracerProvider trace.TracerProvider
+}
+
+// OpenOption 配置数据库连接初始化的可选能力。
+type OpenOption func(*openOptions)
+
+// WithTracerProvider 在 provider 非 nil 时为所有 GORM 操作创建 DB client span。
+func WithTracerProvider(provider trace.TracerProvider) OpenOption {
+	return func(options *openOptions) {
+		options.tracerProvider = provider
+	}
+}
+
 // Open 按配置建立并校验 PostgreSQL 连接。
-func Open(ctx context.Context, cfg config.Config, log *slog.Logger) (*DB, error) {
+func Open(ctx context.Context, cfg config.Config, log *slog.Logger, opts ...OpenOption) (*DB, error) {
+	options := openOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	gormLog := logger.New(
 		slogWriter{log: log},
 		logger.Config{
@@ -47,6 +67,13 @@ func Open(ctx context.Context, cfg config.Config, log *slog.Logger) (*DB, error)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
+	}
+	if options.tracerProvider != nil {
+		// GORM callback 通过 tx.Statement.Context 传递请求 context，contextcheck 无法识别该框架约定。
+		//nolint:contextcheck
+		if err := installTracing(gdb, options.tracerProvider); err != nil {
+			return nil, fmt.Errorf("启用数据库 tracing 失败: %w", err)
+		}
 	}
 
 	sqlDB, err := gdb.DB()

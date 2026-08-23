@@ -1,12 +1,15 @@
 package obs
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jingyijun/danshi_backend_go/internal/config"
 )
@@ -68,6 +71,39 @@ func TestNewLoggerFiltersConfiguredLevel(t *testing.T) {
 	}
 	if entry["level"] != "WARN" {
 		t.Fatalf("输出日志级别应为 WARN，实际为 %v", entry["level"])
+	}
+}
+
+func TestLoggerAddsRequestAndTraceCorrelation(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("00112233445566778899aabbccddeeff")
+	if err != nil {
+		t.Fatalf("构造 trace ID: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("0011223344556677")
+	if err != nil {
+		t.Fatalf("构造 span ID: %v", err)
+	}
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID})
+	ctx := trace.ContextWithSpanContext(
+		ContextWithRequestID(context.Background(), "request-42"),
+		spanContext,
+	)
+
+	output := captureLoggerOutput(t, config.Config{Profile: config.ProfileProd, LogLevel: "info"}, func(log *slog.Logger) {
+		log.InfoContext(ctx, "correlated-message")
+	})
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(output), &entry); err != nil {
+		t.Fatalf("关联日志不是合法 JSON: %v", err)
+	}
+	if entry["request_id"] != "request-42" {
+		t.Errorf("request_id = %v", entry["request_id"])
+	}
+	if entry["trace_id"] != traceID.String() {
+		t.Errorf("trace_id = %v", entry["trace_id"])
+	}
+	if entry["span_id"] != spanID.String() {
+		t.Errorf("span_id = %v", entry["span_id"])
 	}
 }
 

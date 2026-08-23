@@ -140,7 +140,7 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 - 业务 API 前缀固定为 `/api/v2`。
 - `/health`：进程存活，不访问数据库。
 - `/ready`：检查数据库连通性；失败返回脱敏 503。
-- `/metrics`：当前只保留抓取路由，占位文本明确标注 exporter 尚未接通，不应当作完整 Prometheus 指标实现。
+- `/metrics`：应用直出 Prometheus 文本格式指标，由 Prometheus 拉取；该端点不鉴权且不进入 UoW，抓取不会开启数据库事务。
 - 尾部斜杠不依赖隐式重定向；未匹配路径返回统一 404。
 - Hertz 开启 method-not-allowed 处理，方法不匹配返回统一 405。
 
@@ -712,7 +712,7 @@ GitHub Actions 当前包含：
 - build：两个二进制、体积门禁和两个镜像构建；
 - runtime：Compose 启动、探针和统一 404 响应验证。
 
-二进制门禁当前为 server 不超过 25 MiB、migrate 不超过 15 MiB。阈值基于实际静态构建；超过阈值时应分析依赖或明确调整文档和门禁，不应静默删除检查。
+二进制门禁当前为 server 不超过 32 MiB、migrate 不超过 15 MiB。server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链接成本；migrate 不依赖观测栈，因此保持原阈值。阈值基于实际静态构建；超过阈值时应分析依赖或明确调整文档和门禁，不应静默删除检查。
 
 ## 20. 可观测性现状
 
@@ -720,33 +720,37 @@ GitHub Actions 当前包含：
 
 - `slog` 结构化日志；
 - 开发环境人类可读文本，生产环境 JSON；
-- 日志包含 service 和 profile；
+- 日志包含 service 和 profile，请求日志从 context 自动补充 `request_id`，启用 tracing 时同时补充 `trace_id` 与 `span_id`；
 - 统一 500 `error_id`；
-- `OTLP_ENDPOINT` 配置绑定；
-- `/metrics` 路由。
+- 应用通过独立 Prometheus registry 在 `/metrics` 直出 HTTP、数据库连接池、Go runtime 与进程指标；
+- OTel trace provider 通过 OTLP/HTTP 推送到 `OTLP_ENDPOINT`，HTTP server span 使用路由模板命名；
+- GORM 操作创建 DB client span，记录有限的 operation/table 属性，不记录 SQL 文本或变量值；
+- `OTLP_ENDPOINT` 为空时不创建 exporter、provider、后台 processor、HTTP tracing 中间件或 DB tracing callback。
 
 尚未完成：
 
-- Prometheus client/exporter 与真实业务指标；
-- OTel trace provider 和 OTLP exporter；
-- DB、COS、SES span；
+- COS、SES 等外部调用 span；
+- 审核、验证码等业务指标；
 - Collector、Prometheus、Tempo 或 Grafana 的仓库内部署配置。
 
-因此仓库不提供空的 `deploy/otel` 或 `deploy/grafana` 目录，也不宣称已有可用观测栈。接入时应作为完整功能实现，至少包含代码、配置、Compose/部署集成、测试和操作说明。
+指标与 trace 使用两条刻意独立的链路：指标始终由应用暴露、Prometheus 主动拉取，trace 才通过 OTLP 推送。Collector 不可用时不会影响 `/metrics` 抓取。仓库仍不提供空的 `deploy/otel` 或 `deploy/grafana` 目录；部署侧应连接现有可用的 Collector 和 Prometheus，而不是把占位配置误当成观测栈。
 
-推荐指标设计：
+当前暴露的应用指标：
 
 ```text
-http_server_request_duration_seconds{route,method,status}
-http_server_active_requests{route}
-db_pool_connections{state}
-db_query_duration_seconds{operation,table}
-danshi_business_events_total{event,result}
-danshi_build_info{version,commit,go_version}
-danshi_schema_version
+danshi_http_server_requests_total{route,method,status}
+danshi_http_server_request_duration_seconds{route,method,status}
+danshi_http_server_response_size_bytes{route,method,status}
+danshi_db_pool_connections{state}
+danshi_db_pool_open_connections
+danshi_db_pool_max_open_connections
+danshi_db_pool_wait_total
+danshi_db_pool_wait_duration_seconds_total
+go_*
+process_*
 ```
 
-路由标签必须使用模板而不是实际 ID，避免高基数；DB trace 必须隐藏查询参数，防止邮箱、token 或密码进入 telemetry。
+`route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。DB trace 进一步省略整个 SQL 文本与变量值，防止邮箱、token、密码或任意用户输入进入 telemetry。
 
 ## 21. 安全边界
 
@@ -767,5 +771,5 @@ danshi_schema_version
 - 搜索包含前导通配时不能受普通 B-tree 索引帮助；数据规模扩大后应基于真实 EXPLAIN 决定 `pg_trgm` 或全文检索方案。
 - 主键可枚举带来元数据暴露风险，必须持续依赖鉴权和可见性测试。
 - refresh token 不轮转；泄露处置依赖会话列表和即时撤销。
-- `/metrics` 和 OTLP 当前只是接口/配置占位，不能被运维文档当作已上线能力。
+- 仓库提供应用侧 `/metrics` 与 OTLP trace exporter，但不内置 Collector、Prometheus、Tempo 或 Grafana 部署栈。
 - 用户级物理清除仍需单独的合规设计。

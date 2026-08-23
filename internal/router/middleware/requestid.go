@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 
 	"github.com/cloudwego/hertz/pkg/app"
+
+	"github.com/jingyijun/danshi_backend_go/internal/pkg/obs"
 )
 
 // 请求 ID 的 HTTP 头名与内部上下文键。
@@ -24,7 +26,7 @@ func RequestID() app.HandlerFunc {
 		}
 		c.Set(ctxRequestID, id)
 		c.Header(HeaderRequestID, id)
-		c.Next(ctx)
+		c.Next(obs.ContextWithRequestID(ctx, id))
 	}
 }
 

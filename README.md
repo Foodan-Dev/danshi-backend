@@ -162,8 +162,10 @@ make schema-test
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `OTLP_ENDPOINT` | 空 | 预留的 OTLP Collector 地址；当前服务尚未接通 trace exporter |
+| `OTLP_ENDPOINT` | 空 | OTLP/HTTP Collector traces 地址；支持 `host:port`（明文，默认 `/v1/traces`）或完整 `http(s)` URL，为空时完全禁用 tracing 且不创建连接 |
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error`；生产环境输出 JSON 日志 |
+
+Prometheus 直接拉取 `GET /metrics`，不经过 Collector。该端点不鉴权且不进入请求级数据库事务；生产环境应在网关或网络策略层限制抓取来源。HTTP 指标和 server span 的路由维度使用 `/api/v2/posts/:post_id` 这类模板，不记录实际资源 ID。启用 tracing 后，请求日志会同时包含 `request_id`、`trace_id` 和 `span_id`；数据库 span 不记录 SQL 文本及变量值。
 
 生产部署应通过密钥管理系统注入敏感值，不要提交 `.env`、token 或云访问密钥。
 

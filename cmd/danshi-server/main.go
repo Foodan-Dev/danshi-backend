@@ -44,7 +44,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	database, err := db.Open(ctx, cfg, log)
+	tracing, err := obs.NewTracing(ctx, cfg.OTLPEndpoint)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracing.Shutdown(shutdownCtx); err != nil {
+			log.Error("关闭 tracing 失败", slog.Any("err", err))
+		}
+	}()
+
+	database, err := db.Open(ctx, cfg, log, db.WithTracerProvider(tracing.TracerProvider()))
 	if err != nil {
 		return err
 	}
@@ -62,6 +74,10 @@ func run() error {
 		return err
 	}
 	log.Info("schema 版本核对通过", slog.Int64("version", db.ExpectedVersion))
+	metrics, err := obs.NewMetrics(sqlDB)
+	if err != nil {
+		return err
+	}
 
 	h := server.New(
 		server.WithHostPorts(fmt.Sprintf(":%d", cfg.Port)),
@@ -71,7 +87,11 @@ func run() error {
 		// 默认关闭时 405 会退化成 404，前端分不清「路径不存在」和「方法不对」
 		server.WithHandleMethodNotAllowed(true),
 	)
-	obs.RegisterMetrics(h)
+	h.Use(metrics.Middleware())
+	if tracing.Enabled() {
+		h.Use(tracing.Middleware())
+	}
+	metrics.Register(h)
 	router.Register(h, router.Deps{Config: cfg, DB: database, Log: log})
 
 	go func() {
