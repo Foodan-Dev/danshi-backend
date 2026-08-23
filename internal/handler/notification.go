@@ -101,6 +101,10 @@ func (h *Notification) MarkAllRead(ctx context.Context, c *app.RequestContext) {
 }
 
 func optionalBool(raw string) (*bool, error) {
+	return optionalBoolField(raw, "is_read")
+}
+
+func optionalBoolField(raw string, field string) (*bool, error) {
 	if raw == "" {
 		return nil, nil
 	}
@@ -112,6 +116,8 @@ func optionalBool(raw string) (*bool, error) {
 		value := false
 		return &value, nil
 	default:
-		return nil, apierr.InvalidField("is_read", apierr.FieldInvalidFormat, "is_read 只能是 true 或 false")
+		return nil, apierr.InvalidField(
+			field, apierr.FieldInvalidFormat, "%s 只能是 true 或 false", field,
+		)
 	}
 }

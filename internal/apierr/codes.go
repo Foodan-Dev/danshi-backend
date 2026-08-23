@@ -93,6 +93,9 @@ const (
 	BizSuggestionClosed        BizCode = "suggestion_closed"         // 提议已是终态，不可再改
 	BizSuggestionParentPending BizCode = "suggestion_parent_pending" // 窗口提议依赖的餐厅提议尚未批准
 	BizTagLimitExceeded        BizCode = "tag_limit_exceeded"        // 单帖标签数超限
+	BizTagNotFound             BizCode = "tag_not_found"             // 话题标签不存在
+	BizTagNameConflict         BizCode = "tag_name_conflict"         // 重命名与既有标签大小写不敏感重名
+	BizTagMergeTargetInvalid   BizCode = "tag_merge_target_invalid"  // 合并目标无效、已下架或与源相同
 
 	// 图片
 

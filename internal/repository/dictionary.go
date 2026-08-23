@@ -150,6 +150,33 @@ func DictionaryByID[T any](ctx context.Context, itemID uint64) (*T, error) {
 	return &item, nil
 }
 
+// FindDictionaryCursorPage 以 (created_at, id) 复合游标返回管理端词表项。
+// isActive 为空时保留启用与停用项，避免停用条目从管理入口消失。
+func FindDictionaryCursorPage[T any](
+	ctx context.Context,
+	isActive *bool,
+	params pagination.CursorParams,
+) ([]T, bool, error) {
+	query := db.FromContext(ctx).Model(new(T))
+	if isActive != nil {
+		query = query.Where("is_active = ?", *isActive)
+	}
+	if params.After != nil {
+		query = query.Where(
+			"(created_at, id) < (?, ?)", params.After.CreatedAt, params.After.ID,
+		)
+	}
+	items := make([]T, 0, params.Limit+1)
+	if err := query.Order("created_at DESC, id DESC").Limit(params.Limit + 1).Find(&items).Error; err != nil {
+		return nil, false, err
+	}
+	hasMore := len(items) > params.Limit
+	if hasMore {
+		items = items[:params.Limit]
+	}
+	return items, hasMore, nil
+}
+
 // CreateDictionary 创建一条管理端词表项。
 func CreateDictionary[T any](ctx context.Context, item *T) error {
 	return db.FromContext(ctx).Create(item).Error

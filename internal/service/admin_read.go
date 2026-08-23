@@ -192,9 +192,14 @@ func (s *AdminService) SuperAdmins(
 // PendingModeration 返回所有对象类型的待人工复核记录。
 func (s *AdminService) PendingModeration(
 	ctx context.Context,
+	rawLabel string,
 	params pagination.Params,
 ) (*AdminModerationList, error) {
-	rows, meta, err := s.admin.FindPendingModerationPage(ctx, params)
+	var label *string
+	if value := strings.TrimSpace(rawLabel); value != "" {
+		label = &value
+	}
+	rows, meta, err := s.admin.FindPendingModerationPage(ctx, label, params)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}

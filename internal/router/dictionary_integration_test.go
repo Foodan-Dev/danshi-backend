@@ -81,17 +81,25 @@ func testDictionaryRBACMatrix(
 		{method: http.MethodGet, path: "/api/v2/admin/dictionary-suggestions"},
 		{method: http.MethodPost, path: "/api/v2/admin/dictionary-suggestions/" + missingID + "/approve", body: map[string]any{}},
 		{method: http.MethodPost, path: "/api/v2/admin/dictionary-suggestions/" + missingID + "/reject", body: map[string]any{"reason": "矩阵测试"}},
+		{method: http.MethodGet, path: "/api/v2/admin/flavors"},
 		{method: http.MethodPost, path: "/api/v2/admin/flavors", body: map[string]any{"name": "矩阵口味"}},
 		{method: http.MethodPatch, path: "/api/v2/admin/flavors/" + missingID, body: map[string]any{"name": "矩阵口味"}},
+		{method: http.MethodPost, path: "/api/v2/admin/flavors/" + missingID + "/enable"},
 		{method: http.MethodDelete, path: "/api/v2/admin/flavors/" + missingID},
+		{method: http.MethodGet, path: "/api/v2/admin/cuisines"},
 		{method: http.MethodPost, path: "/api/v2/admin/cuisines", body: map[string]any{"name": "矩阵菜系"}},
 		{method: http.MethodPatch, path: "/api/v2/admin/cuisines/" + missingID, body: map[string]any{"name": "矩阵菜系"}},
+		{method: http.MethodPost, path: "/api/v2/admin/cuisines/" + missingID + "/enable"},
 		{method: http.MethodDelete, path: "/api/v2/admin/cuisines/" + missingID},
+		{method: http.MethodGet, path: "/api/v2/admin/canteens"},
 		{method: http.MethodPost, path: "/api/v2/admin/canteens", body: map[string]any{"code": "matrix", "name": "矩阵食堂", "campus": "测试校区"}},
 		{method: http.MethodPatch, path: "/api/v2/admin/canteens/" + missingID, body: map[string]any{"name": "矩阵食堂"}},
+		{method: http.MethodPost, path: "/api/v2/admin/canteens/" + missingID + "/enable"},
 		{method: http.MethodDelete, path: "/api/v2/admin/canteens/" + missingID},
 		{method: http.MethodPost, path: "/api/v2/admin/canteens/" + missingID + "/windows", body: map[string]any{"name": "矩阵窗口"}},
+		{method: http.MethodGet, path: "/api/v2/admin/canteen-windows"},
 		{method: http.MethodPatch, path: "/api/v2/admin/canteen-windows/" + missingID, body: map[string]any{"name": "矩阵窗口"}},
+		{method: http.MethodPost, path: "/api/v2/admin/canteen-windows/" + missingID + "/enable"},
 		{method: http.MethodDelete, path: "/api/v2/admin/canteen-windows/" + missingID},
 	}
 	for _, route := range routes {
@@ -135,17 +143,25 @@ func testDictionaryRouteInventory(t *testing.T, engine *server.Hertz) {
 		"GET /api/v2/admin/dictionary-suggestions",
 		"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/approve",
 		"POST /api/v2/admin/dictionary-suggestions/:suggestion_id/reject",
+		"GET /api/v2/admin/flavors",
 		"POST /api/v2/admin/flavors",
 		"PATCH /api/v2/admin/flavors/:flavor_id",
+		"POST /api/v2/admin/flavors/:flavor_id/enable",
 		"DELETE /api/v2/admin/flavors/:flavor_id",
+		"GET /api/v2/admin/cuisines",
 		"POST /api/v2/admin/cuisines",
 		"PATCH /api/v2/admin/cuisines/:cuisine_id",
+		"POST /api/v2/admin/cuisines/:cuisine_id/enable",
 		"DELETE /api/v2/admin/cuisines/:cuisine_id",
+		"GET /api/v2/admin/canteens",
 		"POST /api/v2/admin/canteens",
 		"PATCH /api/v2/admin/canteens/:canteen_id",
+		"POST /api/v2/admin/canteens/:canteen_id/enable",
 		"DELETE /api/v2/admin/canteens/:canteen_id",
 		"POST /api/v2/admin/canteens/:canteen_id/windows",
+		"GET /api/v2/admin/canteen-windows",
 		"PATCH /api/v2/admin/canteen-windows/:window_id",
+		"POST /api/v2/admin/canteen-windows/:window_id/enable",
 		"DELETE /api/v2/admin/canteen-windows/:window_id",
 	}, operations)
 }
@@ -474,6 +490,27 @@ func testDictionaryCRUD(
 	decodeData(t, response, &updatedFlavor)
 	require.Equal(t, "CRUD 已改口味", updatedFlavor.Name)
 	require.False(t, updatedFlavor.IsActive)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/flavors?is_active=false", nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var flavors service.DictionaryItemList
+	decodeData(t, response, &flavors)
+	require.True(t, dictionaryItemPresent(flavors.Items, flavor.ID), "停用口味必须仍可从管理端检索")
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/config", nil, "")
+	require.Equal(t, http.StatusOK, status)
+	var publicConfig service.ExploreConfig
+	decodeData(t, response, &publicConfig)
+	require.NotContains(t, publicConfig.Flavors, updatedFlavor.Name)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/admin/flavors/%d/enable", flavor.ID), nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &updatedFlavor)
+	require.True(t, updatedFlavor.IsActive)
+	status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/config", nil, "")
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &publicConfig)
+	require.Contains(t, publicConfig.Flavors, updatedFlavor.Name,
+		"显式启用后口味必须重新出现在公开配置")
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/flavors/%d", flavor.ID), nil, admin.Token)
 	require.Equal(t, http.StatusOK, status)
@@ -489,7 +526,16 @@ func testDictionaryCRUD(
 	require.Equal(t, apierr.BizAlreadyExists, response.ErrorCode)
 	status, _, _ = performJSON(t, engine, http.MethodPatch,
 		fmt.Sprintf("/api/v2/admin/cuisines/%d", cuisine.ID),
-		map[string]any{"sort_order": 88}, admin.Token)
+		map[string]any{"sort_order": 88, "is_active": false}, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/cuisines?is_active=false", nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var cuisines service.DictionaryItemList
+	decodeData(t, response, &cuisines)
+	require.True(t, dictionaryItemPresent(cuisines.Items, cuisine.ID))
+	status, _, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/admin/cuisines/%d/enable", cuisine.ID), nil, admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/cuisines/%d", cuisine.ID), nil, admin.Token)
@@ -530,8 +576,30 @@ func testDictionaryCRUD(
 	decodeData(t, response, &window)
 	require.Nil(t, window.Floor)
 	require.False(t, window.IsActive)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/canteen-windows?is_active=false", nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var windows service.DictionaryWindowList
+	decodeData(t, response, &windows)
+	require.True(t, dictionaryWindowPresent(windows.Windows, window.ID))
+	status, _, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/admin/canteen-windows/%d/enable", window.ID), nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/canteen-windows/%d", window.ID), nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, _, _ = performJSON(t, engine, http.MethodPatch,
+		fmt.Sprintf("/api/v2/admin/canteens/%d", canteen.ID),
+		map[string]any{"is_active": false}, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/canteens?is_active=false", nil, admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var canteens service.DictionaryCanteenList
+	decodeData(t, response, &canteens)
+	require.True(t, dictionaryCanteenPresent(canteens.Canteens, canteen.ID))
+	status, _, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/admin/canteens/%d/enable", canteen.ID), nil, admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		fmt.Sprintf("/api/v2/admin/canteens/%d", canteen.ID), nil, admin.Token)
@@ -609,6 +677,33 @@ func requireDictionaryFieldError(
 func suggestionPresent(suggestions []service.SuggestionView, id uint64) bool {
 	for _, suggestion := range suggestions {
 		if suggestion.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func dictionaryItemPresent(items []service.DictionaryItemView, id uint64) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func dictionaryCanteenPresent(items []service.DictionaryCanteenView, id uint64) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func dictionaryWindowPresent(items []service.DictionaryWindowView, id uint64) bool {
+	for _, item := range items {
+		if item.ID == id {
 			return true
 		}
 	}

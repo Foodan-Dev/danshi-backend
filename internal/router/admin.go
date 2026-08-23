@@ -10,14 +10,15 @@ import (
 )
 
 func registerAdmin(api *route.RouterGroup, deps Deps) {
-	adminHandler := handler.NewAdmin(service.NewAdminService(
+	adminService := service.NewAdminService(
 		deps.ModerationAlerter,
 		afterCommitImageAccessController{
 			storage: deps.ImageStorage, purger: deps.ImageCachePurger, log: deps.Log,
 		},
 		deps.ImageStorage,
 		signedImageTTL(deps),
-	))
+	).WithTagCursorSecret(deps.Config.JWTSecretKey)
+	adminHandler := handler.NewAdmin(adminService)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 	admin := api.Group("/admin")
@@ -48,6 +49,13 @@ func registerAdmin(api *route.RouterGroup, deps Deps) {
 	admin.GET("/comments", requireAuth, requireManageContent, adminHandler.Comments)
 	admin.DELETE("/comments/:comment_id", requireAuth, requireManageContent, adminHandler.DeleteComment)
 	admin.PUT("/comments/:comment_id/restore", requireAuth, requireManageContent, adminHandler.RestoreComment)
+
+	admin.GET("/tags", requireAuth, requireManageContent, adminHandler.Tags)
+	admin.GET("/tags/hot", requireAuth, requireManageContent, adminHandler.HotTags)
+	admin.PATCH("/tags/:tag_id", requireAuth, requireManageContent, adminHandler.RenameTag)
+	admin.POST("/tags/:tag_id/merge", requireAuth, requireManageContent, adminHandler.MergeTag)
+	admin.DELETE("/tags/:tag_id", requireAuth, requireReviewContent, adminHandler.DeleteTag)
+	admin.POST("/tags/:tag_id/restore", requireAuth, requireReviewContent, adminHandler.RestoreTag)
 
 	admin.GET(
 		"/moderation-records/pending", requireAuth, requireReviewContent, adminHandler.PendingModeration,

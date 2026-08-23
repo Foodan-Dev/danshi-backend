@@ -29,6 +29,10 @@ var hotPathSelectBudgets = map[string]int64{
 	"GET /api/v2/search/users":                     3,
 	"GET /api/v2/dictionary-suggestions/mine":      3,
 	"GET /api/v2/admin/dictionary-suggestions":     3,
+	"GET /api/v2/admin/flavors":                    3,
+	"GET /api/v2/admin/cuisines":                   3,
+	"GET /api/v2/admin/canteens":                   3,
+	"GET /api/v2/admin/canteen-windows":            3,
 	"GET /api/v2/admin/posts/pending":              4,
 	"GET /api/v2/admin/posts":                      4,
 	"GET /api/v2/admin/users":                      3,
@@ -36,6 +40,8 @@ var hotPathSelectBudgets = map[string]int64{
 	"GET /api/v2/admin/admins":                     3,
 	"GET /api/v2/admin/super-admins":               3,
 	"GET /api/v2/admin/comments":                   3,
+	"GET /api/v2/admin/tags":                       3,
+	"GET /api/v2/admin/tags/hot":                   3,
 	"GET /api/v2/admin/moderation-records/pending": 3,
 }
 
@@ -209,6 +215,13 @@ func queryBudgetCases(fixture queryBudgetFixture) []queryBudgetCase {
 			operation: "GET /api/v2/admin/dictionary-suggestions",
 			path:      "/api/v2/admin/dictionary-suggestions", token: actors.Dict.Token,
 		},
+		{operation: "GET /api/v2/admin/flavors", path: "/api/v2/admin/flavors", token: actors.Dict.Token},
+		{operation: "GET /api/v2/admin/cuisines", path: "/api/v2/admin/cuisines", token: actors.Dict.Token},
+		{operation: "GET /api/v2/admin/canteens", path: "/api/v2/admin/canteens", token: actors.Dict.Token},
+		{
+			operation: "GET /api/v2/admin/canteen-windows",
+			path:      "/api/v2/admin/canteen-windows", token: actors.Dict.Token,
+		},
 		{operation: "GET /api/v2/admin/posts/pending", path: "/api/v2/admin/posts/pending", token: actors.Admin.Token},
 		{operation: "GET /api/v2/admin/posts", path: "/api/v2/admin/posts", token: actors.Admin.Token},
 		{operation: "GET /api/v2/admin/users", path: "/api/v2/admin/users", token: actors.Super.Token},
@@ -220,6 +233,8 @@ func queryBudgetCases(fixture queryBudgetFixture) []queryBudgetCase {
 		{operation: "GET /api/v2/admin/admins", path: "/api/v2/admin/admins", token: actors.Super.Token},
 		{operation: "GET /api/v2/admin/super-admins", path: "/api/v2/admin/super-admins", token: actors.Super.Token},
 		{operation: "GET /api/v2/admin/comments", path: "/api/v2/admin/comments", token: actors.Admin.Token},
+		{operation: "GET /api/v2/admin/tags", path: "/api/v2/admin/tags", token: actors.Admin.Token},
+		{operation: "GET /api/v2/admin/tags/hot", path: "/api/v2/admin/tags/hot", token: actors.Admin.Token},
 		{
 			operation: "GET /api/v2/admin/moderation-records/pending",
 			path:      "/api/v2/admin/moderation-records/pending", token: actors.Admin.Token,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
@@ -97,8 +98,8 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
-	require.Len(t, engine.Routes(), 84, "应注册 82 条业务路由与 2 条 runtime 路由")
-	operations := make([]string, 0, 18)
+	require.Len(t, engine.Routes(), 98, "应注册 96 条业务路由与 2 条 runtime 路由")
+	operations := make([]string, 0, 24)
 	for _, route := range engine.Routes() {
 		if isAdminDomainPath(route.Path) {
 			operations = append(operations, route.Method+" "+route.Path)
@@ -121,6 +122,12 @@ func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 		"GET /api/v2/admin/comments",
 		"DELETE /api/v2/admin/comments/:comment_id",
 		"PUT /api/v2/admin/comments/:comment_id/restore",
+		"GET /api/v2/admin/tags",
+		"GET /api/v2/admin/tags/hot",
+		"PATCH /api/v2/admin/tags/:tag_id",
+		"POST /api/v2/admin/tags/:tag_id/merge",
+		"DELETE /api/v2/admin/tags/:tag_id",
+		"POST /api/v2/admin/tags/:tag_id/restore",
 		"GET /api/v2/admin/moderation-records/pending",
 		"PUT /api/v2/admin/moderation-records/:moderation_record_id/review",
 	}, operations)
@@ -132,6 +139,7 @@ func isAdminDomainPath(path string) bool {
 		strings.HasPrefix(path, "/api/v2/admin/users") ||
 		path == "/api/v2/admin/admins" || path == "/api/v2/admin/super-admins" ||
 		strings.HasPrefix(path, "/api/v2/admin/comments") ||
+		strings.HasPrefix(path, "/api/v2/admin/tags") ||
 		strings.HasPrefix(path, "/api/v2/admin/moderation-records")
 }
 
@@ -429,12 +437,42 @@ func testAdminCommentReviewAndRestore(
 	var machine model.ModerationRecord
 	require.NoError(t, gdb.Where("comment_id = ? AND verdict = ?",
 		comment.Comment.ID, model.ModerationVerdictReview).First(&machine).Error)
+	filterTags := []model.Tag{
+		{Name: "筛选标签甲", Moderation: model.ModerationStatusReview},
+		{Name: "筛选标签乙", Moderation: model.ModerationStatusReview},
+	}
+	require.NoError(t, gdb.Create(&filterTags).Error)
+	filterRecords := []model.ModerationRecord{
+		{
+			TagID: &filterTags[0].ID, Scene: model.ModerationSceneText,
+			Provider: "queue_filter_test", Verdict: model.ModerationVerdictReview,
+			Labels: pq.StringArray{"abuse"},
+		},
+		{
+			TagID: &filterTags[1].ID, Scene: model.ModerationSceneText,
+			Provider: "queue_filter_test", Verdict: model.ModerationVerdictReview,
+			Labels: pq.StringArray{"spam"},
+		},
+	}
+	require.NoError(t, gdb.Create(&filterRecords).Error)
 	status, response, _ := performJSON(t, engine, http.MethodGet,
 		"/api/v2/admin/moderation-records/pending", nil, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var queue service.AdminModerationList
 	decodeData(t, response, &queue)
 	require.True(t, moderationRecordPresent(queue.Records, machine.ID))
+	require.True(t, moderationRecordPresent(queue.Records, filterRecords[0].ID))
+	require.True(t, moderationRecordPresent(queue.Records, filterRecords[1].ID),
+		"不传 label 时必须保持既有未筛选行为")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending?label=abuse", nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var filtered service.AdminModerationList
+	decodeData(t, response, &filtered)
+	require.True(t, moderationRecordPresent(filtered.Records, filterRecords[0].ID))
+	require.False(t, moderationRecordPresent(filtered.Records, filterRecords[1].ID))
+	require.False(t, moderationRecordPresent(filtered.Records, machine.ID),
+		"审核标签筛选必须精确收窄结果")
 
 	status, _, _ = performJSON(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/v2/admin/moderation-records/%d/review", machine.ID),

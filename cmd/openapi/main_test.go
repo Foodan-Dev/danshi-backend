@@ -32,7 +32,7 @@ func TestRepositoryRegistryGenerates84ValidOperations(t *testing.T) {
 	for _, item := range document.Paths.Map() {
 		operations += len(item.Operations())
 	}
-	require.Equal(t, 84, operations)
+	require.Equal(t, 98, operations)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts").Post.RequestBody)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts/{post_id}").Get.Security)
 	deleteUser := document.Paths.Value("/api/v2/users/{user_id}").Delete

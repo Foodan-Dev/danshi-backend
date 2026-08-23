@@ -414,3 +414,29 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - **鉴权**：以 SHA-256 等长摘要做常量时间令牌比较；未配置返回 503，令牌错误返回 403，
   非法载荷返回 `moderation_callback_invalid`。
 - **前端影响**：无，该端点不面向客户端。
+
+### §5.3、§5.4、§6.9：补齐词表、话题标签与复核队列管理能力
+
+- **类别**：新增端点与既有查询参数扩展，非破坏。
+- **动机**：停用词表项此前无法从管理端列表找回；话题标签的重命名、合并、下架、恢复和热门统计没有生产入口；人工复核队列也无法按供应商审核标签收窄。
+- **新增词表端点**：
+  - `GET /api/v2/admin/flavors`
+  - `POST /api/v2/admin/flavors/{flavor_id}/enable`
+  - `GET /api/v2/admin/cuisines`
+  - `POST /api/v2/admin/cuisines/{cuisine_id}/enable`
+  - `GET /api/v2/admin/canteens`
+  - `POST /api/v2/admin/canteens/{canteen_id}/enable`
+  - `GET /api/v2/admin/canteen-windows`
+  - `POST /api/v2/admin/canteen-windows/{window_id}/enable`
+- **词表语义**：四个列表默认包含启用与停用项，可用 `is_active` 筛选，并以 `cursor/limit` 翻页；显式启用后条目重新进入公共 `/config`。既有 `PATCH is_active=false` 仍是停用入口，既有 `DELETE` 仍是受外键约束的物理删除；被帖子或审核历史引用时返回 `409 dict_item_in_use`。
+- **新增话题标签端点**：
+  - `GET /api/v2/admin/tags`
+  - `PATCH /api/v2/admin/tags/{tag_id}`
+  - `POST /api/v2/admin/tags/{tag_id}/merge`
+  - `DELETE /api/v2/admin/tags/{tag_id}`
+  - `POST /api/v2/admin/tags/{tag_id}/restore`
+  - `GET /api/v2/admin/tags/hot`
+- **标签语义**：列表支持 `name` 模糊匹配、`moderation`、`is_deleted` 与游标分页。重命名遇到大小写不敏感同名项返回 `409 tag_name_conflict` 并要求改走合并；合并在单事务内去重迁移 `post_tags` 后下架源标签。下架和恢复只翻转 `deleted_at`，不删除关联。热门统计实时按未下架标签在 `status=approved AND deleted_at IS NULL` 帖子中的关联数排序，不做时间衰减、加权或缓存。
+- **复核队列扩展**：`GET /api/v2/admin/moderation-records/pending` 新增可选 `label`，对 `moderation_records.labels` 做单个审核标签精确筛选；不传时行为不变。这里不是话题标签筛选。
+- **权限**：词表端点使用 `manage_dictionary`；标签列表、重命名、合并和热门统计使用 `manage_content`；标签下架与恢复使用 `review_content`。
+- **前端影响**：词表管理页改从新列表读取并提供显式启用操作；标签管理页应区分“重命名”和“合并”，下架后不要清空帖子侧关系；复核页可按供应商审核标签筛选，热门榜只展示服务端返回的实时 TopN。

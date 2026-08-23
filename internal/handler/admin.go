@@ -12,6 +12,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
@@ -47,6 +48,14 @@ type adminManualReviewRequest struct {
 	Labels      []string                `json:"labels"`
 	Score       *decimal.Decimal        `json:"score"`
 	RawResponse json.RawMessage         `json:"raw_response"`
+}
+
+type renameAdminTagRequest struct {
+	Name string `json:"name"`
+}
+
+type mergeAdminTagRequest struct {
+	TargetTagID uint64 `json:"target_tag_id"`
 }
 
 // PendingPosts 返回待审帖子。
@@ -277,16 +286,107 @@ func (h *Admin) RestoreComment(ctx context.Context, c *app.RequestContext) {
 	respondAdmin(ctx, c, "恢复成功", result, err)
 }
 
+// Tags 返回支持名称、审核状态和下架状态筛选的话题标签管理列表。
+func (h *Admin) Tags(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[adminTagsQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var isDeleted *bool
+	if err == nil {
+		isDeleted, err = optionalBoolField(query.IsDeleted, "is_deleted")
+	}
+	var result *service.AdminTagList
+	if err == nil {
+		result, err = h.service.Tags(ctx, service.AdminTagListInput{
+			Name: query.Name, Moderation: string(query.Moderation), IsDeleted: isDeleted,
+			Pagination: params,
+		})
+	}
+	respondAdmin(ctx, c, "请求成功", result, err)
+}
+
+// RenameTag 重命名话题标签。
+func (h *Admin) RenameTag(ctx context.Context, c *app.RequestContext) {
+	tagID, principal, err := adminIdentity(c, "tag_id")
+	var request renameAdminTagRequest
+	if err == nil {
+		err = bindJSON(c, &request)
+	}
+	var result *service.AdminTagView
+	if err == nil {
+		result, err = h.service.RenameTag(
+			ctx, tagID, principal.User.ID, service.RenameAdminTagInput{Name: request.Name},
+		)
+	}
+	respondAdmin(ctx, c, "标签已重命名", result, err)
+}
+
+// MergeTag 把源标签合并到目标标签。
+func (h *Admin) MergeTag(ctx context.Context, c *app.RequestContext) {
+	tagID, principal, err := adminIdentity(c, "tag_id")
+	var request mergeAdminTagRequest
+	if err == nil {
+		err = bindJSON(c, &request)
+	}
+	var result *service.AdminTagMergeResult
+	if err == nil {
+		result, err = h.service.MergeTag(ctx, tagID, principal.User.ID, service.MergeAdminTagInput{
+			TargetTagID: request.TargetTagID,
+		})
+	}
+	respondAdmin(ctx, c, "标签已合并", result, err)
+}
+
+// DeleteTag 下架标签但保留帖子关联。
+func (h *Admin) DeleteTag(ctx context.Context, c *app.RequestContext) {
+	tagID, _, err := adminIdentity(c, "tag_id")
+	var result *service.AdminTagView
+	if err == nil {
+		result, err = h.service.DeleteTag(ctx, tagID)
+	}
+	respondAdmin(ctx, c, "标签已下架", result, err)
+}
+
+// RestoreTag 恢复标签及其原有帖子关联的展示。
+func (h *Admin) RestoreTag(ctx context.Context, c *app.RequestContext) {
+	tagID, _, err := adminIdentity(c, "tag_id")
+	var result *service.AdminTagView
+	if err == nil {
+		result, err = h.service.RestoreTag(ctx, tagID)
+	}
+	respondAdmin(ctx, c, "标签已恢复", result, err)
+}
+
+// HotTags 返回实时热门标签 TopN。
+func (h *Admin) HotTags(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[hotTagsQuery](c)
+	rawLimit := query.Limit
+	if rawLimit == "" {
+		rawLimit = "10"
+	}
+	request, paramsErr := pagination.ParseCursorRequest("", rawLimit)
+	if err == nil {
+		err = paramsErr
+	}
+	var result *service.AdminHotTagList
+	if err == nil {
+		result, err = h.service.HotTags(ctx, request.Limit)
+	}
+	respondAdmin(ctx, c, "请求成功", result, err)
+}
+
 // PendingModeration 返回通用待人工复核队列。
 func (h *Admin) PendingModeration(ctx context.Context, c *app.RequestContext) {
-	query, err := bindQuery[paginationQuery](c)
-	params, paramsErr := query.params()
+	query, err := bindQuery[moderationPendingQuery](c)
+	params, paramsErr := query.Pagination.params()
 	if err == nil {
 		err = paramsErr
 	}
 	var result *service.AdminModerationList
 	if err == nil {
-		result, err = h.service.PendingModeration(ctx, params)
+		result, err = h.service.PendingModeration(ctx, query.Label, params)
 	}
 	respondAdmin(ctx, c, "请求成功", result, err)
 }

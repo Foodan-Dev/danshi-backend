@@ -9,6 +9,7 @@ import (
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
@@ -102,6 +103,146 @@ type DictionaryDeleteResult struct {
 	ID uint64 `json:"id"`
 }
 
+// DictionaryListInput 是四类管理端词表列表共享的筛选与游标。
+type DictionaryListInput struct {
+	IsActive   *bool
+	Pagination pagination.CursorRequest
+}
+
+// DictionaryItemList 是口味或菜系的管理端游标页。
+type DictionaryItemList struct {
+	Items      []DictionaryItemView  `json:"items"`
+	Pagination pagination.CursorMeta `json:"pagination"`
+}
+
+// DictionaryCanteenList 是餐厅管理端游标页。
+type DictionaryCanteenList struct {
+	Canteens   []DictionaryCanteenView `json:"canteens"`
+	Pagination pagination.CursorMeta   `json:"pagination"`
+}
+
+// DictionaryWindowList 是窗口管理端游标页。
+type DictionaryWindowList struct {
+	Windows    []DictionaryWindowView `json:"windows"`
+	Pagination pagination.CursorMeta  `json:"pagination"`
+}
+
+// ListFlavors 返回全部口味，默认同时包含启用与停用项。
+func (s *DictionaryService) ListFlavors(
+	ctx context.Context,
+	input DictionaryListInput,
+) (*DictionaryItemList, error) {
+	params, err := s.flavorCursor.DecodeRequest(input.Pagination)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := repository.FindDictionaryCursorPage[model.Flavor](ctx, input.IsActive, params)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	items := make([]DictionaryItemView, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, dictionaryItemView(
+			row.ID, row.Name, row.SortOrder, row.IsActive, row.CreatedAt, row.UpdatedAt,
+		))
+	}
+	last := model.Flavor{}
+	if len(rows) > 0 {
+		last = rows[len(rows)-1]
+	}
+	meta, err := dictionaryCursorMeta(s.flavorCursor, params.Limit, hasMore, last.CreatedAt, last.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &DictionaryItemList{Items: items, Pagination: meta}, nil
+}
+
+// ListCuisines 返回全部菜系，默认同时包含启用与停用项。
+func (s *DictionaryService) ListCuisines(
+	ctx context.Context,
+	input DictionaryListInput,
+) (*DictionaryItemList, error) {
+	params, err := s.cuisineCursor.DecodeRequest(input.Pagination)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := repository.FindDictionaryCursorPage[model.Cuisine](ctx, input.IsActive, params)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	items := make([]DictionaryItemView, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, dictionaryItemView(
+			row.ID, row.Name, row.SortOrder, row.IsActive, row.CreatedAt, row.UpdatedAt,
+		))
+	}
+	last := model.Cuisine{}
+	if len(rows) > 0 {
+		last = rows[len(rows)-1]
+	}
+	meta, err := dictionaryCursorMeta(s.cuisineCursor, params.Limit, hasMore, last.CreatedAt, last.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &DictionaryItemList{Items: items, Pagination: meta}, nil
+}
+
+// ListCanteens 返回全部餐厅，默认同时包含启用与停用项。
+func (s *DictionaryService) ListCanteens(
+	ctx context.Context,
+	input DictionaryListInput,
+) (*DictionaryCanteenList, error) {
+	params, err := s.canteenCursor.DecodeRequest(input.Pagination)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := repository.FindDictionaryCursorPage[model.Canteen](ctx, input.IsActive, params)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	items := make([]DictionaryCanteenView, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, dictionaryCanteenView(row))
+	}
+	last := model.Canteen{}
+	if len(rows) > 0 {
+		last = rows[len(rows)-1]
+	}
+	meta, err := dictionaryCursorMeta(s.canteenCursor, params.Limit, hasMore, last.CreatedAt, last.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &DictionaryCanteenList{Canteens: items, Pagination: meta}, nil
+}
+
+// ListWindows 返回全部窗口，默认同时包含启用与停用项。
+func (s *DictionaryService) ListWindows(
+	ctx context.Context,
+	input DictionaryListInput,
+) (*DictionaryWindowList, error) {
+	params, err := s.windowCursor.DecodeRequest(input.Pagination)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := repository.FindDictionaryCursorPage[model.CanteenWindow](ctx, input.IsActive, params)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	items := make([]DictionaryWindowView, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, dictionaryWindowView(row))
+	}
+	last := model.CanteenWindow{}
+	if len(rows) > 0 {
+		last = rows[len(rows)-1]
+	}
+	meta, err := dictionaryCursorMeta(s.windowCursor, params.Limit, hasMore, last.CreatedAt, last.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &DictionaryWindowList{Windows: items, Pagination: meta}, nil
+}
+
 // CreateFlavor 新建口味词条。
 func (s *DictionaryService) CreateFlavor(
 	ctx context.Context,
@@ -142,6 +283,12 @@ func (s *DictionaryService) UpdateFlavor(
 	}
 	view := dictionaryItemView(item.ID, item.Name, item.SortOrder, item.IsActive, item.CreatedAt, item.UpdatedAt)
 	return &view, nil
+}
+
+// EnableFlavor 恢复口味供新内容选择。
+func (s *DictionaryService) EnableFlavor(ctx context.Context, itemID uint64) (*DictionaryItemView, error) {
+	active := true
+	return s.UpdateFlavor(ctx, itemID, UpdateDictionaryItemInput{IsActive: &active})
 }
 
 // DeleteFlavor 删除无引用且无审核历史的口味。
@@ -192,6 +339,12 @@ func (s *DictionaryService) UpdateCuisine(
 	}
 	view := dictionaryItemView(item.ID, item.Name, item.SortOrder, item.IsActive, item.CreatedAt, item.UpdatedAt)
 	return &view, nil
+}
+
+// EnableCuisine 恢复菜系供新内容选择。
+func (s *DictionaryService) EnableCuisine(ctx context.Context, itemID uint64) (*DictionaryItemView, error) {
+	active := true
+	return s.UpdateCuisine(ctx, itemID, UpdateDictionaryItemInput{IsActive: &active})
 }
 
 // DeleteCuisine 删除无引用且无审核历史的菜系。
@@ -270,6 +423,12 @@ func (s *DictionaryService) UpdateCanteen(
 	return &view, nil
 }
 
+// EnableCanteen 恢复餐厅供新内容选择。
+func (s *DictionaryService) EnableCanteen(ctx context.Context, itemID uint64) (*DictionaryCanteenView, error) {
+	active := true
+	return s.UpdateCanteen(ctx, itemID, UpdateCanteenInput{IsActive: &active})
+}
+
 // DeleteCanteen 删除无引用且无审核历史的餐厅。
 func (s *DictionaryService) DeleteCanteen(ctx context.Context, itemID uint64) (*DictionaryDeleteResult, error) {
 	if err := repository.DeleteDictionary[model.Canteen](ctx, itemID); err != nil {
@@ -344,6 +503,12 @@ func (s *DictionaryService) UpdateWindow(
 	}
 	view := dictionaryWindowView(*item)
 	return &view, nil
+}
+
+// EnableWindow 恢复窗口供新内容选择。
+func (s *DictionaryService) EnableWindow(ctx context.Context, itemID uint64) (*DictionaryWindowView, error) {
+	active := true
+	return s.UpdateWindow(ctx, itemID, UpdateCanteenWindowInput{IsActive: &active})
 }
 
 // DeleteWindow 删除无引用且无审核历史的窗口。
@@ -428,6 +593,25 @@ func dictionaryWindowView(item model.CanteenWindow) DictionaryWindowView {
 		SortOrder: item.SortOrder, IsActive: item.IsActive,
 		CreatedAt: ptime.Time(item.CreatedAt), UpdatedAt: ptime.Time(item.UpdatedAt),
 	}
+}
+
+func dictionaryCursorMeta(
+	codec *pagination.CursorCodec,
+	limit int,
+	hasMore bool,
+	createdAt time.Time,
+	id uint64,
+) (pagination.CursorMeta, error) {
+	meta := pagination.CursorMeta{Limit: limit, HasMore: hasMore}
+	if !hasMore {
+		return meta, nil
+	}
+	token, err := codec.Encode(pagination.Cursor{CreatedAt: createdAt, ID: id})
+	if err != nil {
+		return pagination.CursorMeta{}, apierr.Internal(err)
+	}
+	meta.NextCursor = &token
+	return meta, nil
 }
 
 func dictionaryMutationError(err error, resource string) error {

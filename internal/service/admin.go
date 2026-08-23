@@ -237,6 +237,7 @@ type AdminService struct {
 	moderation     *ModerationService
 	imageStorage   ImageStorage
 	signedImageTTL time.Duration
+	tagCursor      *pagination.CursorCodec
 }
 
 // NewAdminService 创建管理端服务。
@@ -252,5 +253,12 @@ func NewAdminService(
 	return &AdminService{
 		moderation:   NewModerationService(alerter, imageAccess),
 		imageStorage: imageStorage, signedImageTTL: signedImageTTL,
+		tagCursor: pagination.NewEphemeralCursorCodec("admin-tags"),
 	}
+}
+
+// WithTagCursorSecret 将标签管理游标切换为跨实例可互认的运行时密钥。
+func (s *AdminService) WithTagCursorSecret(cursorSecret string) *AdminService {
+	s.tagCursor = pagination.NewCursorCodec(cursorSecret, "admin-tags")
+	return s
 }

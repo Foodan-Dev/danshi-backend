@@ -72,13 +72,34 @@ type SuggestionList struct {
 
 // DictionaryService 实现人工词条提议审核与词表维护。
 type DictionaryService struct {
-	dictionaries repository.DictionaryRepository
-	posts        repository.PostRepository
-	users        repository.UserRepository
+	dictionaries  repository.DictionaryRepository
+	posts         repository.PostRepository
+	users         repository.UserRepository
+	flavorCursor  *pagination.CursorCodec
+	cuisineCursor *pagination.CursorCodec
+	canteenCursor *pagination.CursorCodec
+	windowCursor  *pagination.CursorCodec
 }
 
 // NewDictionaryService 创建词表服务。
-func NewDictionaryService() *DictionaryService { return &DictionaryService{} }
+func NewDictionaryService() *DictionaryService {
+	return &DictionaryService{
+		flavorCursor:  pagination.NewEphemeralCursorCodec("admin-flavors"),
+		cuisineCursor: pagination.NewEphemeralCursorCodec("admin-cuisines"),
+		canteenCursor: pagination.NewEphemeralCursorCodec("admin-canteens"),
+		windowCursor:  pagination.NewEphemeralCursorCodec("admin-canteen-windows"),
+	}
+}
+
+// NewDictionaryServiceWithCursorSecret 创建跨实例可互认管理游标的词表服务。
+func NewDictionaryServiceWithCursorSecret(cursorSecret string) *DictionaryService {
+	return &DictionaryService{
+		flavorCursor:  pagination.NewCursorCodec(cursorSecret, "admin-flavors"),
+		cuisineCursor: pagination.NewCursorCodec(cursorSecret, "admin-cuisines"),
+		canteenCursor: pagination.NewCursorCodec(cursorSecret, "admin-canteens"),
+		windowCursor:  pagination.NewCursorCodec(cursorSecret, "admin-canteen-windows"),
+	}
+}
 
 // CreateSuggestion 创建 pending 提议；封闭词表不调用内容机审。
 func (s *DictionaryService) CreateSuggestion(

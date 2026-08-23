@@ -213,9 +213,13 @@ func (AdminRepository) FindUserBanRecords(
 // FindPendingModerationPage 返回尚未被 supersedes_id 指过的机器 review 记录。
 func (AdminRepository) FindPendingModerationPage(
 	ctx context.Context,
+	label *string,
 	params pagination.Params,
 ) ([]PendingModerationRecord, pagination.Meta, error) {
 	query := pendingModerationQuery(ctx)
+	if label != nil {
+		query = query.Where("? = ANY(mr.labels)", *label)
+	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, pagination.Meta{}, err

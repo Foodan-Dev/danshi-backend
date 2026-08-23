@@ -201,6 +201,86 @@ func (h *Dictionary) Reject(ctx context.Context, c *app.RequestContext) {
 	respondDictionary(ctx, c, result, err, "建议已驳回")
 }
 
+// Flavors 返回管理端口味列表，默认包含停用项。
+func (h *Dictionary) Flavors(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[dictionaryListQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var active *bool
+	if err == nil {
+		active, err = optionalBoolField(query.IsActive, "is_active")
+	}
+	var result *service.DictionaryItemList
+	if err == nil {
+		result, err = h.service.ListFlavors(ctx, service.DictionaryListInput{
+			IsActive: active, Pagination: params,
+		})
+	}
+	respondDictionary(ctx, c, result, err, "请求成功")
+}
+
+// Cuisines 返回管理端菜系列表，默认包含停用项。
+func (h *Dictionary) Cuisines(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[dictionaryListQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var active *bool
+	if err == nil {
+		active, err = optionalBoolField(query.IsActive, "is_active")
+	}
+	var result *service.DictionaryItemList
+	if err == nil {
+		result, err = h.service.ListCuisines(ctx, service.DictionaryListInput{
+			IsActive: active, Pagination: params,
+		})
+	}
+	respondDictionary(ctx, c, result, err, "请求成功")
+}
+
+// Canteens 返回管理端餐厅列表，默认包含停用项。
+func (h *Dictionary) Canteens(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[dictionaryListQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var active *bool
+	if err == nil {
+		active, err = optionalBoolField(query.IsActive, "is_active")
+	}
+	var result *service.DictionaryCanteenList
+	if err == nil {
+		result, err = h.service.ListCanteens(ctx, service.DictionaryListInput{
+			IsActive: active, Pagination: params,
+		})
+	}
+	respondDictionary(ctx, c, result, err, "请求成功")
+}
+
+// Windows 返回管理端窗口列表，默认包含停用项。
+func (h *Dictionary) Windows(ctx context.Context, c *app.RequestContext) {
+	query, err := bindQuery[dictionaryListQuery](c)
+	params, paramsErr := query.Pagination.params()
+	if err == nil {
+		err = paramsErr
+	}
+	var active *bool
+	if err == nil {
+		active, err = optionalBoolField(query.IsActive, "is_active")
+	}
+	var result *service.DictionaryWindowList
+	if err == nil {
+		result, err = h.service.ListWindows(ctx, service.DictionaryListInput{
+			IsActive: active, Pagination: params,
+		})
+	}
+	respondDictionary(ctx, c, result, err, "请求成功")
+}
+
 // CreateFlavor 新建口味。
 func (h *Dictionary) CreateFlavor(ctx context.Context, c *app.RequestContext) {
 	var request createDictionaryItemRequest
@@ -226,6 +306,16 @@ func (h *Dictionary) UpdateFlavor(ctx context.Context, c *app.RequestContext) {
 		result, err = h.service.UpdateFlavor(ctx, itemID, service.UpdateDictionaryItemInput(request))
 	}
 	respondDictionary(ctx, c, result, err, "口味已更新")
+}
+
+// EnableFlavor 启用口味。
+func (h *Dictionary) EnableFlavor(ctx context.Context, c *app.RequestContext) {
+	itemID, err := positivePathID(c.Param("flavor_id"), "flavor_id")
+	var result *service.DictionaryItemView
+	if err == nil {
+		result, err = h.service.EnableFlavor(ctx, itemID)
+	}
+	respondDictionary(ctx, c, result, err, "口味已启用")
 }
 
 // DeleteFlavor 物理删除未被使用的口味。
@@ -263,6 +353,16 @@ func (h *Dictionary) UpdateCuisine(ctx context.Context, c *app.RequestContext) {
 		result, err = h.service.UpdateCuisine(ctx, itemID, service.UpdateDictionaryItemInput(request))
 	}
 	respondDictionary(ctx, c, result, err, "菜系已更新")
+}
+
+// EnableCuisine 启用菜系。
+func (h *Dictionary) EnableCuisine(ctx context.Context, c *app.RequestContext) {
+	itemID, err := positivePathID(c.Param("cuisine_id"), "cuisine_id")
+	var result *service.DictionaryItemView
+	if err == nil {
+		result, err = h.service.EnableCuisine(ctx, itemID)
+	}
+	respondDictionary(ctx, c, result, err, "菜系已启用")
 }
 
 // DeleteCuisine 删除未被使用的菜系。
@@ -304,6 +404,16 @@ func (h *Dictionary) UpdateCanteen(ctx context.Context, c *app.RequestContext) {
 		})
 	}
 	respondDictionary(ctx, c, result, err, "餐厅已更新")
+}
+
+// EnableCanteen 启用餐厅。
+func (h *Dictionary) EnableCanteen(ctx context.Context, c *app.RequestContext) {
+	itemID, err := positivePathID(c.Param("canteen_id"), "canteen_id")
+	var result *service.DictionaryCanteenView
+	if err == nil {
+		result, err = h.service.EnableCanteen(ctx, itemID)
+	}
+	respondDictionary(ctx, c, result, err, "餐厅已启用")
 }
 
 // DeleteCanteen 删除未被使用的餐厅。
@@ -349,6 +459,16 @@ func (h *Dictionary) UpdateWindow(ctx context.Context, c *app.RequestContext) {
 		})
 	}
 	respondDictionary(ctx, c, result, err, "窗口已更新")
+}
+
+// EnableWindow 启用窗口。
+func (h *Dictionary) EnableWindow(ctx context.Context, c *app.RequestContext) {
+	itemID, err := positivePathID(c.Param("window_id"), "window_id")
+	var result *service.DictionaryWindowView
+	if err == nil {
+		result, err = h.service.EnableWindow(ctx, itemID)
+	}
+	respondDictionary(ctx, c, result, err, "窗口已启用")
 }
 
 // DeleteWindow 删除未被使用的窗口。

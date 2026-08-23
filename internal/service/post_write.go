@@ -483,7 +483,16 @@ func (s *PostService) assertCurrentMatchesLatest(
 	post *model.Post,
 	latest *model.PostHistory,
 ) error {
-	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
+	return assertPostCurrentMatchesLatest(ctx, s.posts, post, latest)
+}
+
+func assertPostCurrentMatchesLatest(
+	ctx context.Context,
+	posts repository.PostRepository,
+	post *model.Post,
+	latest *model.PostHistory,
+) error {
+	relations, err := posts.LoadSnapshotRelations(ctx, post.ID)
 	if err != nil {
 		return apierr.Internal(err)
 	}

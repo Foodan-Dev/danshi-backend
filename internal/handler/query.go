@@ -99,6 +99,11 @@ type dictionaryPendingQuery struct {
 	Pagination paginationQuery
 }
 
+type dictionaryListQuery struct {
+	IsActive   string `query:"is_active" query_type:"boolean"`
+	Pagination cursorPaginationQuery
+}
+
 type adminPostsQuery struct {
 	Status     model.PostStatus `query:"status"`
 	PostType   model.PostType   `query:"post_type"`
@@ -114,6 +119,22 @@ type adminUsersQuery struct {
 type adminCommentsQuery struct {
 	PostID     string `query:"post_id" query_type:"integer" query_min:"1"`
 	Pagination paginationQuery
+}
+
+type moderationPendingQuery struct {
+	Label      string `query:"label"`
+	Pagination paginationQuery
+}
+
+type adminTagsQuery struct {
+	Name       string                 `query:"name"`
+	Moderation model.ModerationStatus `query:"moderation" query_enum:"pending,pass,review,block"`
+	IsDeleted  string                 `query:"is_deleted" query_type:"boolean"`
+	Pagination cursorPaginationQuery
+}
+
+type hotTagsQuery struct {
+	Limit string `query:"limit" query_type:"integer" query_default:"10" query_min:"1" query_max:"100"`
 }
 
 type moderationCallbackQuery struct {
