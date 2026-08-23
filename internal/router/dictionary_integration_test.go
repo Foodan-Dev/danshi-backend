@@ -350,7 +350,24 @@ func testDictionarySuggestionEdges(
 		}, proposer.Token)
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	require.Equal(t, apierr.BizValidation, response.ErrorCode)
-	requireDictionaryFieldError(t, response, "parent_canteen_id", apierr.FieldRequired)
+	requireDictionaryFieldError(t, response, "parent_canteen_code", apierr.FieldRequired)
+
+	directWindow := createSuggestion(t, engine, proposer.Token, map[string]any{
+		"kind": model.SuggestionKindCanteenWindow, "proposed_name": "编码指定父餐厅窗口",
+		"parent_canteen_code": fixture.Canteen.Code,
+	})
+	require.Equal(t, &fixture.Canteen.ID, directWindow.ParentCanteenID)
+	var storedDirectWindow model.DictionarySuggestion
+	require.NoError(t, gdb.First(&storedDirectWindow, directWindow.ID).Error)
+	require.Equal(t, &fixture.Canteen.ID, storedDirectWindow.ParentCanteenID)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/dictionary-suggestions", map[string]any{
+			"kind": model.SuggestionKindCanteenWindow, "proposed_name": "无效编码窗口",
+			"parent_canteen_code": "canteen-code-does-not-exist",
+		}, proposer.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizDictItemNotFound, response.ErrorCode)
 
 	foreignParent := createSuggestion(t, engine, ordinary.Token, map[string]any{
 		"kind": model.SuggestionKindCanteen, "proposed_name": "他人的父餐厅提议",

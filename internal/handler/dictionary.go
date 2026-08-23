@@ -27,7 +27,7 @@ type createSuggestionRequest struct {
 	ProposedName       string  `json:"proposed_name"`
 	PostID             *uint64 `json:"post_id"`
 	FlavorStance       *string `json:"flavor_stance"`
-	ParentCanteenID    *uint64 `json:"parent_canteen_id"`
+	ParentCanteenCode  *string `json:"parent_canteen_code"`
 	ParentSuggestionID *uint64 `json:"parent_suggestion_id"`
 }
 
@@ -123,7 +123,7 @@ func (h *Dictionary) CreateSuggestion(ctx context.Context, c *app.RequestContext
 	if err == nil {
 		result, err = h.service.CreateSuggestion(ctx, service.CreateSuggestionInput{
 			Kind: request.Kind, ProposedName: request.ProposedName, PostID: request.PostID,
-			FlavorStance: request.FlavorStance, ParentCanteenID: request.ParentCanteenID,
+			FlavorStance: request.FlavorStance, ParentCanteenCode: request.ParentCanteenCode,
 			ParentSuggestionID: request.ParentSuggestionID,
 		}, principal.User.ID)
 	}

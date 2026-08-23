@@ -1,6 +1,7 @@
 package router_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -56,10 +57,25 @@ func TestConfigDomainAgainstPostgres(t *testing.T) {
 			}
 		}
 		require.NotNil(t, found)
-		require.True(t, found.IsActive)
 		require.Len(t, found.Windows, 1)
 		require.Equal(t, activeWindow.ID, found.Windows[0].ID)
-		require.True(t, found.Windows[0].IsActive)
+
+		var raw struct {
+			Canteens []map[string]any `json:"canteens"`
+		}
+		require.NoError(t, json.Unmarshal(response.Data, &raw))
+		for _, canteen := range raw.Canteens {
+			require.NotContains(t, canteen, "is_active",
+				"公共配置已经过滤停用餐厅，不应再返回恒真字段")
+			windows, ok := canteen["windows"].([]any)
+			require.True(t, ok)
+			for _, value := range windows {
+				window, ok := value.(map[string]any)
+				require.True(t, ok)
+				require.NotContains(t, window, "is_active",
+					"公共配置已经过滤停用窗口，不应再返回恒真字段")
+			}
+		}
 	})
 }
 

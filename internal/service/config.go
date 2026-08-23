@@ -26,19 +26,17 @@ type PostTypeConfig struct {
 
 // CanteenWindowConfig 是餐厅下可选择的启用窗口。
 type CanteenWindowConfig struct {
-	ID       uint64  `json:"id"`
-	Name     string  `json:"name"`
-	Floor    *string `json:"floor"`
-	IsActive bool    `json:"is_active"`
+	ID    uint64  `json:"id"`
+	Name  string  `json:"name"`
+	Floor *string `json:"floor"`
 }
 
 // CanteenConfig 是以稳定 code 为 id 的餐厅配置。
 type CanteenConfig struct {
-	ID       string                `json:"id"`
-	Name     string                `json:"name"`
-	Campus   string                `json:"campus"`
-	IsActive bool                  `json:"is_active"`
-	Windows  []CanteenWindowConfig `json:"windows"`
+	ID      string                `json:"id"`
+	Name    string                `json:"name"`
+	Campus  string                `json:"campus"`
+	Windows []CanteenWindowConfig `json:"windows"`
 }
 
 // ExploreConfig 是前端筛选与发帖选择器的唯一配置真源。
@@ -66,7 +64,7 @@ func (s *ConfigService) Get(ctx context.Context) (*ExploreConfig, error) {
 	windows := make(map[uint64][]CanteenWindowConfig)
 	for _, row := range dictionaries.Windows {
 		windows[row.CanteenID] = append(windows[row.CanteenID], CanteenWindowConfig{
-			ID: row.ID, Name: row.Name, Floor: row.Floor, IsActive: true,
+			ID: row.ID, Name: row.Name, Floor: row.Floor,
 		})
 	}
 	canteens := make([]CanteenConfig, 0, len(dictionaries.Canteens))
@@ -76,7 +74,7 @@ func (s *ConfigService) Get(ctx context.Context) (*ExploreConfig, error) {
 			items = []CanteenWindowConfig{}
 		}
 		canteens = append(canteens, CanteenConfig{
-			ID: row.Code, Name: row.Name, Campus: row.Campus, IsActive: true, Windows: items,
+			ID: row.Code, Name: row.Name, Campus: row.Campus, Windows: items,
 		})
 	}
 	cuisines := make([]string, 0, len(dictionaries.Cuisines))

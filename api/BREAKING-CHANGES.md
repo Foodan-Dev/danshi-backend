@@ -4,7 +4,7 @@
 “**破坏性**”重新计数，原重写计划共 **12 项**；后续产品批次确认的破坏性变更继续编号。
 新增端点、附加字段和非破坏行为变更另列在文末。
 
-## 破坏性变更（13 项）
+## 破坏性变更（15 项）
 
 ### BC-001 / §4.3：分页参数改为严格校验
 
@@ -262,7 +262,73 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - [ ] `next_cursor=null` 或 `has_more=false` 时停止加载。
 - [ ] 帖子非 latest 排序继续使用 `page`；评论继续使用 offset，不切换到 cursor。
 
+### BC-014 / 公共配置：移除恒真的 `is_active`
+
+**动机**：`GET /api/v2/config` 只查询启用餐厅和启用窗口，原响应中的
+`canteens[].is_active` 与 `canteens[].windows[].is_active` 因而恒为 `true`，不能向客户端
+传递任何额外状态。
+
+| 项目 | 旧契约 | 新契约 |
+|---|---|---|
+| `canteens[]` | 含 `is_active: true` | 移除 `is_active` |
+| `canteens[].windows[]` | 含 `is_active: true` | 移除 `is_active` |
+| 停用项可见性 | 不返回 | 不变，仍不返回 |
+
+**前端影响清单**：
+
+- [ ] 删除公共配置模型中餐厅和窗口的 `is_active` 必填字段。
+- [ ] 不再依赖恒真字段筛选；收到的餐厅和窗口都可直接视为当前可选项。
+- [ ] 管理端词表响应中的真实 `is_active` 不受本项影响。
+
+### BC-015 / 窗口提议：父餐厅由数字主键改为稳定编码
+
+**动机**：公共配置把餐厅 `code` 作为 `canteens[].id` 暴露，客户端拿不到数据库数字主键；
+窗口提议继续要求数字主键会形成无法构造的请求。
+
+| 项目 | 旧契约 | 新契约 |
+|---|---|---|
+| 端点 | `POST /api/v2/dictionary-suggestions` | 不变 |
+| 窗口提议父餐厅字段 | `parent_canteen_id: integer` | `parent_canteen_code: string` |
+| 同批父餐厅提议 | `parent_suggestion_id` | 不变 |
+| 无效或已停用编码 | 无稳定的客户端可用输入 | 404 `dict_item_not_found` |
+
+响应和数据库审核记录中的 `parent_canteen_id` 仍是已解析的内部关联标识；本项只改变用户提交
+窗口提议时的请求体字段。
+
+**前端影响清单**：
+
+- [ ] 窗口提议从公共配置餐厅对象的 `id` 读取稳定 code，并发送为 `parent_canteen_code`。
+- [ ] 删除发送 `parent_canteen_id` 的旧逻辑；联合提议继续发送 `parent_suggestion_id`。
+- [ ] 对 404 `dict_item_not_found` 提示刷新公共配置后重新选择餐厅。
+
 ## 新增、勘误与行为变更（不计入上述破坏性变更）
+
+### 社交关系：关注统计与列表统一排除已注销用户
+
+- **类别**：一致性勘误，非破坏。
+- **影响端点**：`GET /api/v2/users/{user_id}`、`GET /api/v2/users/{user_id}/following`、
+  `GET /api/v2/users/{user_id}/followers`。
+- **新口径**：`follower_count`、`following_count`、列表 `pagination.total` 与实际返回条数均只
+  统计未注销用户；软删除不会物理删除历史关注动作行。
+- **分页边界**：关注和粉丝列表继续使用 offset 分页，本项不改变分页协议。
+
+### 账号资料：注册补齐 `gender=other`
+
+- **类别**：既有枚举值变得可达，附加式行为，非破坏。
+- **影响端点**：`POST /api/v2/auth/register` 开始与资料更新、数据库约束一致地接受
+  `male`、`female`、`other` 或空值；其他字符串仍返回 422 `invalid_enum`。
+- **前端影响**：注册页可以与资料编辑页共用同一性别枚举。
+
+### 误杀恢复：审核流水增加可查询的操作人列
+
+- **类别**：审计字段补全，附加式行为，非破坏。
+- **影响端点**：`PUT /api/v2/admin/posts/{post_id}/restore`、
+  `PUT /api/v2/admin/comments/{comment_id}/restore`。
+- **新语义**：新建的 `provider=admin_restore` 流水在 `reviewer_id` 与 `reviewed_at` 列记录实际
+  操作人和时间，`raw_response` 继续保留 `action=restore`；恢复仍不是人工复核，不携带
+  `supersedes_id`。
+- **兼容性**：迁移前无法可靠回填操作人的存量恢复流水允许两列同时为空；机器审核流水仍
+  禁止携带这两列。
 
 ### 图片响应：新增三档图片与头像缩略图字段
 
@@ -418,8 +484,9 @@ Python v1/旧库与 Go v2/新库并行隔离。
   - `PUT /api/v2/admin/posts/{post_id}/restore`
   - `PUT /api/v2/admin/comments/{comment_id}/restore`
 - **审计语义**：恢复操作追加不可变 `moderation_records` 行，`provider='admin_restore'`、
-  `verdict='pass'`，锚定内容最新 history；不伪造 `manual` 行，以免破坏人工复核状态机与
-  `uq_mr_supersedes` 语义。图片 `moderation != pass` 的内容拒绝恢复，返回 409 `image_not_approved`。
+  `verdict='pass'`，锚定内容最新 history，并在 `reviewer_id/reviewed_at` 记录实际操作人；
+  不伪造 `manual` 行，以免破坏人工复核状态机与 `uq_mr_supersedes` 语义。图片
+  `moderation != pass` 的内容拒绝恢复，返回 409 `image_not_approved`。
 - **权限**：复用内容审核能力，不新增角色。
 - **前端影响**：管理端新增复核队列页；恢复为幂等的显式动作。
 

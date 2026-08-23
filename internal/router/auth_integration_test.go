@@ -630,7 +630,7 @@ func testRegistrationValidation(
 			name: "invalid registration gender",
 			payload: map[string]any{
 				"email": "invalid-gender@fdueat.com", "password": "password-123",
-				"verification_code": "000000", "gender": model.GenderOther,
+				"verification_code": "000000", "gender": "unknown",
 			},
 			field: "gender", fieldCode: apierr.FieldInvalidEnum,
 		},
@@ -651,6 +651,18 @@ func testRegistrationValidation(
 			requireAuthFieldError(t, response, testCase.field, testCase.fieldCode)
 		})
 	}
+
+	otherEmail := "other-gender@fdueat.com"
+	sendCode(t, engine, otherEmail)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+		"email": otherEmail, "password": "password-123",
+		"verification_code": capturedCode(t, sender, otherEmail), "gender": model.GenderOther,
+	}, "")
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var otherGenderUser model.User
+	require.NoError(t, gdb.Where("email = ?", otherEmail).First(&otherGenderUser).Error)
+	require.NotNil(t, otherGenderUser.Gender)
+	require.Equal(t, model.GenderOther, *otherGenderUser.Gender)
 
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		"/api/v2/auth/email-verification-codes", map[string]any{"email": ""}, "")

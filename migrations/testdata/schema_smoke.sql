@@ -503,6 +503,20 @@ DO $$ BEGIN
                   '复核后待办队列清空');
 END $$;
 
+-- 管理员误杀恢复不是人工复核，不 supersede 机审行，但必须能按实际操作人列检索。
+INSERT INTO moderation_records
+  (id,post_id,post_history_id,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
+VALUES
+  (605,1001,1,'text','admin_restore','pass','{}','{"action":"restore"}',3,now());
+DO $$ BEGIN
+  PERFORM _assert((SELECT count(*) FROM moderation_records WHERE id=605 AND reviewer_id=3)=1,
+                  '恢复流水可按 reviewer_id 检索');
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records
+    (post_id,post_history_id,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id)
+    VALUES (1001,1,'text','admin_restore','pass',3,now(),603)$q$,
+    ARRAY['23001','23514'], '恢复不是人工复核，不得 supersede 机审行');
+END $$;
+
 \echo ''
 \echo '########## 1d-5. 编辑历史快照 ##########'
 INSERT INTO comment_histories (id,comment_id,revision,edited_by,content) VALUES (1,2001,1,2,'楼主评论');

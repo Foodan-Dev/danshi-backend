@@ -53,12 +53,16 @@ func normalizeRegister(input RegisterInput) (RegisterInput, error) {
 	if input.Name != nil && utf8.RuneCountInString(*input.Name) > 100 {
 		return RegisterInput{}, apierr.InvalidField("name", apierr.FieldTooLong, "昵称不能超过 100 个字符")
 	}
-	if input.Gender != nil && *input.Gender != string(model.GenderMale) && *input.Gender != string(model.GenderFemale) {
+	if input.Gender != nil && !validGender(model.Gender(*input.Gender)) {
 		return RegisterInput{}, apierr.InvalidField(
-			"gender", apierr.FieldInvalidEnum, "gender 只能是 male 或 female",
+			"gender", apierr.FieldInvalidEnum, "gender 只能是 male、female 或 other",
 		)
 	}
 	return input, nil
+}
+
+func validGender(value model.Gender) bool {
+	return value == model.GenderMale || value == model.GenderFemale || value == model.GenderOther
 }
 
 func validateVerificationCode(code *string) error {

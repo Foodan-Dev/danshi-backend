@@ -517,11 +517,19 @@ func testAdminCommentReviewAndRestore(
 	var audit model.ModerationRecord
 	require.NoError(t, gdb.First(&audit, restoredResult.ModerationRecordID).Error)
 	require.Equal(t, model.ModerationProvider("admin_restore"), audit.Provider)
+	require.Equal(t, actors.Admin.User.ID, *audit.ReviewerID)
+	require.NotNil(t, audit.ReviewedAt)
 	var auditData struct {
-		ReviewerID uint64 `json:"reviewer_id"`
+		Action string `json:"action"`
 	}
 	require.NoError(t, json.Unmarshal(audit.RawResponse, &auditData))
-	require.Equal(t, actors.Admin.User.ID, auditData.ReviewerID)
+	require.Equal(t, "restore", auditData.Action)
+	var queriedByReviewer model.ModerationRecord
+	require.NoError(t, gdb.Where(
+		"id = ? AND reviewer_id = ?", restoredResult.ModerationRecordID, actors.Admin.User.ID,
+	).First(&queriedByReviewer).Error)
+	require.Equal(t, restoredResult.ModerationRecordID, queriedByReviewer.ID,
+		"恢复流水必须能按操作人列查询")
 
 	status, response, _ = performJSON(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/v2/admin/comments/%d/restore", comment.Comment.ID), nil, actors.Admin.Token)
@@ -648,6 +656,8 @@ func testAdminPostRestore(
 	var audit model.ModerationRecord
 	require.NoError(t, gdb.First(&audit, restored.ModerationRecordID).Error)
 	require.Equal(t, model.ModerationProvider("admin_restore"), audit.Provider)
+	require.Equal(t, actors.Admin.User.ID, *audit.ReviewerID)
+	require.NotNil(t, audit.ReviewedAt)
 	status, response, _ = performJSON(t, engine, http.MethodPut,
 		fmt.Sprintf("/api/v2/admin/posts/%d/restore", post.ID), nil, actors.Admin.Token)
 	require.Equal(t, http.StatusConflict, status)

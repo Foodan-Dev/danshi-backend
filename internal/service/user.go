@@ -356,7 +356,7 @@ func normalizeUserUpdate(input UpdateUserInput) (UpdateUserInput, error) {
 	}
 	if input.GenderSet && input.Gender != nil {
 		value := model.Gender(strings.TrimSpace(*input.Gender))
-		if value != model.GenderMale && value != model.GenderFemale && value != model.GenderOther {
+		if !validGender(value) {
 			return input, apierr.InvalidField("gender", apierr.FieldInvalidEnum, "gender 取值不合法")
 		}
 		raw := string(value)

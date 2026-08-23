@@ -152,16 +152,17 @@ func restorationRecord(
 	commentHistoryID uint64,
 ) (*model.ModerationRecord, error) {
 	raw, err := json.Marshal(struct {
-		Action     string `json:"action"`
-		ReviewerID uint64 `json:"reviewer_id"`
-	}{Action: "restore", ReviewerID: actorID})
+		Action string `json:"action"`
+	}{Action: "restore"})
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	record := &model.ModerationRecord{
 		PostID: postID, CommentID: commentID, Scene: model.ModerationSceneText,
 		Provider: adminRestoreProvider, Verdict: model.ModerationVerdictPass,
-		Labels: pq.StringArray{}, RawResponse: raw, CreatedAt: time.Now().UTC(),
+		Labels: pq.StringArray{}, RawResponse: raw, ReviewerID: &actorID, ReviewedAt: &now,
+		CreatedAt: now,
 	}
 	if postID != nil {
 		record.PostHistoryID = &postHistoryID

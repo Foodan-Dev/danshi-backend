@@ -883,9 +883,6 @@
           "id": {
             "type": "string"
           },
-          "is_active": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           },
@@ -922,9 +919,6 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
-          },
-          "is_active": {
-            "type": "boolean"
           },
           "name": {
             "type": "string"
@@ -2917,11 +2911,9 @@
           "kind": {
             "type": "string"
           },
-          "parent_canteen_id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
+          "parent_canteen_code": {
             "nullable": true,
-            "type": "integer"
+            "type": "string"
           },
           "parent_suggestion_id": {
             "maximum": 18446744073709552000,

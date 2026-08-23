@@ -14,7 +14,15 @@ import (
 func TestImageLifecycleMigrationRepairsOnlyUnreferencedReadyAssets(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+	version, err := dbinfra.Version(ctx, database.SQL)
+	require.NoError(t, err)
+	for version > 5 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
+	require.EqualValues(t, 5, version,
+		"图片生命周期修复必须从 00006 之前的 schema 装载测试数据")
 
 	user := model.User{Email: "image-migration@fdueat.com", PasswordHash: "x", Name: "migration"}
 	require.NoError(t, database.GORM.Create(&user).Error)

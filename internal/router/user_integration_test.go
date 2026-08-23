@@ -756,12 +756,58 @@ func testUserFollowConcurrencyAndDeletion(
 	require.Equal(t, http.StatusOK, status)
 	var historicalProfile service.UserProfile
 	decodeData(t, response, &historicalProfile)
-	require.EqualValues(t, 1, historicalProfile.Stats.FollowingCount,
-		"软注销保留关注审计行，因此资料统计保留历史关注数")
+	require.Zero(t, historicalProfile.Stats.FollowingCount,
+		"资料统计与关注列表都必须排除已注销目标")
 	require.NoError(t, gdb.Model(&model.Follow{}).Where(
 		"follower_id = ? AND following_id = ?", historicalFollower.User.ID, deletedTarget.User.ID,
 	).Count(&followRows).Error)
-	require.EqualValues(t, 1, followRows)
+	require.EqualValues(t, 1, followRows, "口径修正不物理删除历史关注动作")
+
+	deletedFollower := fixtures.CreateActor(cfg)
+	visibleTarget := fixtures.CreateActor(cfg)
+	status, _, _ = performJSON(t, engine, http.MethodPost,
+		userPath(visibleTarget.User.ID)+"/follow", nil, deletedFollower.Token)
+	require.Equal(t, http.StatusOK, status)
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", deletedFollower.User.ID).
+		Update("deleted_at", time.Now().UTC()).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(visibleTarget.User.ID)+"/followers", nil, visibleTarget.Token)
+	require.Equal(t, http.StatusOK, status)
+	var followers service.UserFollowList
+	decodeData(t, response, &followers)
+	require.Empty(t, followers.Users)
+	require.Zero(t, followers.Pagination.Total, "粉丝列表必须隐藏已注销关注者")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(visibleTarget.User.ID), nil, visibleTarget.Token)
+	require.Equal(t, http.StatusOK, status)
+	var visibleProfile service.UserProfile
+	decodeData(t, response, &visibleProfile)
+	require.Zero(t, visibleProfile.Stats.FollowerCount,
+		"资料统计与粉丝列表都必须排除已注销关注者")
+
+	listOwner := fixtures.CreateActor(cfg)
+	for _, targetID := range []uint64{visibleTarget.User.ID, historicalFollower.User.ID} {
+		status, _, _ = performJSON(t, engine, http.MethodPost,
+			userPath(targetID)+"/follow", nil, listOwner.Token)
+		require.Equal(t, http.StatusOK, status)
+	}
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(listOwner.User.ID)+"/following", nil, listOwner.Token)
+	require.Equal(t, http.StatusOK, status)
+	var embeddedStats service.UserFollowList
+	decodeData(t, response, &embeddedStats)
+	require.Len(t, embeddedStats.Users, 2)
+	require.EqualValues(t, 2, embeddedStats.Pagination.Total)
+	for _, item := range embeddedStats.Users {
+		switch item.ID {
+		case visibleTarget.User.ID:
+			require.EqualValues(t, 1, item.Stats.FollowerCount,
+				"列表内嵌粉丝数也必须排除已注销关注者")
+		case historicalFollower.User.ID:
+			require.Zero(t, item.Stats.FollowingCount,
+				"列表内嵌关注数也必须排除已注销目标")
+		}
+	}
 
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		userPath(deletedTarget.User.ID)+"/follow", nil, lateFollower.Token)

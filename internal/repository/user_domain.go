@@ -221,8 +221,12 @@ const userProfileSQL = `
 		 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS like_count,
 		(SELECT COALESCE(sum(p.favorite_count), 0) FROM posts p
 		 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS favorite_count,
-		(SELECT count(*) FROM follows f WHERE f.following_id = u.id) AS follower_count,
-		(SELECT count(*) FROM follows f WHERE f.follower_id = u.id) AS following_count,
+		(SELECT count(*) FROM follows f
+		 JOIN users follower ON follower.id = f.follower_id AND follower.deleted_at IS NULL
+		 WHERE f.following_id = u.id) AS follower_count,
+		(SELECT count(*) FROM follows f
+		 JOIN users followed ON followed.id = f.following_id AND followed.deleted_at IS NULL
+		 WHERE f.follower_id = u.id) AS following_count,
 		CASE WHEN ? = 0 OR ? = u.id THEN false ELSE EXISTS (
 			SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.following_id = u.id
 		) END AS is_following
@@ -237,8 +241,12 @@ const userListColumns = `
 	 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS like_count,
 	(SELECT COALESCE(sum(p.favorite_count), 0) FROM posts p
 	 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS favorite_count,
-	(SELECT count(*) FROM follows own_followers WHERE own_followers.following_id = u.id) AS follower_count,
-	(SELECT count(*) FROM follows own_following WHERE own_following.follower_id = u.id) AS following_count,
+	(SELECT count(*) FROM follows own_followers
+	 JOIN users follower ON follower.id = own_followers.follower_id AND follower.deleted_at IS NULL
+	 WHERE own_followers.following_id = u.id) AS follower_count,
+	(SELECT count(*) FROM follows own_following
+	 JOIN users followed ON followed.id = own_following.following_id AND followed.deleted_at IS NULL
+	 WHERE own_following.follower_id = u.id) AS following_count,
 	CASE WHEN ? = 0 OR ? = u.id THEN false ELSE EXISTS (
 		SELECT 1 FROM follows viewer_follow
 		WHERE viewer_follow.follower_id = ? AND viewer_follow.following_id = u.id

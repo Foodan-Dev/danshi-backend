@@ -22,7 +22,7 @@ type CreateSuggestionInput struct {
 	ProposedName       string
 	PostID             *uint64
 	FlavorStance       *string
-	ParentCanteenID    *uint64
+	ParentCanteenCode  *string
 	ParentSuggestionID *uint64
 }
 
@@ -268,7 +268,7 @@ func (s *DictionaryService) normalizeSuggestion(
 	}
 	result := model.DictionarySuggestion{
 		Kind: *kind, ProposedName: name, PostID: input.PostID,
-		ParentCanteenID: input.ParentCanteenID, ParentSuggestionID: input.ParentSuggestionID,
+		ParentSuggestionID: input.ParentSuggestionID,
 	}
 	post, err := s.validateSuggestionPost(ctx, input.PostID, proposerID)
 	if err != nil {
@@ -292,19 +292,23 @@ func (s *DictionaryService) normalizeSuggestion(
 		)
 	}
 	if result.Kind != model.SuggestionKindCanteenWindow {
-		if input.ParentCanteenID != nil || input.ParentSuggestionID != nil {
+		if input.ParentCanteenCode != nil || input.ParentSuggestionID != nil {
 			return result, apierr.InvalidField(
-				"parent_canteen_id", apierr.FieldConflict, "仅窗口提议可指定父餐厅",
+				"parent_canteen_code", apierr.FieldConflict, "仅窗口提议可指定父餐厅",
 			)
 		}
 		return result, nil
 	}
-	if input.ParentCanteenID == nil && input.ParentSuggestionID == nil {
-		return result, apierr.InvalidField("parent_canteen_id", apierr.FieldRequired, "窗口提议必须指定父餐厅或餐厅提议")
+	if input.ParentCanteenCode == nil && input.ParentSuggestionID == nil {
+		return result, apierr.InvalidField(
+			"parent_canteen_code", apierr.FieldRequired, "窗口提议必须指定父餐厅编码或餐厅提议",
+		)
 	}
-	if err := validateSubmittedCanteen(ctx, input.ParentCanteenID); err != nil {
+	parentCanteenID, err := s.resolveSubmittedCanteen(ctx, input.ParentCanteenCode)
+	if err != nil {
 		return result, err
 	}
+	result.ParentCanteenID = parentCanteenID
 	if err := s.applySubmittedParentSuggestion(ctx, input, proposerID, &result); err != nil {
 		return result, err
 	}
@@ -332,20 +336,24 @@ func (s *DictionaryService) validateSuggestionPost(
 	return post, nil
 }
 
-func validateSubmittedCanteen(ctx context.Context, canteenID *uint64) error {
-	if canteenID == nil {
-		return nil
+func (s *DictionaryService) resolveSubmittedCanteen(
+	ctx context.Context,
+	canteenCode *string,
+) (*uint64, error) {
+	if canteenCode == nil {
+		return nil, nil
 	}
-	if *canteenID == 0 {
-		return apierr.InvalidField(
-			"parent_canteen_id", apierr.FieldInvalidFormat, "parent_canteen_id 必须是正整数",
+	code := strings.TrimSpace(*canteenCode)
+	if code == "" {
+		return nil, apierr.InvalidField(
+			"parent_canteen_code", apierr.FieldRequired, "parent_canteen_code 不能为空",
 		)
 	}
-	canteen, err := repository.DictionaryByID[model.Canteen](ctx, *canteenID)
-	if err != nil || !canteen.IsActive {
-		return apierr.NotFound(apierr.BizDictItemNotFound, "父餐厅")
+	canteen, err := s.posts.FindActiveCanteenByCode(ctx, code)
+	if err != nil {
+		return nil, dictionaryError(err, "父餐厅编码")
 	}
-	return nil
+	return &canteen.ID, nil
 }
 
 func (s *DictionaryService) applySubmittedParentSuggestion(
@@ -370,14 +378,15 @@ func (s *DictionaryService) applySubmittedParentSuggestion(
 	case model.SuggestionStatusRejected:
 		return apierr.Conflict(apierr.BizSuggestionClosed, "父餐厅提议已被驳回")
 	case model.SuggestionStatusPending:
-		if input.ParentCanteenID != nil {
+		if result.ParentCanteenID != nil {
 			return apierr.InvalidField(
-				"parent_canteen_id", apierr.FieldConflict, "父餐厅提议待审时不能提前指定 parent_canteen_id",
+				"parent_canteen_code", apierr.FieldConflict,
+				"父餐厅提议待审时不能提前指定 parent_canteen_code",
 			)
 		}
 		return nil
 	case model.SuggestionStatusApproved:
-		return applyApprovedSubmittedParent(input.ParentCanteenID, parent, result)
+		return applyApprovedSubmittedParent(result.ParentCanteenID, parent, result)
 	default:
 		return apierr.Internal(errors.New("未知父餐厅提议状态"))
 	}
@@ -393,7 +402,7 @@ func applyApprovedSubmittedParent(
 	}
 	if requestedCanteenID != nil && *requestedCanteenID != *parent.ResultingCanteenID {
 		return apierr.InvalidField(
-			"parent_canteen_id", apierr.FieldConflict, "parent_canteen_id 与父提议产出不一致",
+			"parent_canteen_code", apierr.FieldConflict, "parent_canteen_code 与父提议产出不一致",
 		)
 	}
 	result.ParentCanteenID = parent.ResultingCanteenID
