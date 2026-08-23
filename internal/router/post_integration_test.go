@@ -459,6 +459,20 @@ func testPostPayloadBoundaries(
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizImageNotApproved, response.ErrorCode)
 
+	purgedImage := fixtures.CreateImage(author.User.ID)
+	purgedImage.PublicURL = model.PurgedImageURL(purgedImage.ID)
+	purgedImage.Status = model.ImageStatusRetired
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", purgedImage.ID).Updates(map[string]any{
+		"public_url": purgedImage.PublicURL, "status": purgedImage.Status,
+	}).Error)
+	purgedImagePayload := sharePostPayload(fixture, "引用已回收图片", []string{})
+	purgedImagePayload["images"] = []string{purgedImage.PublicURL}
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, "/api/v2/posts", purgedImagePayload, author.Token,
+	)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizImageNotFound, response.ErrorCode)
+
 	images := make([]model.ImageAsset, 9)
 	imageURLs := make([]string, 9)
 	for index := range images {
@@ -1417,7 +1431,7 @@ func completePostImage(
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var completed service.UploadCompleteResult
 	decodeData(t, response, &completed)
-	require.Equal(t, model.ImageStatusReady, completed.Status)
+	require.Equal(t, model.ImageStatusPending, completed.Status)
 	return completed
 }
 

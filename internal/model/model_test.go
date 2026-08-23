@@ -25,6 +25,13 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 )
 
+func TestPurgedImageURLRoundTrip(t *testing.T) {
+	value := model.PurgedImageURL(42)
+	require.Equal(t, "urn:danshi:image-asset:42:retired", value)
+	require.True(t, model.IsPurgedImageURL(value))
+	require.False(t, model.IsPurgedImageURL("https://img.example.test/42.jpg"))
+}
+
 func TestModelsAgainstPostgresSchema(t *testing.T) {
 	gdb := openMigratedPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

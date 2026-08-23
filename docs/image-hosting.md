@@ -78,14 +78,16 @@ Presign 响应刻意不返回 `object_key` 和 `public_url`，避免客户端在
 服务端在持有资产行锁时：
 
 1. 验证上传记录存在且属于当前用户；
-2. 验证状态仍为 `pending`；
+2. 验证状态仍为 `pending` 且 `public_url` 为空（尚未 complete）；
 3. 对 COS 执行 HEAD；
 4. 验证对象存在、实际大小为正、未超过上限且等于申请值；
 5. 构造配置域名下的公开 URL；
-6. 把资产标记为 `ready`；
+6. 写入公开 URL 和实际大小，引用状态继续保持 `pending`；
 7. 提交图片审核任务。
 
-成功响应包含 `upload_id`、`object_key`、`public_url` 和 `status=ready`。
+成功响应包含 `upload_id`、`object_key`、`public_url` 和 `status=pending`。这里的
+`pending` 表示尚未被业务内容引用，不表示对象上传未完成；上传完成由非空
+`public_url` 表达。
 
 如果实际大小不符，服务端删除 COS 对象并返回冲突。重复 complete 或已结束记录返回冲突；操作他人的上传记录返回 403。
 
@@ -95,21 +97,28 @@ Presign 响应刻意不返回 `object_key` 和 `public_url`，避免客户端在
 
 - 单帖最多 9 张；
 - 客户端通过 `public_url` 提交，服务端反查真实 `image_assets`；
-- 每张图必须属于帖子作者、用途为 `post`、状态为 `ready`；
+- 每张图必须已 complete、尚未被回收、属于帖子作者且用途为 `post`；
 - `post_images.position` 从 0 开始保序；
 - 数据库真正保存 `image_asset_id` 外键，不在帖子中保存 URL 副本。
+
+帖子允许在图片审核仍为 `pending/review` 时建立引用；插入 `post_images` 后，数据库
+触发器把资产激活为 `ready`，帖子本身则保持 `pending`，直到文本与全部图片均为
+`pass` 才能公开。
 
 ### 3.2 头像
 
 - 注册不能设置头像；
 - 资料更新时可提交头像公开 URL；
-- 服务端反查资产并要求上传者是本人、用途为 `avatar`、状态为 `ready`；
+- 服务端反查资产并要求图片已 complete、未被回收、上传者是本人、用途为
+  `avatar`，且审核状态已经是 `pass`；
 - `users.avatar_image_asset_id` 保存外键，读取时 join 得到公开 URL；
+- 审核仍为 `pending/review` 时换绑返回 `image_not_approved`，当前旧头像保持不变；
+- 绑定成功后，数据库触发器把新头像资产激活为 `ready`；
 - 解除最后引用后旧头像资产退役。
 
 ### 3.3 审核与发布
 
-资产 `status=ready` 表示对象上传完成，不等于内容审核通过。审核状态独立记录。
+资产 `status=ready` 表示当前存在业务引用，不等于内容审核通过。审核状态独立记录。
 
 允许帖子在图片审核进行中建立引用，以免异步审核阻断表单提交；但帖子进入 `approved` 前必须在同一事务确认所有引用图片审核通过。
 
@@ -121,9 +130,13 @@ ACL 切换与 CDN 刷新都在数据库事务提交后执行。它们失败时�
 
 | 状态 | 含义 |
 |---|---|
-| `pending` | 已创建上传记录，尚未完成对象验证 |
-| `ready` | 对象存在且大小验证通过，可建立用途匹配的引用 |
-| `retired` | 不再被使用或上传已过期；数据库行保留 |
+| `pending` | 尚未被任何帖子或头像引用；可能仍在直传，也可能已 complete 等待引用 |
+| `ready` | 当前至少存在一条帖子或头像引用 |
+| `retired` | 曾被引用后已解除全部引用，或无引用对象已被回收；数据库行保留 |
+
+上传完成与否不再复用 `status` 表达：`public_url=''` 表示尚未 complete，非空 HTTPS
+URL 表示对象已经验证。回收已删除对象时，原公开 URL 会替换成唯一的内部墓碑 URN，
+避免并发等待中的引用写入继续匹配一个已经不存在的对象。
 
 图片行不走普通 DELETE。对象与数据库记录的清理顺序必须显式控制。
 
@@ -132,6 +145,7 @@ ACL 切换与 CDN 刷新都在数据库事务提交后执行。它们失败时�
 数据库触发器负责：
 
 - 新增 `post_images` 引用时激活资产；
+- 绑定新头像时激活资产；
 - 删除帖子图片的最后引用时退役资产；
 - 头像换绑后，在无其他引用时退役旧资产。
 
@@ -141,16 +155,29 @@ ACL 切换与 CDN 刷新都在数据库事务提交后执行。它们失败时�
 
 ### 4.2 过期 pending
 
-用户申请 presign 后可能不上传或不调用 complete。回收流程：
+用户申请 presign 后可能不上传、不调用 complete，或 complete 后始终没有建立业务引用。
+这些行都会保持 `pending`，回收流程为：
 
 1. 按创建时间查找超时 pending；
 2. `FOR UPDATE SKIP LOCKED` 锁定一批记录；
-3. 删除对应 COS 对象，删除操作幂等；
-4. 把数据库状态设为 `retired`。
+3. 再次确认没有帖子或头像引用；
+4. 删除对应 COS 对象，删除操作幂等；
+5. 把数据库状态设为 `retired`，并把失效公开 URL 替换为唯一墓碑 URN。
 
 `SKIP LOCKED` 避免与正在执行 complete 的事务争用，从而防止对象刚被 complete 验证又被清理任务删除。
 
-当前仓库提供 `UploadService.ExpirePending` 领域能力，但没有独立的定时清理命令或调度配置。部署方在接入调度前必须提供可观测、可重试且有 dry-run/批次边界的入口，不能把旧运行时命令写进操作手册。
+仓库提供一次性命令 `danshi-jobs expire-pending`，由 cron、Kubernetes CronJob 等外部
+调度器触发。过期时长没有业务默认值，调用方必须显式给出；上线前先 dry-run：
+
+```bash
+danshi-jobs expire-pending -older-than 24h -batch-size 100 -dry-run
+danshi-jobs expire-pending -older-than 24h -batch-size 100
+```
+
+命令每次只处理一个有界批次。多个实例并发运行时，`FOR UPDATE SKIP LOCKED` 会把
+候选分片，避免重复删除；单个 COS 删除失败会保留该行 `pending` 并继续处理同批其他
+对象。结束时结构化日志输出 `selected`、`retired`、`failed`、`dry_run` 与耗时；存在
+删除失败时，成功项仍提交，进程以非零状态退出，供外部调度器告警和重试。
 
 ## 5. 物理清理
 

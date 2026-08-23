@@ -64,7 +64,7 @@ bench-db: ## 运行需要 PostgreSQL testcontainer 的端到端基准
 	go test -run '^$$' -bench '^BenchmarkAssertCurrentMatchesLatest$$' -benchmem ./internal/service
 
 .PHONY: build
-build: build-server build-migrate ## 构建两个二进制
+build: build-server build-migrate build-jobs ## 构建三个二进制
 
 .PHONY: build-server
 build-server:
@@ -74,10 +74,15 @@ build-server:
 build-migrate:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN)/danshi-migrate ./cmd/danshi-migrate
 
+.PHONY: build-jobs
+build-jobs:
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN)/danshi-jobs ./cmd/danshi-jobs
+
 .PHONY: docker
-docker: ## 构建两个镜像
+docker: ## 构建三个镜像
 	docker build -f deploy/docker/Dockerfile --target server  -t danshi-server:dev  .
 	docker build -f deploy/docker/Dockerfile --target migrate -t danshi-migrate:dev .
+	docker build -f deploy/docker/Dockerfile --target jobs    -t danshi-jobs:dev    .
 
 .PHONY: schema-test
 schema-test: ## 在隔离容器里跑 schema 回归（两条独立链路）

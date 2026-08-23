@@ -391,7 +391,7 @@ func validateAndOrderImages(
 	ids := make([]uint64, 0, len(urls))
 	for _, url := range urls {
 		asset, exists := byURL[url]
-		if !exists {
+		if !exists || model.IsPurgedImageURL(asset.PublicURL) {
 			return nil, nil, apierr.NotFound(apierr.BizImageNotFound, "图片")
 		}
 		if asset.UploaderID == nil || *asset.UploaderID != authorID {

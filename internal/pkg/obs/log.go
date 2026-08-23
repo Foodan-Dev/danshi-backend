@@ -17,6 +17,11 @@ import (
 // 生产用 JSON（便于采集），开发用文本（便于人读）。
 // 一律输出到 stdout——容器环境里日志归集是编排层的事，进程不该自己写文件。
 func NewLogger(cfg config.Config) *slog.Logger {
+	return NewServiceLogger(cfg, "danshi-server")
+}
+
+// NewServiceLogger 为独立进程创建带稳定 service 标签的结构化日志器。
+func NewServiceLogger(cfg config.Config, service string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)}
 
 	var h slog.Handler
@@ -27,7 +32,7 @@ func NewLogger(cfg config.Config) *slog.Logger {
 	}
 	h = correlationHandler{Handler: h}
 	return slog.New(h).With(
-		slog.String("service", "danshi-server"),
+		slog.String("service", service),
 		slog.String("profile", string(cfg.Profile)),
 	)
 }

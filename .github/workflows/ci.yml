@@ -54,15 +54,18 @@ jobs:
         run: |
           server=$(stat -c%s bin/danshi-server)
           migrate=$(stat -c%s bin/danshi-migrate)
-          echo "server=$((server/1024/1024))MB migrate=$((migrate/1024/1024))MB"
+          jobs=$(stat -c%s bin/danshi-jobs)
+          echo "server=$((server/1024/1024))MB migrate=$((migrate/1024/1024))MB jobs=$((jobs/1024/1024))MB"
           # 阈值见 docs/architecture.md 的容器与发布章节（按实测设定）
           [ "$server"  -le $((32*1024*1024)) ] || { echo "danshi-server 二进制超过 32MB"; exit 1; }
           [ "$migrate" -le $((15*1024*1024)) ] || { echo "danshi-migrate 二进制超过 15MB"; exit 1; }
+          [ "$jobs"    -le $((30*1024*1024)) ] || { echo "danshi-jobs 二进制超过 30MB"; exit 1; }
       - uses: docker/setup-buildx-action@v3
-      - name: 构建两个镜像
+      - name: 构建三个镜像
         run: |
           docker build -f deploy/docker/Dockerfile --target server  -t danshi-server:ci  .
           docker build -f deploy/docker/Dockerfile --target migrate -t danshi-migrate:ci .
+          docker build -f deploy/docker/Dockerfile --target jobs    -t danshi-jobs:ci    .
 
   # 运行时验证：起真实 PG + 两个容器，验证迁移与版本门禁的启动顺序
   runtime:

@@ -68,7 +68,8 @@ INSERT INTO user_roles (user_id,role,granted_by) VALUES (3,'moderator',3);
 INSERT INTO user_role_records (user_id,role,action,actor_id) VALUES (3,'moderator','grant',3);
 INSERT INTO image_assets (id,uploader_id,purpose,object_key,public_url,content_type,status) VALUES
  (101,1,'post','posts/a/1.jpg','https://img/1.jpg','image/jpeg','ready'),
- (102,1,'avatar','avatars/a/1.jpg','https://img/av.jpg','image/jpeg','ready');
+ (102,1,'avatar','avatars/a/1.jpg','https://img/av.jpg','image/jpeg','ready'),
+ (103,1,'avatar','avatars/a/2.jpg','https://img/av2.jpg','image/jpeg','pending');
 UPDATE users SET avatar_image_asset_id=102 WHERE id=1;
 INSERT INTO canteen_windows (id,canteen_id,name) VALUES
  (201,(SELECT id FROM canteens WHERE code='canteen-nanqu'),'一楼麻辣烫'),
@@ -344,6 +345,16 @@ DO $$ BEGIN
   PERFORM _assert((SELECT status FROM image_assets WHERE id=101)='ready', '重新引用后资产复活为 ready');
   PERFORM _assert_rejects($q$UPDATE post_images SET image_asset_id=102 WHERE post_id=1001 AND position=0$q$,
     ARRAY['23001'], '关联键不可 UPDATE（换图须删除后重建）');
+END $$;
+
+-- 头像资产：换绑时激活新引用，并在最后引用解除后退役旧资产
+DO $$ BEGIN
+  UPDATE users SET avatar_image_asset_id=103 WHERE id=1;
+  PERFORM _assert((SELECT status FROM image_assets WHERE id=102)='retired', '头像换绑后旧资产退役');
+  PERFORM _assert((SELECT status FROM image_assets WHERE id=103)='ready', 'pending 头像建立引用后激活为 ready');
+  UPDATE users SET avatar_image_asset_id=102 WHERE id=1;
+  PERFORM _assert((SELECT status FROM image_assets WHERE id=103)='retired', '头像反向换绑后新旧状态收敛');
+  PERFORM _assert((SELECT status FROM image_assets WHERE id=102)='ready', '退役头像重新引用后复活为 ready');
 END $$;
 
 \echo '########## 1d-2. 封禁：限时 / 永久 / 自动到期 ##########'
@@ -1039,7 +1050,7 @@ BEGIN
   FOREACH want IN ARRAY ARRAY[
     'trg_post_likes_sync_count','trg_favorites_sync_count','trg_comment_likes_sync_count','trg_comments_sync_counts',
     'trg_post_likes_keys_immutable','trg_favorites_keys_immutable','trg_comment_likes_keys_immutable','trg_comments_keys_immutable',
-    'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_image_assets_forbid_delete'
+    'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_users_activate_avatar_asset','trg_image_assets_forbid_delete'
     ,'trg_user_ban_records_immutable','trg_user_ban_records_forbid_delete'
     ,'trg_user_role_records_immutable','trg_user_role_records_forbid_delete'
   ] LOOP

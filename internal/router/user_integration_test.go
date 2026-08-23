@@ -206,6 +206,9 @@ func testUserProfileUpdate(
 	t.Helper()
 	oldAvatar := createAvatarAsset(t, gdb, owner.User.ID, "user-old-avatar")
 	newAvatar := createAvatarAsset(t, gdb, owner.User.ID, "user-new-avatar")
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", newAvatar.ID).
+		Update("status", model.ImageStatusPending).Error)
+	newAvatar.Status = model.ImageStatusPending
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", owner.User.ID).
 		Update("avatar_image_asset_id", oldAvatar.ID).Error)
 
@@ -554,9 +557,18 @@ func testUserAvatarSafety(
 	blocked := fixtures.CreateImage(owner.User.ID, avatarImage, func(image *model.ImageAsset) {
 		image.Moderation = model.ModerationStatusBlock
 	})
+	review := fixtures.CreateImage(owner.User.ID, avatarImage, func(image *model.ImageAsset) {
+		image.Moderation = model.ModerationStatusReview
+	})
 	retired := fixtures.CreateImage(owner.User.ID, avatarImage, func(image *model.ImageAsset) {
 		image.Status = model.ImageStatusRetired
 	})
+	purged := fixtures.CreateImage(owner.User.ID, avatarImage)
+	purged.PublicURL = model.PurgedImageURL(purged.ID)
+	purged.Status = model.ImageStatusRetired
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", purged.ID).Updates(map[string]any{
+		"public_url": purged.PublicURL, "status": purged.Status,
+	}).Error)
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", owner.User.ID).
 		Update("avatar_image_asset_id", initial.ID).Error)
 	engine := authTestEngine(cfg, database, sender)
@@ -569,7 +581,9 @@ func testUserAvatarSafety(
 	}{
 		{name: "foreign avatar", asset: foreign, status: http.StatusForbidden, errorCode: apierr.BizImageNotOwned},
 		{name: "blocked avatar", asset: blocked, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
+		{name: "review avatar", asset: review, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
 		{name: "retired avatar", asset: retired, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
+		{name: "purged avatar", asset: purged, status: http.StatusConflict, errorCode: apierr.BizImageNotApproved},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -581,6 +595,10 @@ func testUserAvatarSafety(
 			require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
 			require.Equal(t, initial.ID, *stored.AvatarImageAssetID,
 				"失败换绑不得修改当前头像")
+			var current model.ImageAsset
+			require.NoError(t, gdb.First(&current, initial.ID).Error)
+			require.Equal(t, model.ImageStatusReady, current.Status,
+				"待审头像被拒时旧头像必须继续保持公开引用")
 		})
 	}
 

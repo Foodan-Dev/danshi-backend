@@ -1,6 +1,7 @@
-# 两个 target 对应两个镜像（D11）：
+# 三个 target 对应三个镜像（D11）：
 #   server  常驻 HTTP 服务
 #   migrate 一次性迁移任务
+#   jobs    由外部调度器触发的一次性后台任务
 # 拆开是为了滚动更新时不会每个副本都想跑一次迁移。
 
 # ---------- 依赖缓存层 ----------
@@ -21,7 +22,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -o /out/danshi-server ./cmd/danshi-server && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/danshi-migrate ./cmd/danshi-migrate
+      -o /out/danshi-migrate ./cmd/danshi-migrate && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/danshi-jobs ./cmd/danshi-jobs
 
 # ---------- server 镜像 ----------
 # distroless/static：没有 shell、没有包管理器、没有 libc，攻击面最小。
@@ -39,3 +43,9 @@ FROM gcr.io/distroless/static-debian12:nonroot AS migrate
 COPY --from=build /out/danshi-migrate /danshi-migrate
 USER nonroot:nonroot
 ENTRYPOINT ["/danshi-migrate"]
+
+# ---------- jobs 镜像 ----------
+FROM gcr.io/distroless/static-debian12:nonroot AS jobs
+COPY --from=build /out/danshi-jobs /danshi-jobs
+USER nonroot:nonroot
+ENTRYPOINT ["/danshi-jobs"]

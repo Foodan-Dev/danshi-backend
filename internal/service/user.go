@@ -416,7 +416,9 @@ func (s *UserService) resolveAvatar(
 	if selected.Purpose != model.ImagePurposeAvatar {
 		return nil, apierr.BadRequest(apierr.BizImagePurposeWrong, "图片用途不是头像")
 	}
-	if selected.Status != model.ImageStatusReady || selected.Moderation == model.ModerationStatusBlock {
+	if selected.PublicURL != *avatarURL || model.IsPurgedImageURL(selected.PublicURL) ||
+		(selected.Status != model.ImageStatusPending && selected.Status != model.ImageStatusReady) ||
+		selected.Moderation != model.ModerationStatusPass {
 		return nil, apierr.Conflict(apierr.BizImageNotApproved, "头像图片尚不可引用")
 	}
 	return newID, nil

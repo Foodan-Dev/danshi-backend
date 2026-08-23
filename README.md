@@ -213,10 +213,11 @@ make openapi
 | `make openapi` | 检查 OpenAPI 覆盖、错误码和文件漂移 | 否 |
 | `make openapi-generate` | 重新生成 `api/openapi.json` | 否 |
 | `make cover` | 生成内部包覆盖率并输出总覆盖率 | 是 |
-| `make build` | 构建 server 和 migrate 两个二进制 | 否 |
+| `make build` | 构建 server、migrate 和 jobs 三个二进制 | 否 |
 | `make build-server` | 只构建 `bin/danshi-server` | 否 |
 | `make build-migrate` | 只构建 `bin/danshi-migrate` | 否 |
-| `make docker` | 构建 server 和 migrate 两个镜像 | 是 |
+| `make build-jobs` | 只构建 `bin/danshi-jobs` | 否 |
+| `make docker` | 构建 server、migrate 和 jobs 三个镜像 | 是 |
 | `make schema-test` | 在隔离 PostgreSQL 18 中验证 up、down、约束与断言可失败性 | 是 |
 | `make clean` | 删除 `bin/` 和 `coverage.out` | 否 |
 
@@ -254,6 +255,7 @@ go run ./cmd/danshi-migrate -cmd version
 ├── api/                    # OpenAPI 生成物与契约资料
 ├── cmd/
 │   ├── danshi-migrate/     # 独立迁移执行器
+│   ├── danshi-jobs/        # 外部调度器触发的一次性后台任务
 │   ├── danshi-server/      # HTTP 服务
 │   └── openapi/            # OpenAPI 生成与漂移检查
 ├── docs/                   # 产品、架构、开发与运维文档的唯一真源

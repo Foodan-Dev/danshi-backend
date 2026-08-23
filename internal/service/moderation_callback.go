@@ -285,7 +285,7 @@ func validateCallbackAsset(
 		if callback.ObjectKey != "" && callback.ObjectKey != assets[i].ObjectKey {
 			return nil, apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对象与上传记录不一致")
 		}
-		if assets[i].Status == model.ImageStatusPending || assets[i].PublicURL == "" {
+		if assets[i].PublicURL == "" || model.IsPurgedImageURL(assets[i].PublicURL) {
 			return nil, apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对应的上传尚未完成")
 		}
 		return &assets[i], nil

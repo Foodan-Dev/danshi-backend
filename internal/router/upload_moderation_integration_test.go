@@ -116,6 +116,10 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 		testCompleteExpiryRace(t, database, storage, author.User.ID)
 	})
 
+	t.Run("expiry workers partition batches and isolate object failures", func(t *testing.T) {
+		testConcurrentExpiryWorkers(t, gdb, database, storage, author.User.ID)
+	})
+
 	t.Run("manual review appends and supersedes machine record", func(t *testing.T) {
 		testManualReviewIsAppendOnly(t, gdb, database, author.User.ID)
 	})
@@ -171,6 +175,7 @@ func testImageCallbackBeforePostCreation(
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	var completed service.UploadCompleteResult
 	decodeData(t, response, &completed)
+	require.Equal(t, model.ImageStatusPending, completed.Status)
 
 	callbackBody := map[string]any{
 		"EventName": "ReviewImage",
@@ -194,11 +199,14 @@ func testImageCallbackBeforePostCreation(
 
 	var asset model.ImageAsset
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
+	require.Equal(t, model.ImageStatusPending, asset.Status)
 	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
 	payload := sharePostPayload(fixture, "图片先审完再建帖", []string{"早回调"})
 	payload["images"] = []string{completed.PublicURL}
 	post := createPost(t, engine, author.Token, payload)
 	require.Equal(t, model.PostStatusApproved, post.Status)
+	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
+	require.Equal(t, model.ImageStatusReady, asset.Status)
 }
 
 func tencentPending(jobID string) testutil.ImageModerationOutcome {
@@ -316,6 +324,9 @@ func testUploadBoundaries(
 	moderationCalls := len(imageModerator.ImageCalls())
 	status, response, _ = performJSON(t, engine, http.MethodPost, path, nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
+	var completed service.UploadCompleteResult
+	decodeData(t, response, &completed)
+	require.Equal(t, model.ImageStatusPending, completed.Status)
 	status, response, _ = performJSON(t, engine, http.MethodPost, path, nil, author.Token)
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizUploadClosed, response.ErrorCode)
@@ -328,6 +339,10 @@ func testUploadBoundaries(
 	require.Equal(t, apierr.BizUploadNotFound, response.ErrorCode)
 
 	expired := presignImage(t, engine, author.Token, 2048)
+	expiredAt := time.Now().UTC().Add(-2 * time.Hour)
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).
+		Where("id IN ?", []uint64{completed.UploadID, expired.UploadID}).
+		Update("created_at", expiredAt).Error)
 	uploads := service.NewUploadService(
 		storage, imageModerator, service.NewModerationService(
 			service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
@@ -335,13 +350,23 @@ func testUploadBoundaries(
 		cfg.COSMaxImageBytes, cfg.COSPresignTTL(),
 	)
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
-		count, expireErr := uploads.ExpirePending(ctx, time.Now().UTC().Add(time.Hour), 1)
-		if expireErr == nil && count != 1 {
-			return fmt.Errorf("期望回收 1 条过期上传，实际 %d", count)
+		result, expireErr := uploads.ExpirePending(ctx, service.ExpirePendingOptions{
+			Before: time.Now().UTC().Add(-time.Hour), Limit: 2,
+		})
+		if expireErr == nil && (result.Selected != 2 || result.Retired != 2) {
+			return fmt.Errorf("期望领取并回收 2 条过期上传，实际 selected=%d retired=%d",
+				result.Selected, result.Retired)
 		}
 		return expireErr
 	})
 	require.NoError(t, err)
+	var completedOrphan model.ImageAsset
+	require.NoError(t, gdb.First(&completedOrphan, completed.UploadID).Error)
+	require.Equal(t, model.ImageStatusRetired, completedOrphan.Status,
+		"complete 后从未被引用的资产必须可被回收")
+	require.NotEqual(t, completed.PublicURL, completedOrphan.PublicURL,
+		"对象删除后不得保留失效公开 URL")
+	require.True(t, model.IsPurgedImageURL(completedOrphan.PublicURL))
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/v2/uploads/%d/complete", expired.UploadID), nil, author.Token)
 	require.Equal(t, http.StatusConflict, status)
@@ -349,8 +374,9 @@ func testUploadBoundaries(
 	var retired model.ImageAsset
 	require.NoError(t, gdb.First(&retired, expired.UploadID).Error)
 	require.Equal(t, model.ImageStatusRetired, retired.Status)
-	// 当前 schema 的 public_url 全局唯一；回收态仍保留空 URL，因此清理本测试资产，
-	// 避免它影响后续独立 presign 场景。
+	require.True(t, model.IsPurgedImageURL(retired.PublicURL),
+		"对象删除后必须用唯一墓碑值替换失效公开 URL")
+	// 清理本测试资产，避免额外行影响后续独立场景。
 	require.NoError(t, gdb.Exec(
 		"SELECT danshi_purge_image_assets(ARRAY[?::bigint])", retired.ID,
 	).Error)
@@ -641,11 +667,12 @@ func testImageCallbackAccessControl(
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	var completed service.UploadCompleteResult
 	decodeData(t, response, &completed)
-	require.Equal(t, model.ImageStatusReady, completed.Status)
+	require.Equal(t, model.ImageStatusPending, completed.Status)
 	require.Equal(t, lastPresign(t, storage).ObjectKey, completed.ObjectKey)
 
 	var asset model.ImageAsset
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
+	require.Equal(t, model.ImageStatusPending, asset.Status)
 	require.Equal(t, model.ModerationStatusPending, asset.Moderation)
 
 	payload := sharePostPayload(fixture, "图片回调补发布测试", []string{"回调审核"})
@@ -826,6 +853,8 @@ func testCompleteExpiryRace(
 		return presignErr
 	})
 	require.NoError(t, err)
+	require.NoError(t, database.Model(&model.ImageAsset{}).Where("id = ?", presign.UploadID).
+		Update("created_at", time.Now().UTC().Add(-2*time.Hour)).Error)
 
 	releaseDelete := make(chan struct{})
 	deleteCallsBefore := len(storage.DeleteCalls())
@@ -834,9 +863,11 @@ func testCompleteExpiryRace(
 	expireResult := make(chan error, 1)
 	go func() {
 		expireResult <- database.RunInTx(ctx, func(txCtx context.Context) error {
-			count, expireErr := uploads.ExpirePending(txCtx, time.Now().UTC().Add(time.Hour), 1)
-			if expireErr == nil && count != 1 {
-				return fmt.Errorf("期望回收 1 条，实际 %d", count)
+			result, expireErr := uploads.ExpirePending(txCtx, service.ExpirePendingOptions{
+				Before: time.Now().UTC().Add(-time.Hour), Limit: 1,
+			})
+			if expireErr == nil && result.Retired != 1 {
+				return fmt.Errorf("期望回收 1 条，实际 %d", result.Retired)
 			}
 			return expireErr
 		})
@@ -863,6 +894,109 @@ func testCompleteExpiryRace(
 	var asset model.ImageAsset
 	require.NoError(t, database.First(&asset, presign.UploadID).Error)
 	require.Equal(t, model.ImageStatusRetired, asset.Status)
+}
+
+func testConcurrentExpiryWorkers(
+	t *testing.T,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	storage *fakeImageStorage,
+	uploaderID uint64,
+) {
+	t.Helper()
+	createPending := func(suffix string, createdAt time.Time) model.ImageAsset {
+		size := int64(1024)
+		asset := model.ImageAsset{
+			UploaderID: &uploaderID, Purpose: model.ImagePurposePost,
+			ObjectKey:   "expiry/" + suffix + ".jpg",
+			PublicURL:   "https://img.example.test/expiry/" + suffix + ".jpg",
+			ContentType: "image/jpeg", Size: &size, Status: model.ImageStatusPending,
+			Moderation: model.ModerationStatusPass, CreatedAt: createdAt, UpdatedAt: createdAt,
+		}
+		require.NoError(t, gdb.Create(&asset).Error)
+		return asset
+	}
+	uploads := service.NewUploadService(
+		storage, nil, nil, 10*1024*1024, 10*time.Minute,
+	)
+	before := time.Now().UTC().Add(-3 * time.Hour)
+	first := createPending("worker-first", before.Add(-2*time.Hour))
+	second := createPending("worker-second", before.Add(-time.Hour))
+
+	type workerResult struct {
+		expiration service.UploadExpirationResult
+		err        error
+	}
+	runWorker := func(results chan<- workerResult) {
+		var expiration service.UploadExpirationResult
+		err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+			var expireErr error
+			expiration, expireErr = uploads.ExpirePending(ctx, service.ExpirePendingOptions{
+				Before: before, Limit: 1,
+			})
+			return expireErr
+		})
+		results <- workerResult{expiration: expiration, err: err}
+	}
+
+	releaseFirst := make(chan struct{})
+	deleteCallsBefore := len(storage.DeleteCalls())
+	storage.QueueDelete(testutil.StorageDeleteBehavior{Release: releaseFirst})
+	results := make(chan workerResult, 2)
+	go runWorker(results)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.True(t, storage.WaitForDeleteCalls(waitCtx, deleteCallsBefore+1))
+	go runWorker(results)
+	require.True(t, storage.WaitForDeleteCalls(waitCtx, deleteCallsBefore+2),
+		"第二个 worker 应通过 SKIP LOCKED 领取另一条资产")
+	close(releaseFirst)
+	for range 2 {
+		result := <-results
+		require.NoError(t, result.err)
+		require.Equal(t, 1, result.expiration.Selected)
+		require.Equal(t, 1, result.expiration.Retired)
+		require.Empty(t, result.expiration.Failures)
+	}
+	require.ElementsMatch(t, []string{first.ObjectKey, second.ObjectKey},
+		storage.DeleteCalls()[deleteCallsBefore:])
+
+	failureFirst := createPending("failure-first", before.Add(-2*time.Hour))
+	failureSecond := createPending("failure-second", before.Add(-time.Hour))
+	storage.QueueDelete(testutil.StorageDeleteBehavior{Err: errors.New("COS delete unavailable")})
+	var isolated service.UploadExpirationResult
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var expireErr error
+		isolated, expireErr = uploads.ExpirePending(ctx, service.ExpirePendingOptions{
+			Before: before, Limit: 2,
+		})
+		return expireErr
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, isolated.Selected)
+	require.Equal(t, 1, isolated.Retired)
+	require.Len(t, isolated.Failures, 1)
+	require.Equal(t, failureFirst.ID, isolated.Failures[0].ImageAssetID)
+	require.NoError(t, gdb.First(&failureFirst, failureFirst.ID).Error)
+	require.NoError(t, gdb.First(&failureSecond, failureSecond.ID).Error)
+	require.Equal(t, model.ImageStatusPending, failureFirst.Status,
+		"删除失败的对象必须保留 pending 供下次重试")
+	require.Equal(t, model.ImageStatusRetired, failureSecond.Status,
+		"单个对象失败不能回滚同批成功项")
+
+	deleteCallsBefore = len(storage.DeleteCalls())
+	var preview service.UploadExpirationResult
+	err = database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var expireErr error
+		preview, expireErr = uploads.ExpirePending(ctx, service.ExpirePendingOptions{
+			Before: before, Limit: 1, DryRun: true,
+		})
+		return expireErr
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, preview.Selected)
+	require.Zero(t, preview.Retired)
+	require.Len(t, storage.DeleteCalls(), deleteCallsBefore, "dry-run 不得删除对象")
 }
 
 func testManualReviewIsAppendOnly(

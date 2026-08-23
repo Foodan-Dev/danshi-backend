@@ -628,9 +628,13 @@ pending ──► approved
 
 | 状态 | 语义 |
 |---|---|
-| `pending` | 已签发预签名 URL，尚未完成对象校验 |
-| `ready` | 上传完成，可供正确用途的资源引用 |
-| `retired` | 无有效引用或已清理，记录仍保留 |
+| `pending` | 尚无业务引用；对象可能仍在上传，也可能已完成并等待引用 |
+| `ready` | 当前至少存在一条帖子或头像引用 |
+| `retired` | 曾被引用后已解除全部引用，或无引用对象已清理；记录仍保留 |
+
+对象是否完成校验由 `public_url` 是否仍为空表达，不与引用状态混用。建立帖子图片或
+头像引用时由触发器激活为 `ready`；解除最后引用时由触发器退役。过期回收只领取
+无引用的 `pending` 行，并在删除对象后用内部墓碑 URN 替换失效公开 URL。
 
 图片行禁止普通物理删除。受控清除使用独立的 `danshi.allow_image_asset_delete` 事务开关或封装函数。
 
@@ -709,10 +713,14 @@ GitHub Actions 当前包含：
 - lint：gofmt、OpenAPI 漂移与 golangci-lint；
 - test：全包 race 测试；
 - schema：两条独立 schema 回归链路；
-- build：两个二进制、体积门禁和两个镜像构建；
+- build：三个二进制、体积门禁和三个镜像构建；
 - runtime：Compose 启动、探针和统一 404 响应验证。
 
-二进制门禁当前为 server 不超过 32 MiB、migrate 不超过 15 MiB。server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链接成本；migrate 不依赖观测栈，因此保持原阈值。阈值基于实际静态构建；超过阈值时应分析依赖或明确调整文档和门禁，不应静默删除检查。
+二进制门禁当前为 server 不超过 32 MiB、migrate 不超过 15 MiB、jobs 不超过 30 MiB。
+server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链接成本；jobs
+包含数据库与腾讯云 COS 适配器，首次静态构建实测约 27 MiB；migrate 不依赖观测栈，
+因此保持原阈值。阈值基于实际静态构建；超过阈值时应分析依赖或明确调整文档和门禁，
+不应静默删除检查。
 
 ## 20. 可观测性现状
 

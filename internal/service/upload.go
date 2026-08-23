@@ -88,6 +88,27 @@ type UploadCompleteResult struct {
 	Status    model.ImageStatus `json:"status"`
 }
 
+// ExpirePendingOptions 是一次有界回收批次的筛选与执行模式。
+type ExpirePendingOptions struct {
+	Before time.Time
+	Limit  int
+	DryRun bool
+}
+
+// UploadExpirationFailure 记录单个对象删除失败，供调用入口做结构化观测。
+type UploadExpirationFailure struct {
+	ImageAssetID uint64
+	ObjectKey    string
+	Err          error
+}
+
+// UploadExpirationResult 汇总一次回收批次的领取、成功与失败数量。
+type UploadExpirationResult struct {
+	Selected int
+	Retired  int
+	Failures []UploadExpirationFailure
+}
+
 // UploadService 编排 presign、complete、图片送审与过期回收。
 type UploadService struct {
 	storage        ImageStorage
@@ -170,7 +191,7 @@ func (s *UploadService) Complete(
 	if asset.UploaderID == nil || *asset.UploaderID != userID {
 		return nil, apierr.Forbidden(apierr.BizImageNotOwned, "无权操作该上传记录")
 	}
-	if asset.Status != model.ImageStatusPending {
+	if asset.Status != model.ImageStatusPending || asset.PublicURL != "" {
 		return nil, apierr.Conflict(apierr.BizUploadClosed, "上传记录状态已结束")
 	}
 	meta, err := s.storage.HeadObject(ctx, asset.ObjectKey)
@@ -205,32 +226,42 @@ func (s *UploadService) Complete(
 	}
 	return &UploadCompleteResult{
 		UploadID: asset.ID, ObjectKey: asset.ObjectKey, PublicURL: publicURL,
-		Status: model.ImageStatusReady,
+		Status: model.ImageStatusPending,
 	}, nil
 }
 
-// ExpirePending 回收一批过期且尚未完成的上传；被 complete 锁住的行会跳过。
+// ExpirePending 回收一批过期且没有引用的上传；持锁中的 complete/引用写入会被跳过。
+// 单个对象删除失败只进入 Failures，不能阻断同一批次的其他对象。
 func (s *UploadService) ExpirePending(
 	ctx context.Context,
-	before time.Time,
-	limit int,
-) (int, error) {
-	if limit <= 0 {
-		limit = defaultExpiredUploadBatch
+	options ExpirePendingOptions,
+) (UploadExpirationResult, error) {
+	if options.Limit <= 0 {
+		options.Limit = defaultExpiredUploadBatch
 	}
-	assets, err := s.assets.LockExpiredPending(ctx, before, limit)
+	assets, err := s.assets.LockExpiredPending(ctx, options.Before, options.Limit)
 	if err != nil {
-		return 0, apierr.Internal(err)
+		return UploadExpirationResult{}, apierr.Internal(err)
+	}
+	result := UploadExpirationResult{
+		Selected: len(assets), Failures: make([]UploadExpirationFailure, 0),
+	}
+	if options.DryRun {
+		return result, nil
 	}
 	for i := range assets {
 		if err := s.storage.DeleteObject(ctx, assets[i].ObjectKey); err != nil {
-			return 0, storageUnavailable(err)
+			result.Failures = append(result.Failures, UploadExpirationFailure{
+				ImageAssetID: assets[i].ID, ObjectKey: assets[i].ObjectKey, Err: err,
+			})
+			continue
 		}
-		if err := s.assets.Retire(ctx, assets[i].ID); err != nil {
-			return 0, apierr.Internal(err)
+		if err := s.assets.RetirePurged(ctx, assets[i].ID); err != nil {
+			return result, apierr.Internal(err)
 		}
+		result.Retired++
 	}
-	return len(assets), nil
+	return result, nil
 }
 
 func (s *UploadService) validatePresign(
