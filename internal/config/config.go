@@ -58,6 +58,7 @@ type Config struct {
 	COSImageDomain       string `mapstructure:"COS_IMG_DOMAIN"`
 	COSMaxImageBytes     int64  `mapstructure:"COS_MAX_IMAGE_BYTES"`
 	COSPresignTTLS       int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
+	COSPresignGetTTLS    int    `mapstructure:"COS_PRESIGN_GET_TTL_SECONDS"`
 
 	TencentCIBizType        string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
 	TencentCICallbackURL    string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
@@ -89,6 +90,11 @@ func (c Config) DBConnMaxLifetime() time.Duration {
 // COSPresignTTL 返回直传凭证有效期。
 func (c Config) COSPresignTTL() time.Duration {
 	return time.Duration(c.COSPresignTTLS) * time.Second
+}
+
+// COSPresignGetTTL 返回私有图片读取凭证有效期。
+func (c Config) COSPresignGetTTL() time.Duration {
+	return time.Duration(c.COSPresignGetTTLS) * time.Second
 }
 
 // COSConfigured 报告对象存储是否具备完整的运行配置。
@@ -148,17 +154,18 @@ var bindings = map[string]any{
 	"CORS_ALLOW_ORIGINS":     "",
 	"CORS_ALLOW_CREDENTIALS": false,
 
-	"TENCENT_CLOUD_SECRET_ID":  "",
-	"TENCENT_CLOUD_SECRET_KEY": "",
-	"TENCENT_CLOUD_REGION":     "ap-guangzhou",
-	"TENCENT_SES_FROM_EMAIL":   "",
-	"TENCENT_SES_FROM_NAME":    "旦食",
-	"TENCENT_SES_TEMPLATE_ID":  uint64(0),
-	"COS_BUCKET":               "",
-	"COS_REGION":               "ap-shanghai",
-	"COS_IMG_DOMAIN":           "",
-	"COS_MAX_IMAGE_BYTES":      int64(10 * 1024 * 1024),
-	"COS_PRESIGN_TTL_SECONDS":  600,
+	"TENCENT_CLOUD_SECRET_ID":     "",
+	"TENCENT_CLOUD_SECRET_KEY":    "",
+	"TENCENT_CLOUD_REGION":        "ap-guangzhou",
+	"TENCENT_SES_FROM_EMAIL":      "",
+	"TENCENT_SES_FROM_NAME":       "旦食",
+	"TENCENT_SES_TEMPLATE_ID":     uint64(0),
+	"COS_BUCKET":                  "",
+	"COS_REGION":                  "ap-shanghai",
+	"COS_IMG_DOMAIN":              "",
+	"COS_MAX_IMAGE_BYTES":         int64(10 * 1024 * 1024),
+	"COS_PRESIGN_TTL_SECONDS":     600,
+	"COS_PRESIGN_GET_TTL_SECONDS": 3600,
 
 	"TENCENT_CI_BIZ_TYPE":           "",
 	"TENCENT_CI_CALLBACK_URL":       "",

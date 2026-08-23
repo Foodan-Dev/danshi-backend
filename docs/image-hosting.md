@@ -12,7 +12,8 @@
 - `COS_REGION`；
 - `COS_IMG_DOMAIN`；
 - `COS_MAX_IMAGE_BYTES`；
-- `COS_PRESIGN_TTL_SECONDS`。
+- `COS_PRESIGN_TTL_SECONDS`；
+- `COS_PRESIGN_GET_TTL_SECONDS`。
 
 图片审核还需要 `TENCENT_CI_BIZ_TYPE`、`TENCENT_CI_CALLBACK_URL` 和 `MODERATION_CALLBACK_TOKEN`。
 
@@ -91,6 +92,21 @@ Presign 响应刻意不返回 `object_key` 和 `public_url`，避免客户端在
 
 如果实际大小不符，服务端删除 COS 对象并返回冲突。重复 complete 或已结束记录返回冲突；操作他人的上传记录返回 403。
 
+### 2.4 私有图片读取
+
+`GET /api/v2/uploads/{upload_id}` 只允许上传者本人读取自己的已完成、尚未回收图片，返回
+短期 `image_url`；审核状态为 `pending`、`review`、`pass` 或 `block` 都不改变所有权。
+`uploader_id` 因账号注销被置空后，本人路径 fail closed，不会把空值当成任意用户。
+
+具备 `internal/authz` 既有内容审核能力的角色可以通过
+`GET /api/v2/admin/images/{image_asset_id}` 查看单图详情；待人工复核队列中的图片和管理端
+单用户详情中的头像也返回签名 URL。没有新增角色或图片专用权限概念。其他用户拿不到签名
+URL，公开列表与详情仍返回 `PublicURL`，不改变既有内容可见性筛选。
+
+读取签名由 `COS_PRESIGN_GET_TTL_SECONDS` 控制，默认 3600 秒。1 小时足以覆盖审核员在队列
+页面翻页和裁决的常见停留时间，又把 URL 泄露后的无鉴权访问窗口限制在一个较短班次内；
+页面长时间停留超过有效期时应重新请求，不应缓存或持久化完整签名 URL。
+
 ## 3. 业务引用
 
 ### 3.1 帖子图片
@@ -122,7 +138,7 @@ Presign 响应刻意不返回 `object_key` 和 `public_url`，避免客户端在
 
 允许帖子在图片审核进行中建立引用，以免异步审核阻断表单提交；但帖子进入 `approved` 前必须在同一事务确认所有引用图片审核通过。
 
-图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。`block` 结论提交后，对象 ACL 会幂等切换为 `private`；人工复核改判为非 `block` 时再切回 `public-read`。对象不删除，`image_assets.moderation` 仍是唯一审核真源，没有额外的可见性状态列。
+图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。`review` 或 `block` 结论提交后，对象 ACL 会幂等切换为 `private`；人工复核改判为 `pass` 时再切回 `public-read`。对象不删除，`image_assets.moderation` 仍是唯一审核真源，没有额外的可见性状态列。
 
 ACL 切换与 CDN 刷新都在数据库事务提交后执行。它们失败时审核结论仍然保留、回调仍返回成功，并记录带资产 ID 和对象键的错误；同一供应商任务号的重复回调会按数据库中的当前审核状态再次校准 ACL。缓存刷新通过可替换端口隔离，本仓库当前没有装配 EdgeOne `CreatePurgeTask` 运行时实现，部署方在实现接入前必须把该错误日志视为安全告警，并在上线清单中完成边缘缓存刷新能力。
 
@@ -217,7 +233,7 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 | COS 中没有对象 | 409 |
 | 实际大小不匹配 | 删除对象并返回 409 |
 | 审核供应商失败 | 不宣告完整完成，保留可追踪错误原因 |
-| `block` 后 COS ACL 更新失败 | 审核事实提交、回调成功、记录错误；重复回调幂等重试 |
+| `review/block` 后 COS ACL 更新失败 | 审核事实提交、回调成功、记录错误；重复回调幂等重试 |
 | CDN 缓存刷新失败或未装配 | ACL 结果不回滚、记录错误；重复回调幂等重试 |
 
 客户端不能根据中文文案分支，应使用 HTTP 状态和稳定 `error_code`。
@@ -231,7 +247,8 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 - 公开 URL 只通过配置的 HTTPS 域名构造；
 - 回调 URL 使用 HTTPS，并带独立的高强度 callback token；
 - 回调按 provider job ID 幂等；
-- `block` 图片对象使用可逆的私有 ACL，恢复时重新公开；
+- `review/block` 图片对象使用可逆的私有 ACL，改判 `pass` 时重新公开；
+- 私有图片读取签名默认 1 小时有效，完整签名 URL 不进入日志、trace 或持久缓存；
 - 运行身份除上传、HEAD 和清理权限外，还必须具有目标对象的 ACL 修改权限；
 - 用户只能引用本人、用途匹配的资产；
 - trace 与日志不得记录云密钥、完整预签名 URL 或 callback token。

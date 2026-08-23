@@ -45,21 +45,23 @@ type AdminUserFilter struct {
 // AdminUserRecord 是用户主体、头像及统计数据的一次查询结果。
 type AdminUserRecord struct {
 	model.User
-	Roles          pq.StringArray `gorm:"column:roles;type:text[]"`
-	AvatarURL      *string        `gorm:"column:avatar_url"`
-	PostCount      int64
-	LikeCount      int64
-	FavoriteCount  int64
-	FollowerCount  int64
-	FollowingCount int64
+	Roles           pq.StringArray `gorm:"column:roles;type:text[]"`
+	AvatarURL       *string        `gorm:"column:avatar_url"`
+	AvatarObjectKey *string        `gorm:"column:avatar_object_key"`
+	PostCount       int64
+	LikeCount       int64
+	FavoriteCount   int64
+	FollowerCount   int64
+	FollowingCount  int64
 }
 
 // PendingModerationRecord 是待人工复核队列的一行及其可读内容摘要。
 type PendingModerationRecord struct {
 	model.ModerationRecord
-	TargetType string  `gorm:"column:target_type"`
-	TargetID   uint64  `gorm:"column:target_id"`
-	Content    *string `gorm:"column:content"`
+	TargetType     string  `gorm:"column:target_type"`
+	TargetID       uint64  `gorm:"column:target_id"`
+	Content        *string `gorm:"column:content"`
+	ImageObjectKey *string `gorm:"column:image_object_key"`
 }
 
 // FindPostPage 返回管理端帖子页；调用方必须显式决定是否包含软删除行。
@@ -288,7 +290,7 @@ func loadAdminPostImages(ctx context.Context, records []AdminPostRecord) error {
 }
 
 const adminUserColumns = `
-	u.*, avatar.public_url AS avatar_url,
+	u.*, avatar.public_url AS avatar_url, avatar.object_key AS avatar_object_key,
 	ARRAY(SELECT ur.role FROM user_roles AS ur WHERE ur.user_id = u.id ORDER BY ur.role) AS roles,
 	(SELECT count(*) FROM posts AS p
 	 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS post_count,
@@ -301,6 +303,7 @@ const adminUserColumns = `
 
 const pendingModerationColumns = `
 	mr.*,
+	image.object_key AS image_object_key,
 	CASE
 		WHEN mr.post_id IS NOT NULL THEN 'post'
 		WHEN mr.comment_id IS NOT NULL THEN 'comment'

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,12 @@ var ErrMockPublicAccessDenied = errors.New("mock object public access denied")
 
 // ErrMockObjectNotFound 表示 Mock 存储中没有目标对象或公开 URL。
 var ErrMockObjectNotFound = errors.New("mock object not found")
+
+// ErrMockSignedAccessDenied 表示签名 URL 未由 Mock 签发。
+var ErrMockSignedAccessDenied = errors.New("mock signed access denied")
+
+// ErrMockSignedURLExpired 表示签名 URL 已超过有效期。
+var ErrMockSignedURLExpired = errors.New("mock signed URL expired")
 
 // StoredObject 是 Mock 存储中一个可由测试控制的对象。
 type StoredObject struct {
@@ -64,6 +71,17 @@ type StorageAccessCall struct {
 	Public    bool
 }
 
+// StoragePresignGetCall 是一次私有对象读取签名调用。
+type StoragePresignGetCall struct {
+	ObjectKey string
+	TTL       time.Duration
+}
+
+type storageSignedRead struct {
+	objectKey string
+	expiresAt time.Time
+}
+
 // MockImageStorage 是并发安全、可编程的 service.ImageStorage 实现。
 type MockImageStorage struct {
 	mu sync.Mutex
@@ -71,25 +89,29 @@ type MockImageStorage struct {
 	autoMaterialize bool
 	uploadURLBase   string
 	publicURLBase   string
+	presignGetBase  string
 	now             func() time.Time
+	nextSignature   uint64
 
 	objects        map[string]StoredObject
 	privateObjects map[string]bool
 	expectedMD5    map[string]string
 	publicURLs     map[string]string
 	publicURLErrs  map[string]error
+	signedReads    map[string]storageSignedRead
 
 	presignBehaviors []StoragePresignBehavior
 	headBehaviors    []StorageHeadBehavior
 	deleteBehaviors  []StorageDeleteBehavior
 	accessBehaviors  []StorageAccessBehavior
 
-	presignCalls   []service.StoragePresignRequest
-	headCalls      []string
-	deleteCalls    []string
-	accessCalls    []StorageAccessCall
-	publicURLCalls []string
-	signal         callSignal
+	presignCalls    []service.StoragePresignRequest
+	presignGetCalls []StoragePresignGetCall
+	headCalls       []string
+	deleteCalls     []string
+	accessCalls     []StorageAccessCall
+	publicURLCalls  []string
+	signal          callSignal
 }
 
 // NewMockImageStorage 创建默认不自动生成对象的存储 Mock。
@@ -98,14 +120,23 @@ func NewMockImageStorage() *MockImageStorage {
 	return &MockImageStorage{
 		uploadURLBase:  "https://upload.example.test/",
 		publicURLBase:  "https://image.example.test/",
+		presignGetBase: "https://signed.example.test/",
 		now:            func() time.Time { return time.Now().UTC() },
 		objects:        make(map[string]StoredObject),
 		privateObjects: make(map[string]bool),
 		expectedMD5:    make(map[string]string),
 		publicURLs:     make(map[string]string),
 		publicURLErrs:  make(map[string]error),
+		signedReads:    make(map[string]storageSignedRead),
 		signal:         newCallSignal(),
 	}
+}
+
+// SetNow 注入签名时钟。
+func (s *MockImageStorage) SetNow(now func() time.Time) {
+	s.mu.Lock()
+	s.now = now
+	s.mu.Unlock()
 }
 
 // SetAutoMaterialize 控制 presign 是否立即模拟一个完全匹配的已上传对象。
@@ -242,6 +273,32 @@ func (s *MockImageStorage) PresignPut(
 	}, nil
 }
 
+// PresignGet 记录目标对象与 TTL，并生成只允许精确读取的短期 URL。
+func (s *MockImageStorage) PresignGet(
+	_ context.Context,
+	objectKey string,
+	ttl time.Duration,
+) (string, error) {
+	if strings.TrimSpace(objectKey) == "" || ttl <= 0 {
+		return "", errors.New("presign GET 参数无效")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.presignGetCalls = append(s.presignGetCalls, StoragePresignGetCall{
+		ObjectKey: objectKey, TTL: ttl,
+	})
+	s.nextSignature++
+	expiresAt := s.now().UTC().Add(ttl)
+	query := url.Values{
+		"expires":   {strconv.FormatInt(expiresAt.Unix(), 10)},
+		"signature": {strconv.FormatUint(s.nextSignature, 10)},
+	}
+	signedURL := joinObjectURL(s.presignGetBase, objectKey) + "?" + query.Encode()
+	s.signedReads[signedURL] = storageSignedRead{objectKey: objectKey, expiresAt: expiresAt}
+	s.signal.notify()
+	return signedURL, nil
+}
+
 // HeadObject 返回对象存在性/大小，并在已知实际 MD5 不一致时显式失败。
 func (s *MockImageStorage) HeadObject(
 	ctx context.Context,
@@ -367,11 +424,36 @@ func (s *MockImageStorage) ReadPublicURL(publicURL string) (StoredObject, error)
 	return StoredObject{}, ErrMockObjectNotFound
 }
 
+// ReadPresignedURL 模拟任意持有者通过精确签名 URL 读取对象，绕过公开读 ACL。
+func (s *MockImageStorage) ReadPresignedURL(signedURL string) (StoredObject, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	signed, exists := s.signedReads[signedURL]
+	if !exists {
+		return StoredObject{}, ErrMockSignedAccessDenied
+	}
+	if !s.now().UTC().Before(signed.expiresAt) {
+		return StoredObject{}, ErrMockSignedURLExpired
+	}
+	object, exists := s.objects[signed.objectKey]
+	if !exists {
+		return StoredObject{}, ErrMockObjectNotFound
+	}
+	return object, nil
+}
+
 // PresignCalls 返回不可变请求快照。
 func (s *MockImageStorage) PresignCalls() []service.StoragePresignRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]service.StoragePresignRequest{}, s.presignCalls...)
+}
+
+// PresignGetCalls 返回私有对象读取签名调用快照。
+func (s *MockImageStorage) PresignGetCalls() []StoragePresignGetCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]StoragePresignGetCall{}, s.presignGetCalls...)
 }
 
 // HeadCalls 返回 HEAD object key 调用顺序。

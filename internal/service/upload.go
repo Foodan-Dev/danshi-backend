@@ -37,6 +37,7 @@ var purposeDirectories = map[model.ImagePurpose]string{
 // ImageStorage 是对象存储供应商替换边界。
 type ImageStorage interface {
 	PresignPut(ctx context.Context, request StoragePresignRequest) (StorageUploadTicket, error)
+	PresignGet(ctx context.Context, objectKey string, ttl time.Duration) (string, error)
 	HeadObject(ctx context.Context, objectKey string) (StorageObjectMeta, error)
 	DeleteObject(ctx context.Context, objectKey string) error
 	SetObjectPublicAccess(ctx context.Context, objectKey string, public bool) error
@@ -88,11 +89,46 @@ type UploadCompleteResult struct {
 	Status    model.ImageStatus `json:"status"`
 }
 
+// UploadImageView 是上传者本人可见的单张图片及其短期读取地址。
+type UploadImageView struct {
+	UploadID   uint64                 `json:"upload_id"`
+	Purpose    model.ImagePurpose     `json:"purpose"`
+	Status     model.ImageStatus      `json:"status"`
+	Moderation model.ModerationStatus `json:"moderation"`
+	ImageURL   string                 `json:"image_url"`
+}
+
 // ExpirePendingOptions 是一次有界回收批次的筛选与执行模式。
 type ExpirePendingOptions struct {
 	Before time.Time
 	Limit  int
 	DryRun bool
+}
+
+// Image 返回上传者本人可见的单张已上传图片，审核状态不影响所有权访问。
+func (s *UploadService) Image(
+	ctx context.Context,
+	uploadID uint64,
+	userID uint64,
+) (*UploadImageView, error) {
+	asset, err := s.assets.FindByID(ctx, uploadID)
+	if err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizUploadNotFound, "上传记录")
+	}
+	if asset.UploaderID == nil || *asset.UploaderID != userID {
+		return nil, apierr.Forbidden(apierr.BizImageNotOwned, "无权查看该上传记录")
+	}
+	if asset.PublicURL == "" || model.IsPurgedImageURL(asset.PublicURL) {
+		return nil, apierr.Conflict(apierr.BizUploadIncomplete, "图片尚不可读取")
+	}
+	imageURL, err := s.storage.PresignGet(ctx, asset.ObjectKey, s.presignGetTTL)
+	if err != nil {
+		return nil, storageUnavailable(err)
+	}
+	return &UploadImageView{
+		UploadID: asset.ID, Purpose: asset.Purpose, Status: asset.Status,
+		Moderation: asset.Moderation, ImageURL: imageURL,
+	}, nil
 }
 
 // UploadExpirationFailure 记录单个对象删除失败，供调用入口做结构化观测。
@@ -116,6 +152,7 @@ type UploadService struct {
 	moderation     *ModerationService
 	maxImageBytes  int64
 	presignTTL     time.Duration
+	presignGetTTL  time.Duration
 	assets         repository.UploadRepository
 }
 
@@ -126,6 +163,7 @@ func NewUploadService(
 	moderation *ModerationService,
 	maxImageBytes int64,
 	presignTTL time.Duration,
+	presignGetTTL time.Duration,
 ) *UploadService {
 	if storage == nil {
 		storage = UnavailableImageStorage{}
@@ -138,7 +176,7 @@ func NewUploadService(
 	}
 	return &UploadService{
 		storage: storage, imageModerator: imageModerator, moderation: moderation,
-		maxImageBytes: maxImageBytes, presignTTL: presignTTL,
+		maxImageBytes: maxImageBytes, presignTTL: presignTTL, presignGetTTL: presignGetTTL,
 	}
 }
 
@@ -341,6 +379,11 @@ func (UnavailableImageStorage) PresignPut(
 	StoragePresignRequest,
 ) (StorageUploadTicket, error) {
 	return StorageUploadTicket{}, errImageStorageUnconfigured
+}
+
+// PresignGet 拒绝签发伪造的读取凭证。
+func (UnavailableImageStorage) PresignGet(context.Context, string, time.Duration) (string, error) {
+	return "", errImageStorageUnconfigured
 }
 
 // HeadObject 拒绝伪造对象存在。

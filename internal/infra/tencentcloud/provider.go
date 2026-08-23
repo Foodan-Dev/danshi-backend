@@ -115,6 +115,42 @@ func PresignCOSPut(
 	return presigned.String(), nil
 }
 
+// PresignGet 为私有 COS 对象生成短期 GET URL。
+func (p *Provider) PresignGet(ctx context.Context, objectKey string, ttl time.Duration) (string, error) {
+	return PresignCOSGet(
+		ctx, p.bucketURL, p.cfg.TencentSecretID, p.cfg.TencentSecretKey,
+		objectKey, ttl, p.now().UTC(),
+	)
+}
+
+// PresignCOSGet 是可用固定时间独立验证的 COS V5 GET 签名纯函数。
+func PresignCOSGet(
+	ctx context.Context,
+	bucketURL *url.URL,
+	secretID string,
+	secretKey string,
+	objectKey string,
+	ttl time.Duration,
+	startedAt time.Time,
+) (string, error) {
+	if bucketURL == nil || objectKey == "" || ttl <= 0 {
+		return "", errors.New("COS 预签名参数不完整")
+	}
+	client := cos.NewClient(&cos.BaseURL{BucketURL: bucketURL}, nil)
+	end := startedAt.Add(ttl)
+	presigned, err := client.Object.GetPresignedURL(
+		ctx, http.MethodGet, objectKey, secretID, secretKey, ttl,
+		&cos.PresignedURLOptions{AuthTime: &cos.AuthTime{
+			SignStartTime: startedAt, SignEndTime: end,
+			KeyStartTime: startedAt, KeyEndTime: end,
+		}},
+	)
+	if err != nil {
+		return "", err
+	}
+	return presigned.String(), nil
+}
+
 // HeadObject 校验对象是否存在并返回实际大小。
 func (p *Provider) HeadObject(ctx context.Context, objectKey string) (service.StorageObjectMeta, error) {
 	response, err := p.client.Object.Head(ctx, objectKey, nil)

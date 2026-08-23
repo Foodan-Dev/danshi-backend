@@ -101,6 +101,7 @@ func DefaultConfig() appconfig.Config {
 		AllowedEmailDomains:       "fdueat.com,m.fudan.edu.cn,fudan.edu.cn",
 		COSMaxImageBytes:          10 * 1024 * 1024,
 		COSPresignTTLS:            600,
+		COSPresignGetTTLS:         3600,
 		ModerationCallbackToken:   "testing-callback-token",
 	}
 }

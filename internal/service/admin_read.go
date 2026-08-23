@@ -117,8 +117,35 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 			ActorID: record.ActorID, CreatedAt: ptime.Time(record.CreatedAt),
 		})
 	}
-	return &AdminUserDetail{
-		AdminUserView: adminUserView(row, time.Now().UTC()), BanRecords: views,
+	userView := adminUserView(row, time.Now().UTC())
+	if row.AvatarObjectKey != nil {
+		avatarURL, signErr := s.presignImage(ctx, *row.AvatarObjectKey)
+		if signErr != nil {
+			return nil, signErr
+		}
+		userView.AvatarURL = &avatarURL
+	}
+	return &AdminUserDetail{AdminUserView: userView, BanRecords: views}, nil
+}
+
+// Image 返回单张图片资产详情；路由层用既有内容审核能力保护该入口。
+func (s *AdminService) Image(ctx context.Context, imageAssetID uint64) (*AdminImageView, error) {
+	asset, err := s.assets.FindByID(ctx, imageAssetID)
+	if err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizUploadNotFound, "图片")
+	}
+	var imageURL *string
+	if asset.PublicURL != "" && !model.IsPurgedImageURL(asset.PublicURL) {
+		value, signErr := s.presignImage(ctx, asset.ObjectKey)
+		if signErr != nil {
+			return nil, signErr
+		}
+		imageURL = &value
+	}
+	return &AdminImageView{
+		ID: asset.ID, UploaderID: asset.UploaderID, Purpose: asset.Purpose,
+		Status: asset.Status, Moderation: asset.Moderation, ImageURL: imageURL,
+		CreatedAt: ptime.Time(asset.CreatedAt),
 	}, nil
 }
 
@@ -173,16 +200,32 @@ func (s *AdminService) PendingModeration(
 	}
 	records := make([]AdminModerationView, 0, len(rows))
 	for _, row := range rows {
+		content := row.Content
+		if row.ImageObjectKey != nil {
+			imageURL, signErr := s.presignImage(ctx, *row.ImageObjectKey)
+			if signErr != nil {
+				return nil, signErr
+			}
+			content = &imageURL
+		}
 		records = append(records, AdminModerationView{
 			ID: row.ID, TargetType: row.TargetType, TargetID: row.TargetID,
 			Field: row.Field, PostHistoryID: row.PostHistoryID,
 			CommentHistoryID: row.CommentHistoryID, Scene: row.Scene,
 			Provider: row.Provider, ProviderJobID: row.ProviderJobID, Verdict: row.Verdict,
 			Labels: append([]string{}, row.Labels...), Score: row.Score,
-			Content: row.Content, CreatedAt: ptime.Time(row.CreatedAt),
+			Content: content, CreatedAt: ptime.Time(row.CreatedAt),
 		})
 	}
 	return &AdminModerationList{Records: records, Pagination: meta}, nil
+}
+
+func (s *AdminService) presignImage(ctx context.Context, objectKey string) (string, error) {
+	imageURL, err := s.imageStorage.PresignGet(ctx, objectKey, s.signedImageTTL)
+	if err != nil {
+		return "", storageUnavailable(err)
+	}
+	return imageURL, nil
 }
 
 func adminPostList(

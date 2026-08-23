@@ -12,6 +12,7 @@ import (
 const (
 	defaultMaxImageBytes = int64(10 * 1024 * 1024)
 	defaultPresignTTL    = 10 * time.Minute
+	defaultPresignGetTTL = time.Hour
 )
 
 func withDefaultDomainDeps(deps Deps) Deps {
@@ -89,4 +90,12 @@ func uploadLimits(deps Deps) (int64, time.Duration) {
 		presignTTL = defaultPresignTTL
 	}
 	return maxImageBytes, presignTTL
+}
+
+func signedImageTTL(deps Deps) time.Duration {
+	ttl := deps.Config.COSPresignGetTTL()
+	if ttl <= 0 {
+		ttl = defaultPresignGetTTL
+	}
+	return ttl
 }

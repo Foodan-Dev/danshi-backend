@@ -13,6 +13,7 @@ func registerUpload(api *route.RouterGroup, deps Deps) {
 	moderationService := newModerationService(deps)
 	uploadService := service.NewUploadService(
 		deps.ImageStorage, deps.ImageModerator, moderationService, maxImageBytes, presignTTL,
+		signedImageTTL(deps),
 	)
 	uploadHandler := handler.NewUpload(uploadService)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
@@ -20,5 +21,6 @@ func registerUpload(api *route.RouterGroup, deps Deps) {
 	uploads := api.Group("/uploads")
 
 	uploads.POST("/presign", requireAuth, uploadHandler.Presign)
+	uploads.GET("/:upload_id", requireAuth, uploadHandler.Image)
 	uploads.POST("/:upload_id/complete", requireAuth, uploadHandler.Complete)
 }

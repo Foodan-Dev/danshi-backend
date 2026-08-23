@@ -15,6 +15,8 @@ func registerAdmin(api *route.RouterGroup, deps Deps) {
 		afterCommitImageAccessController{
 			storage: deps.ImageStorage, purger: deps.ImageCachePurger, log: deps.Log,
 		},
+		deps.ImageStorage,
+		signedImageTTL(deps),
 	))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
@@ -33,6 +35,7 @@ func registerAdmin(api *route.RouterGroup, deps Deps) {
 	admin.GET("/posts", requireAuth, requireManageContent, adminHandler.Posts)
 	admin.DELETE("/posts/:post_id", requireAuth, requireManageContent, adminHandler.DeletePost)
 	admin.PUT("/posts/:post_id/restore", requireAuth, requireManageContent, adminHandler.RestorePost)
+	admin.GET("/images/:image_asset_id", requireAuth, requireReviewContent, adminHandler.Image)
 
 	admin.GET("/users", requireAuth, requireListUsers, adminHandler.Users)
 	admin.GET("/users/:user_id", requireAuth, requireViewUserEvidence, adminHandler.User)

@@ -13,6 +13,16 @@ import (
 // UploadRepository 是上传资产生命周期的持久化边界。
 type UploadRepository struct{}
 
+// FindByID 返回单张图片资产，不锁行。
+func (UploadRepository) FindByID(ctx context.Context, imageAssetID uint64) (*model.ImageAsset, error) {
+	var asset model.ImageAsset
+	err := db.FromContext(ctx).Where("id = ?", imageAssetID).First(&asset).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &asset, nil
+}
+
 // Create 创建尚未完成直传的资产行。
 func (UploadRepository) Create(ctx context.Context, asset *model.ImageAsset) error {
 	return db.FromContext(ctx).Create(asset).Error

@@ -97,8 +97,8 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
-	require.Len(t, engine.Routes(), 82, "应注册 80 条业务路由与 2 条 runtime 路由")
-	operations := make([]string, 0, 17)
+	require.Len(t, engine.Routes(), 84, "应注册 82 条业务路由与 2 条 runtime 路由")
+	operations := make([]string, 0, 18)
 	for _, route := range engine.Routes() {
 		if isAdminDomainPath(route.Path) {
 			operations = append(operations, route.Method+" "+route.Path)
@@ -110,6 +110,7 @@ func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 		"GET /api/v2/admin/posts",
 		"DELETE /api/v2/admin/posts/:post_id",
 		"PUT /api/v2/admin/posts/:post_id/restore",
+		"GET /api/v2/admin/images/:image_asset_id",
 		"GET /api/v2/admin/users",
 		"GET /api/v2/admin/users/:user_id",
 		"GET /api/v2/admin/users/:user_id/posts",
@@ -127,6 +128,7 @@ func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 
 func isAdminDomainPath(path string) bool {
 	return strings.HasPrefix(path, "/api/v2/admin/posts") ||
+		strings.HasPrefix(path, "/api/v2/admin/images") ||
 		strings.HasPrefix(path, "/api/v2/admin/users") ||
 		path == "/api/v2/admin/admins" || path == "/api/v2/admin/super-admins" ||
 		strings.HasPrefix(path, "/api/v2/admin/comments") ||
@@ -151,6 +153,7 @@ func testAdminRoleGuards(t *testing.T, engine *server.Hertz, actors adminActors)
 		{name: "posts", method: http.MethodGet, path: "/api/v2/admin/posts", moderator: true, allowedStatus: http.StatusOK},
 		{name: "delete post", method: http.MethodDelete, path: "/api/v2/admin/posts/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
 		{name: "restore post", method: http.MethodPut, path: "/api/v2/admin/posts/" + missingID + "/restore", moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizPostNotFound},
+		{name: "image detail", method: http.MethodGet, path: "/api/v2/admin/images/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizUploadNotFound},
 		{name: "users", method: http.MethodGet, path: "/api/v2/admin/users", allowedStatus: http.StatusOK},
 		{name: "user detail", method: http.MethodGet, path: "/api/v2/admin/users/" + missingID, moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},
 		{name: "user posts", method: http.MethodGet, path: "/api/v2/admin/users/" + missingID + "/posts", moderator: true, allowedStatus: http.StatusNotFound, allowedCode: apierr.BizNotFound},

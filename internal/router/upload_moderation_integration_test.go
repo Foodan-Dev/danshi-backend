@@ -85,11 +85,19 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("pending image callback approves post exactly once", func(t *testing.T) {
-		testImageCallbackAccessControl(t, engine, gdb, storage, cachePurger, author, fixture)
+		testImageCallbackAccessControl(
+			t, engine, gdb, sender, storage, cachePurger, author, fixture,
+		)
 	})
 
 	t.Run("image callback before post creation publishes immediately", func(t *testing.T) {
 		testImageCallbackBeforePostCreation(t, engine, gdb, author, fixture)
+	})
+
+	t.Run("review queue and admin user detail use signed image URLs", func(t *testing.T) {
+		testSignedModerationQueueAndAdminUser(
+			t, engine, gdb, sender, storage, imageModerator,
+		)
 	})
 
 	t.Run("upload validation ownership duplicate and expiry", func(t *testing.T) {
@@ -129,6 +137,7 @@ func uploadModerationTestConfig() appconfig.Config {
 	cfg := authTestConfig()
 	cfg.COSMaxImageBytes = 10 * 1024 * 1024
 	cfg.COSPresignTTLS = 600
+	cfg.COSPresignGetTTLS = 3600
 	cfg.ModerationCallbackToken = moderationCallbackToken
 	return cfg
 }
@@ -215,6 +224,104 @@ func tencentPending(jobID string) testutil.ImageModerationOutcome {
 	return outcome
 }
 
+func testSignedModerationQueueAndAdminUser(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	sender *captureEmailSender,
+	storage *fakeImageStorage,
+	imageModerator *testutil.MockModeration,
+) {
+	t.Helper()
+	uploader := registerPostTestUser(
+		t, engine, sender, "signed-review-uploader@fdueat.com", "签名复核上传者",
+	)
+	reviewer := registerPostTestUser(
+		t, engine, sender, "signed-reviewer@fdueat.com", "签名复核管理员",
+	)
+	unrelated := registerPostTestUser(
+		t, engine, sender, "signed-review-unrelated@fdueat.com", "签名复核无关用户",
+	)
+	require.NoError(t, gdb.Create(&model.UserRoleBinding{
+		UserID: reviewer.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC(),
+	}).Error)
+	jobID := "signed-review-queue-job"
+	imageModerator.ProgramImage(testutil.ImageModerationRule{
+		Call: len(imageModerator.ImageCalls()) + 1, Outcome: tencentPending(jobID),
+	})
+	completed := completeImageForAccessTest(t, engine, uploader.Token, 3072)
+	callbackPath := "/api/v2/moderation/tencent-ci/callback?token=" +
+		url.QueryEscape(moderationCallbackToken)
+	status, response, _ := performJSON(t, engine, http.MethodPost, callbackPath,
+		tencentCallbackBody(completed.UploadID, jobID, completed.ObjectKey, 2), "")
+	require.Equal(t, http.StatusOK, status, "review 回调应成功: %s", response.Message)
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
+	require.Equal(t, model.ModerationStatusReview, asset.Moderation)
+	_, err := storage.ReadPublicURL(asset.PublicURL)
+	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
+		"review 图片也必须转为私有对象")
+	var record model.ModerationRecord
+	require.NoError(t, gdb.Where("provider_job_id = ?", jobID).First(&record).Error)
+
+	size := int64(2048)
+	avatarAsset := model.ImageAsset{
+		UploaderID: &uploader.User.ID, Purpose: model.ImagePurposeAvatar,
+		ObjectKey:   "avatars/signed-review/private-avatar.jpg",
+		PublicURL:   "https://img.example.test/avatars/signed-review/private-avatar.jpg",
+		ContentType: "image/jpeg", Size: &size, Status: model.ImageStatusPending,
+		Moderation: model.ModerationStatusReview,
+	}
+	require.NoError(t, gdb.Create(&avatarAsset).Error)
+	storage.PutObject(avatarAsset.ObjectKey, testutil.StoredObject{ContentLength: size})
+	storage.SetPublicURL(avatarAsset.ObjectKey, avatarAsset.PublicURL)
+	require.NoError(t, storage.SetObjectPublicAccess(
+		context.Background(), avatarAsset.ObjectKey, false,
+	))
+	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", uploader.User.ID).
+		UpdateColumn("avatar_image_asset_id", avatarAsset.ID).Error)
+
+	signedCallsBefore := len(storage.PresignGetCalls())
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending", nil, unrelated.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Len(t, storage.PresignGetCalls(), signedCallsBefore)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending", nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var queue service.AdminModerationList
+	decodeData(t, response, &queue)
+	var signedQueueURL string
+	for _, item := range queue.Records {
+		if item.ID == record.ID && item.Content != nil {
+			signedQueueURL = *item.Content
+		}
+	}
+	require.NotEmpty(t, signedQueueURL)
+	_, err = storage.ReadPresignedURL(signedQueueURL)
+	require.NoError(t, err, "待人工复核队列应返回可读取私有对象的短期 URL")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/admin/users/%d", uploader.User.ID), nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var detail service.AdminUserDetail
+	decodeData(t, response, &detail)
+	require.NotNil(t, detail.AvatarURL)
+	_, err = storage.ReadPresignedURL(*detail.AvatarURL)
+	require.NoError(t, err, "管理端单用户详情应签发私有头像读取 URL")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/users/%d", uploader.User.ID), nil, unrelated.Token)
+	require.Equal(t, http.StatusOK, status)
+	var publicProfile service.UserProfile
+	decodeData(t, response, &publicProfile)
+	require.NotNil(t, publicProfile.AvatarURL)
+	require.Equal(t, avatarAsset.PublicURL, *publicProfile.AvatarURL,
+		"公开详情继续返回 PublicURL，不得接入签名 URL")
+	_, err = storage.ReadPublicURL(*publicProfile.AvatarURL)
+	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied)
+}
+
 func testUploadModerationRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
 	operations := make([]string, 0)
@@ -226,6 +333,7 @@ func testUploadModerationRouteInventory(t *testing.T, engine *server.Hertz) {
 	}
 	require.ElementsMatch(t, []string{
 		"POST /api/v2/uploads/presign",
+		"GET /api/v2/uploads/:upload_id",
 		"POST /api/v2/uploads/:upload_id/complete",
 		"POST /api/v2/moderation/tencent-ci/callback",
 	}, operations)
@@ -347,7 +455,7 @@ func testUploadBoundaries(
 		storage, imageModerator, service.NewModerationService(
 			service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
 		),
-		cfg.COSMaxImageBytes, cfg.COSPresignTTL(),
+		cfg.COSMaxImageBytes, cfg.COSPresignTTL(), cfg.COSPresignGetTTL(),
 	)
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		result, expireErr := uploads.ExpirePending(ctx, service.ExpirePendingOptions{
@@ -447,7 +555,7 @@ func testUploadDependencyFailures(
 		storage, imageModerator, service.NewModerationService(
 			service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
 		),
-		10*1024*1024, 10*time.Minute,
+		10*1024*1024, 10*time.Minute, time.Hour,
 	)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	timeoutResult := make(chan error, 1)
@@ -655,6 +763,7 @@ func testImageCallbackAccessControl(
 	t *testing.T,
 	engine *server.Hertz,
 	gdb *gorm.DB,
+	sender *captureEmailSender,
 	storage *fakeImageStorage,
 	cachePurger *testutil.MockImageCachePurger,
 	author service.AuthResult,
@@ -752,6 +861,65 @@ func testImageCallbackAccessControl(
 	}, storage.AccessCalls())
 	require.Equal(t, []string{completed.PublicURL, blocked.PublicURL}, cachePurger.Calls())
 
+	unrelated := registerPostTestUser(
+		t, engine, sender, "blocked-image-unrelated@fdueat.com", "违规图片无关用户",
+	)
+	reviewer := registerPostTestUser(
+		t, engine, sender, "blocked-image-reviewer@fdueat.com", "违规图片审核员",
+	)
+	dictionaryReviewer := registerPostTestUser(
+		t, engine, sender, "blocked-image-dict@fdueat.com", "违规图片词表员",
+	)
+	require.NoError(t, gdb.Create(&[]model.UserRoleBinding{
+		{UserID: reviewer.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC()},
+		{UserID: dictionaryReviewer.User.ID, Role: model.UserRoleDictReviewer, GrantedAt: time.Now().UTC()},
+	}).Error)
+	signedCallsBefore := len(storage.PresignGetCalls())
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/uploads/%d", blocked.UploadID), nil, unrelated.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizImageNotOwned, response.ErrorCode)
+	require.Len(t, storage.PresignGetCalls(), signedCallsBefore,
+		"无关用户不得触发读取 URL 签发")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/uploads/%d", blocked.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var ownerView service.UploadImageView
+	decodeData(t, response, &ownerView)
+	require.Equal(t, model.ModerationStatusBlock, ownerView.Moderation)
+	_, err = storage.ReadPresignedURL(ownerView.ImageURL)
+	require.NoError(t, err, "上传者本人应能通过短期签名 URL 读取同一张私有图片")
+
+	adminPath := fmt.Sprintf("/api/v2/admin/images/%d", blocked.UploadID)
+	status, response, _ = performJSON(t, engine, http.MethodGet, adminPath, nil, dictionaryReviewer.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizPermissionDenied, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodGet, adminPath, nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var reviewerView service.AdminImageView
+	decodeData(t, response, &reviewerView)
+	require.NotNil(t, reviewerView.ImageURL)
+	_, err = storage.ReadPresignedURL(*reviewerView.ImageURL)
+	require.NoError(t, err, "内容审核员应能通过短期签名 URL 读取同一张私有图片")
+	require.Equal(t, []testutil.StoragePresignGetCall{
+		{ObjectKey: blocked.ObjectKey, TTL: time.Hour},
+		{ObjectKey: blocked.ObjectKey, TTL: time.Hour},
+	}, storage.PresignGetCalls()[signedCallsBefore:])
+
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", blocked.UploadID).
+		UpdateColumn("uploader_id", nil).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/uploads/%d", blocked.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusForbidden, status, "uploader_id 为 NULL 时不得误放行")
+	status, response, _ = performJSON(t, engine, http.MethodGet, adminPath, nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status, "uploader_id 为 NULL 不影响既有内容审核能力")
+	decodeData(t, response, &reviewerView)
+	require.Nil(t, reviewerView.UploaderID)
+	require.NotNil(t, reviewerView.ImageURL)
+	_, err = storage.ReadPresignedURL(*reviewerView.ImageURL)
+	require.NoError(t, err)
+
 	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, blockedBody, "")
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &duplicate)
@@ -841,7 +1009,7 @@ func testCompleteExpiryRace(
 	)
 	uploads := service.NewUploadService(
 		storage, fixedAsyncImageModerator("race-job"), moderation,
-		10*1024*1024, 10*time.Minute,
+		10*1024*1024, 10*time.Minute, time.Hour,
 	)
 	var presign *service.UploadPresignResult
 	err := database.RunInTx(ctx, func(txCtx context.Context) error {
@@ -917,7 +1085,7 @@ func testConcurrentExpiryWorkers(
 		return asset
 	}
 	uploads := service.NewUploadService(
-		storage, nil, nil, 10*1024*1024, 10*time.Minute,
+		storage, nil, nil, 10*1024*1024, 10*time.Minute, time.Hour,
 	)
 	before := time.Now().UTC().Add(-3 * time.Hour)
 	first := createPending("worker-first", before.Add(-2*time.Hour))

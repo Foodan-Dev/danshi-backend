@@ -66,6 +66,37 @@ func TestPresignCOSPutMatchesIndependentSignature(t *testing.T) {
 	require.Equal(t, expectedSignature, query.Get("q-signature"))
 }
 
+func TestPresignCOSGetMatchesIndependentSignature(t *testing.T) {
+	bucketURL, err := url.Parse("https://bucket-1250000000.cos.ap-shanghai.myqcloud.com")
+	require.NoError(t, err)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	const objectKey = "posts/42/2026/08/private.jpg"
+	const secretID = "AKIDEXAMPLE"
+	const secretKey = "secret-key-for-independent-signature-test"
+
+	rawURL, err := PresignCOSGet(
+		context.Background(), bucketURL, secretID, secretKey, objectKey, time.Hour, startedAt,
+	)
+	require.NoError(t, err)
+	presigned, err := url.Parse(rawURL)
+	require.NoError(t, err)
+	query := presigned.Query()
+	keyTime := "1700000000;1700003600"
+	require.Equal(t, secretID, query.Get("q-ak"))
+	require.Equal(t, keyTime, query.Get("q-sign-time"))
+	require.Equal(t, keyTime, query.Get("q-key-time"))
+	require.Equal(t, "host", query.Get("q-header-list"))
+	require.Empty(t, query.Get("q-url-param-list"))
+
+	canonicalHeaders := "host=" + cosSignatureEscape(bucketURL.Host)
+	formatString := "get\n/" + objectKey + "\n\n" + canonicalHeaders + "\n"
+	formatDigest := sha1.Sum([]byte(formatString)) // #nosec G401 -- COS V5 协议固定使用 SHA-1。
+	stringToSign := "sha1\n" + keyTime + "\n" + hex.EncodeToString(formatDigest[:]) + "\n"
+	signKey := hex.EncodeToString(testHMACSHA1([]byte(secretKey), keyTime))
+	expectedSignature := hex.EncodeToString(testHMACSHA1([]byte(signKey), stringToSign))
+	require.Equal(t, expectedSignature, query.Get("q-signature"))
+}
+
 func TestProviderReviewAndSubmitImageWithoutNetwork(t *testing.T) {
 	transport := &captureTencentTransport{}
 	provider, err := NewProvider(providerTestConfig(), &http.Client{Transport: transport})

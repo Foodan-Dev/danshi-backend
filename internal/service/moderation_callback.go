@@ -310,8 +310,9 @@ func (s *ModerationService) applyImageAccess(
 	if asset == nil {
 		return
 	}
-	public := verdict != model.ModerationVerdictBlock
-	if public && asset.Moderation != model.ModerationStatusBlock {
+	public := verdict == model.ModerationVerdictPass
+	if public && asset.Moderation != model.ModerationStatusBlock &&
+		asset.Moderation != model.ModerationStatusReview {
 		return
 	}
 	s.imageAccess.Apply(ctx, ImageAccessChange{
@@ -330,7 +331,7 @@ func (s *ModerationService) reconcileImageAccess(ctx context.Context, asset *mod
 		ImageAssetID: asset.ID,
 		ObjectKey:    asset.ObjectKey,
 		PublicURL:    asset.PublicURL,
-		Public:       asset.Moderation != model.ModerationStatusBlock,
+		Public:       asset.Moderation == model.ModerationStatusPass,
 	})
 }
 

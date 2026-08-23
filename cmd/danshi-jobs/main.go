@@ -80,7 +80,7 @@ func expirePending(olderThan time.Duration, batchSize int, dryRun bool) (runErr 
 		return err
 	}
 	uploads := service.NewUploadService(
-		storage, nil, nil, cfg.COSMaxImageBytes, cfg.COSPresignTTL(),
+		storage, nil, nil, cfg.COSMaxImageBytes, cfg.COSPresignTTL(), cfg.COSPresignGetTTL(),
 	)
 	before := time.Now().UTC().Add(-olderThan)
 	result := service.UploadExpirationResult{}

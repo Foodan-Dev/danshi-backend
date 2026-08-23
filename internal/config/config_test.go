@@ -17,7 +17,7 @@ func base() config.Config {
 		JWTSecretKey: goodSecret, JWTExpireMinutes: 60, JWTRefreshExpireDay: 30,
 		EmailVerificationRequired: true, EmailVerificationSecret: goodSecret,
 		AllowedEmailDomains: "fdueat.com,m.fudan.edu.cn",
-		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600,
+		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600, COSPresignGetTTLS: 3600,
 		LogLevel: "info",
 	}
 }
@@ -58,6 +58,7 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"开了验证码却没配密钥", func(c *config.Config) { c.EmailVerificationSecret = "" }, "EMAIL_VERIFICATION_SECRET"},
 		{"图片上限非正", func(c *config.Config) { c.COSMaxImageBytes = 0 }, "COS_MAX_IMAGE_BYTES"},
 		{"签名时效非正", func(c *config.Config) { c.COSPresignTTLS = 0 }, "COS_PRESIGN_TTL_SECONDS"},
+		{"读取签名时效非正", func(c *config.Config) { c.COSPresignGetTTLS = 0 }, "COS_PRESIGN_GET_TTL_SECONDS"},
 		{"图片域名不是 HTTPS", func(c *config.Config) { c.COSImageDomain = "http://img.example.com" }, "COS_IMG_DOMAIN"},
 		{"回调令牌太短", func(c *config.Config) { c.ModerationCallbackToken = "short" }, "MODERATION_CALLBACK_TOKEN"},
 	}

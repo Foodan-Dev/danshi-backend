@@ -51,6 +51,25 @@ func (h *Upload) Presign(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("上传凭证签发成功", result))
 }
 
+// Image 返回上传者本人可见的单张图片短期读取地址。
+func (h *Upload) Image(ctx context.Context, c *app.RequestContext) {
+	uploadID, err := positivePathID(c.Param("upload_id"), "upload_id")
+	principal, principalErr := httpx.CurrentPrincipal(c)
+	if err == nil {
+		err = principalErr
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	result, err := h.service.Image(ctx, uploadID, principal.User.ID)
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
+}
+
 // Complete 在持有上传资产行锁时校验对象并触发图片机审。
 func (h *Upload) Complete(ctx context.Context, c *app.RequestContext) {
 	uploadID, err := positivePathID(c.Param("upload_id"), "upload_id")

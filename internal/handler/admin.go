@@ -113,6 +113,16 @@ func (h *Admin) RestorePost(ctx context.Context, c *app.RequestContext) {
 	respondAdmin(ctx, c, "恢复成功", result, err)
 }
 
+// Image 返回具备内容审核能力的角色可见的单张图片详情。
+func (h *Admin) Image(ctx context.Context, c *app.RequestContext) {
+	imageAssetID, _, err := adminIdentity(c, "image_asset_id")
+	var result *service.AdminImageView
+	if err == nil {
+		result, err = h.service.Image(ctx, imageAssetID)
+	}
+	respondAdmin(ctx, c, "请求成功", result, err)
+}
+
 // Users 返回全部用户，包含软删除行。
 func (h *Admin) Users(ctx context.Context, c *app.RequestContext) {
 	query, err := bindQuery[adminUsersQuery](c)

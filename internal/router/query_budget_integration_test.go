@@ -47,7 +47,9 @@ var queryBudgetExemptGETRoutes = map[string]string{
 	"GET /api/v2/posts/:post_id/history":       "单资源的完整版本历史，不接受分页参数",
 	"GET /api/v2/comments/:comment_id/history": "单资源的完整版本历史，不接受分页参数",
 	"GET /api/v2/notifications/unread-count":   "单值聚合，不接受分页参数",
+	"GET /api/v2/uploads/:upload_id":           "上传者单图片详情，不接受分页参数",
 	"GET /api/v2/config":                       "公共静态配置，不接受分页参数",
+	"GET /api/v2/admin/images/:image_asset_id": "管理端单图片详情，不接受分页参数",
 	"GET /api/v2/admin/users/:user_id":         "单用户取证详情，不接受分页参数",
 }
 

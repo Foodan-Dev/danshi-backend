@@ -109,6 +109,17 @@ type AdminUserDetail struct {
 	BanRecords []AdminUserBanRecordView `json:"ban_records"`
 }
 
+// AdminImageView 是具备内容审核能力的角色可见的单张图片详情。
+type AdminImageView struct {
+	ID         uint64                 `json:"id"`
+	UploaderID *uint64                `json:"uploader_id"`
+	Purpose    model.ImagePurpose     `json:"purpose"`
+	Status     model.ImageStatus      `json:"status"`
+	Moderation model.ModerationStatus `json:"moderation"`
+	ImageURL   *string                `json:"image_url"`
+	CreatedAt  ptime.Time             `json:"created_at"`
+}
+
 // AdminModerationView 是通用待人工复核队列的一项。
 type AdminModerationView struct {
 	ID               uint64                   `json:"id"`
@@ -217,15 +228,29 @@ type AdminCommentRestoreResult struct {
 
 // AdminService 实现管理端列表、审核、封禁、角色与软删除恢复。
 type AdminService struct {
-	admin      repository.AdminRepository
-	posts      repository.PostRepository
-	comments   repository.CommentRepository
-	sessions   repository.SessionRepository
-	users      repository.UserRepository
-	moderation *ModerationService
+	admin          repository.AdminRepository
+	posts          repository.PostRepository
+	comments       repository.CommentRepository
+	sessions       repository.SessionRepository
+	users          repository.UserRepository
+	assets         repository.UploadRepository
+	moderation     *ModerationService
+	imageStorage   ImageStorage
+	signedImageTTL time.Duration
 }
 
 // NewAdminService 创建管理端服务。
-func NewAdminService(alerter ModerationAlerter, imageAccess ImageAccessController) *AdminService {
-	return &AdminService{moderation: NewModerationService(alerter, imageAccess)}
+func NewAdminService(
+	alerter ModerationAlerter,
+	imageAccess ImageAccessController,
+	imageStorage ImageStorage,
+	signedImageTTL time.Duration,
+) *AdminService {
+	if imageStorage == nil {
+		imageStorage = UnavailableImageStorage{}
+	}
+	return &AdminService{
+		moderation:   NewModerationService(alerter, imageAccess),
+		imageStorage: imageStorage, signedImageTTL: signedImageTTL,
+	}
 }

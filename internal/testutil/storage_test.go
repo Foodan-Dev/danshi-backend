@@ -52,6 +52,13 @@ func TestMockImageStorageControlsObjectMetadataMD5AndURL(t *testing.T) {
 	require.NoError(t, storage.SetObjectPublicAccess(context.Background(), request.ObjectKey, false))
 	_, err = storage.ReadPublicURL(publicURL)
 	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied)
+	signedURL, err := storage.PresignGet(context.Background(), request.ObjectKey, time.Hour)
+	require.NoError(t, err)
+	_, err = storage.ReadPresignedURL(signedURL)
+	require.NoError(t, err)
+	require.Equal(t, []testutil.StoragePresignGetCall{{
+		ObjectKey: request.ObjectKey, TTL: time.Hour,
+	}}, storage.PresignGetCalls())
 	require.NoError(t, storage.SetObjectPublicAccess(context.Background(), request.ObjectKey, true))
 	_, err = storage.ReadPublicURL(publicURL)
 	require.NoError(t, err)

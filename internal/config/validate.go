@@ -90,6 +90,9 @@ func (c Config) Validate() error {
 	if c.COSPresignTTLS <= 0 {
 		add("COS_PRESIGN_TTL_SECONDS 必须为正数")
 	}
+	if c.COSPresignGetTTLS <= 0 {
+		add("COS_PRESIGN_GET_TTL_SECONDS 必须为正数")
+	}
 	if c.COSImageDomain != "" {
 		if err := validateHTTPSURL("COS_IMG_DOMAIN", c.COSImageDomain); err != nil {
 			add("%v", err)

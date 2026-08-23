@@ -112,6 +112,53 @@
         },
         "type": "object"
       },
+      "AdminImageView": {
+        "properties": {
+          "created_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image_url": {
+            "nullable": true,
+            "type": "string"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "post",
+              "avatar"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "uploader_id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "AdminModerationList": {
         "properties": {
           "pagination": {
@@ -2181,6 +2228,43 @@
             "type": "string"
           },
           "public_url": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "upload_id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "UploadImageView": {
+        "properties": {
+          "image_url": {
+            "type": "string"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "post",
+              "avatar"
+            ],
             "type": "string"
           },
           "status": {
@@ -7305,6 +7389,244 @@
           }
         ],
         "summary": "PATCH /api/v2/admin/flavors/:flavor_id",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/v2/admin/images/{image_asset_id}": {
+      "get": {
+        "operationId": "get_api_v2_admin_images_image_asset_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_asset_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/AdminImageView"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v2/admin/images/:image_asset_id",
         "tags": [
           "admin"
         ]
@@ -17245,6 +17567,275 @@
           }
         ],
         "summary": "POST /api/v2/uploads/presign",
+        "tags": [
+          "uploads"
+        ]
+      }
+    },
+    "/api/v2/uploads/{upload_id}": {
+      "get": {
+        "operationId": "get_api_v2_uploads_upload_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "upload_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/UploadImageView"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v2/uploads/:upload_id",
         "tags": [
           "uploads"
         ]
