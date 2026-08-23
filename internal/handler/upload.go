@@ -6,8 +6,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -32,10 +32,10 @@ type uploadPresignRequest struct {
 func (h *Upload) Presign(ctx context.Context, c *app.RequestContext) {
 	var request uploadPresignRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err != nil {
 		failService(ctx, c, err)
 		return
@@ -54,7 +54,7 @@ func (h *Upload) Presign(ctx context.Context, c *app.RequestContext) {
 // Complete 在持有上传资产行锁时校验对象并触发图片机审。
 func (h *Upload) Complete(ctx context.Context, c *app.RequestContext) {
 	uploadID, err := positivePathID(c.Param("upload_id"), "upload_id")
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}

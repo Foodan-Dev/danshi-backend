@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
+
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 )
 
 // LimitInFlight 对精确匹配的方法和路径施加无等待的在途请求上限。
@@ -34,7 +36,7 @@ func LimitInFlight(
 			c.Next(ctx)
 		default:
 			c.Header("Retry-After", retryAfter)
-			Fail(ctx, c, busyError)
+			httpx.Fail(ctx, c, busyError)
 		}
 	}
 }

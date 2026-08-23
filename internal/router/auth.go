@@ -5,7 +5,7 @@ import (
 
 	"github.com/jingyijun/danshi_backend_go/internal/handler"
 	"github.com/jingyijun/danshi_backend_go/internal/infra/tencentcloud"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
+	"github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 

@@ -4,7 +4,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/route"
 
 	"github.com/jingyijun/danshi_backend_go/internal/handler"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
+	"github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 

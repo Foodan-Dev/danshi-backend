@@ -15,8 +15,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
+	"github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 )
 
 // 用 ut 直接驱动路由，不占端口、不连数据库。
@@ -44,7 +45,7 @@ func TestErrorHandlerRendersEnvelope(t *testing.T) {
 	h := newTestEngine(t)
 	h.Use(middleware.ErrorHandler(discardLogger()))
 	h.GET("/boom", func(ctx context.Context, c *app.RequestContext) {
-		middleware.Fail(ctx, c, apierr.Forbidden(apierr.BizNotOwner, "没有权限执行该操作"))
+		httpx.Fail(ctx, c, apierr.Forbidden(apierr.BizNotOwner, "没有权限执行该操作"))
 	})
 
 	w := ut.PerformRequest(h.Engine, http.MethodGet, "/boom", nil)
@@ -65,7 +66,7 @@ func TestValidationErrorCarriesFields(t *testing.T) {
 	h := newTestEngine(t)
 	h.Use(middleware.ErrorHandler(discardLogger()))
 	h.GET("/v", func(ctx context.Context, c *app.RequestContext) {
-		middleware.Fail(ctx, c, apierr.InvalidField("page", apierr.FieldOutOfRange, "page 不能小于 1"))
+		httpx.Fail(ctx, c, apierr.InvalidField("page", apierr.FieldOutOfRange, "page 不能小于 1"))
 	})
 
 	resp := ut.PerformRequest(h.Engine, http.MethodGet, "/v", nil).Result()

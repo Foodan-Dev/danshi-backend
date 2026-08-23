@@ -7,8 +7,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -114,7 +114,7 @@ func (r *updateWindowRequest) UnmarshalJSON(data []byte) error {
 
 // CreateSuggestion 提交封闭词表建议。
 func (h *Dictionary) CreateSuggestion(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	var request createSuggestionRequest
 	if err == nil {
 		err = bindJSON(c, &request)
@@ -132,7 +132,7 @@ func (h *Dictionary) CreateSuggestion(ctx context.Context, c *app.RequestContext
 
 // Mine 返回当前用户的提议历史。
 func (h *Dictionary) Mine(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	query, queryErr := bindQuery[paginationQuery](c)
 	if err == nil {
 		err = queryErr
@@ -165,7 +165,7 @@ func (h *Dictionary) Pending(ctx context.Context, c *app.RequestContext) {
 // Approve 单事务批准提议。
 func (h *Dictionary) Approve(ctx context.Context, c *app.RequestContext) {
 	suggestionID, err := positivePathID(c.Param("suggestion_id"), "suggestion_id")
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
@@ -186,7 +186,7 @@ func (h *Dictionary) Approve(ctx context.Context, c *app.RequestContext) {
 // Reject 驳回提议并保存不可变理由。
 func (h *Dictionary) Reject(ctx context.Context, c *app.RequestContext) {
 	suggestionID, err := positivePathID(c.Param("suggestion_id"), "suggestion_id")
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}

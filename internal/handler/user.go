@@ -9,9 +9,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -203,7 +203,7 @@ func userRequestIdentity(c *app.RequestContext) (uint64, *service.Principal, err
 			"user_id", apierr.FieldInvalidFormat, "user_id 必须是正整数",
 		)
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	return userID, principal, err
 }
 

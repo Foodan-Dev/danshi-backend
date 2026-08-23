@@ -22,8 +22,8 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/config"
 	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	"github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 

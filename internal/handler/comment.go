@@ -8,9 +8,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -43,7 +43,7 @@ func (h *Comment) List(ctx context.Context, c *app.RequestContext) {
 	if err == nil {
 		err = queryErr
 	}
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
@@ -87,7 +87,7 @@ func (h *Comment) Replies(ctx context.Context, c *app.RequestContext) {
 // Create 发表楼主评论或真实链上的回复。
 func (h *Comment) Create(ctx context.Context, c *app.RequestContext) {
 	postID, err := positivePathID(c.Param("post_id"), "post_id")
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
@@ -188,7 +188,7 @@ func (h *Comment) Delete(ctx context.Context, c *app.RequestContext) {
 
 func commentIdentity(c *app.RequestContext) (uint64, *service.Principal, error) {
 	commentID, err := positivePathID(c.Param("comment_id"), "comment_id")
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}

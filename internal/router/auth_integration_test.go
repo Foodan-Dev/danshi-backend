@@ -24,14 +24,15 @@ import (
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
 	"github.com/jingyijun/danshi_backend_go/internal/repository"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
-	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 	"github.com/jingyijun/danshi_backend_go/internal/testutil"
 )
@@ -343,11 +344,11 @@ func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB
 			Email: email, PasswordHash: "$2b$12$test", Name: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
-			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			httpx.Fail(ctx, c, apierr.Internal(err))
 			return
 		}
-		routermiddleware.CommitError(c)
-		routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("forced failure after write")))
+		httpx.CommitError(c)
+		httpx.Fail(ctx, c, apierr.Internal(errors.New("forced failure after write")))
 	})
 
 	status, _, _ := performJSON(t, engine, http.MethodPost, "/commit-error-500", nil, "")
@@ -372,7 +373,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 			Email: committedEmail, PasswordHash: "$2b$12$test", Name: "commit",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
-			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			httpx.Fail(ctx, c, apierr.Internal(err))
 			return
 		}
 		if !dbinfra.AfterCommit(ctx, func(context.Context) {
@@ -380,7 +381,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 			callbackErr = gdb.Model(&model.User{}).Where("email = ?", committedEmail).Count(&count).Error
 			committedVisible = count == 1
 		}) {
-			routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
+			httpx.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
 			return
 		}
 		c.JSON(http.StatusOK, map[string]any{"ok": true})
@@ -393,16 +394,16 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Name: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
-			routermiddleware.Fail(ctx, c, apierr.Internal(err))
+			httpx.Fail(ctx, c, apierr.Internal(err))
 			return
 		}
 		if !dbinfra.AfterCommit(ctx, func(context.Context) {
 			rolledBackCalled = true
 		}) {
-			routermiddleware.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
+			httpx.Fail(ctx, c, apierr.Internal(errors.New("missing post-commit queue")))
 			return
 		}
-		routermiddleware.Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "forced rollback"))
+		httpx.Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "forced rollback"))
 	})
 
 	status, _, _ := performJSON(t, engine, http.MethodPost, "/post-commit-success", nil, "")

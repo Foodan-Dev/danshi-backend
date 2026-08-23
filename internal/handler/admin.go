@@ -9,10 +9,10 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -303,7 +303,7 @@ func adminIdentity(c *app.RequestContext, field string) (uint64, *service.Princi
 	if err != nil {
 		return 0, nil, err
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	return id, principal, err
 }
 
@@ -319,7 +319,7 @@ func respondAdmin[T any](
 		return
 	}
 	if result == nil {
-		middleware.Fail(ctx, c, apierr.Internal(nil))
+		httpx.Fail(ctx, c, apierr.Internal(nil))
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK(message, result))

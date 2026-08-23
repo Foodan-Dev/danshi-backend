@@ -9,8 +9,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -26,7 +26,7 @@ func NewNotification(notificationService *service.NotificationService) *Notifica
 
 // List 返回当前用户通知列表。
 func (h *Notification) List(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	query, queryErr := bindQuery[notificationListQuery](c)
 	if err == nil {
 		err = queryErr
@@ -54,7 +54,7 @@ func (h *Notification) List(ctx context.Context, c *app.RequestContext) {
 
 // UnreadCount 返回当前用户未读通知数。
 func (h *Notification) UnreadCount(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	var result *service.NotificationStats
 	if err == nil {
 		result, err = h.service.UnreadCount(ctx, principal.User.ID)
@@ -70,12 +70,12 @@ func (h *Notification) UnreadCount(ctx context.Context, c *app.RequestContext) {
 func (h *Notification) MarkRead(ctx context.Context, c *app.RequestContext) {
 	notificationID, err := strconv.ParseUint(c.Param("notification_id"), 10, 64)
 	if err != nil || notificationID == 0 {
-		middleware.Fail(ctx, c, apierr.InvalidField(
+		httpx.Fail(ctx, c, apierr.InvalidField(
 			"notification_id", apierr.FieldInvalidFormat, "notification_id 必须是正整数",
 		))
 		return
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = h.service.MarkRead(ctx, notificationID, principal.User.ID)
 	}
@@ -88,7 +88,7 @@ func (h *Notification) MarkRead(ctx context.Context, c *app.RequestContext) {
 
 // MarkAllRead 标记当前用户全部未读通知。
 func (h *Notification) MarkAllRead(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	var result *service.NotificationMarked
 	if err == nil {
 		result, err = h.service.MarkAllRead(ctx, principal.User.ID)

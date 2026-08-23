@@ -32,9 +32,10 @@ linters:
 
     # 分层纪律靠工具强制，不靠自觉。
     # router → handler → service → repository → model
+    # router → middleware；handler + middleware → httpx
     depguard:
       rules:
-        # handler 只做绑定/校验/组装，不许直接碰 ORM
+        # handler 只做绑定/校验/组装，不许直接碰 ORM 或反向依赖 router
         handler-no-orm:
           files:
             - "**/internal/handler/**"
@@ -43,6 +44,22 @@ linters:
               desc: handler 不得直接使用 GORM，数据访问必须经 repository
             - pkg: github.com/jingyijun/danshi_backend_go/internal/repository
               desc: handler 不得直接调 repository，必须经 service
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/router
+              desc: handler 不得反向依赖 router 及其子包
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/middleware
+              desc: handler 不得依赖 middleware，两者共用的 HTTP 词汇放在 httpx
+
+        # httpx 是 handler 与 middleware 共用的底层 HTTP 词汇，不许反向依赖上层
+        httpx-no-upper:
+          files:
+            - "**/internal/httpx/**"
+          deny:
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/handler
+              desc: httpx 不得反向依赖 handler
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/middleware
+              desc: httpx 不得反向依赖 middleware
+            - pkg: github.com/jingyijun/danshi_backend_go/internal/router
+              desc: httpx 不得反向依赖 router
 
         # service 是纯业务逻辑，不该知道自己跑在 HTTP 里
         service-no-http:

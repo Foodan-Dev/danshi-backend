@@ -11,10 +11,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/model"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -57,19 +57,19 @@ type updatePostRequest struct {
 
 // List 返回公开帖子信息流。
 func (h *Post) List(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err != nil {
 		failService(ctx, c, err)
 		return
 	}
 	query, err := bindQuery[listPostsQuery](c)
 	if err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	input, err := listPostsInput(query.Filters, query.SortBy, query.Pagination)
 	if err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	result, err := h.service.List(ctx, input, principal.User.ID)
@@ -99,10 +99,10 @@ func (h *Post) Get(ctx context.Context, c *app.RequestContext) {
 func (h *Post) Create(ctx context.Context, c *app.RequestContext) {
 	var request createPostRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	input, inputErr := createInput(request)
 	if err == nil {
 		err = inputErr
@@ -321,7 +321,7 @@ func postRequestIdentity(c *app.RequestContext) (uint64, *service.Principal, err
 			"post_id", apierr.FieldInvalidFormat, "post_id 必须是正整数",
 		)
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	return postID, principal, err
 }
 

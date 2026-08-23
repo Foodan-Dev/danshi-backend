@@ -9,10 +9,9 @@ import (
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
 	"github.com/jingyijun/danshi_backend_go/internal/authz"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
-
-const principalCtxKey = "danshi.auth.principal"
 
 var errMalformedAuthorization = errors.New("authorization header malformed")
 
@@ -26,15 +25,15 @@ func RequireAuth(auth Authenticator) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		token, err := bearerToken(string(c.GetHeader("Authorization")))
 		if err != nil {
-			Fail(ctx, c, apierr.Unauthorized().WithCause(err))
+			httpx.Fail(ctx, c, apierr.Unauthorized().WithCause(err))
 			return
 		}
 		principal, err := auth.Authenticate(ctx, token)
 		if err != nil {
-			Fail(ctx, c, err)
+			httpx.Fail(ctx, c, err)
 			return
 		}
-		c.Set(principalCtxKey, principal)
+		httpx.SetCurrentPrincipal(c, principal)
 		c.Next(ctx)
 	}
 }
@@ -42,30 +41,17 @@ func RequireAuth(auth Authenticator) app.HandlerFunc {
 // RequireCapability 要求已认证身份的角色并集包含指定业务能力。
 func RequireCapability(capability authz.Capability) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
-		principal, err := CurrentPrincipal(c)
+		principal, err := httpx.CurrentPrincipal(c)
 		if err != nil {
-			Fail(ctx, c, err)
+			httpx.Fail(ctx, c, err)
 			return
 		}
 		if !authz.HasCapability(principal.User.Roles, capability) {
-			Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "没有执行该操作的权限"))
+			httpx.Fail(ctx, c, apierr.Forbidden(apierr.BizPermissionDenied, "没有执行该操作的权限"))
 			return
 		}
 		c.Next(ctx)
 	}
-}
-
-// CurrentPrincipal 读取 RequireAuth 写入的当前身份。
-func CurrentPrincipal(c *app.RequestContext) (*service.Principal, error) {
-	raw, ok := c.Get(principalCtxKey)
-	if !ok {
-		return nil, apierr.Unauthorized().WithCause(errMalformedAuthorization)
-	}
-	principal, ok := raw.(*service.Principal)
-	if !ok || principal == nil {
-		return nil, apierr.Unauthorized().WithCause(errMalformedAuthorization)
-	}
-	return principal, nil
 }
 
 func bearerToken(header string) (string, error) {

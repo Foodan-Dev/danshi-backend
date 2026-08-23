@@ -10,8 +10,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -60,7 +60,7 @@ type currentUserResponse struct {
 func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) {
 	var request sendVerificationCodeRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	if err := h.service.SendVerificationCode(ctx, request.Email); err != nil {
@@ -74,7 +74,7 @@ func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) 
 func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 	var request registerRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	result, err := h.service.Register(ctx, service.RegisterInput{
@@ -92,7 +92,7 @@ func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 	var request loginRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	result, err := h.service.Login(
@@ -111,7 +111,7 @@ func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 func (h *Auth) Refresh(ctx context.Context, c *app.RequestContext) {
 	var request refreshRequest
 	if err := bindJSON(c, &request); err != nil {
-		middleware.Fail(ctx, c, err)
+		httpx.Fail(ctx, c, err)
 		return
 	}
 	result, err := h.service.Refresh(ctx, request.RefreshToken)
@@ -124,7 +124,7 @@ func (h *Auth) Refresh(ctx context.Context, c *app.RequestContext) {
 
 // Me 返回当前用户自己的账号信息。
 func (h *Auth) Me(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	var user service.UserView
 	if err == nil {
 		user, err = h.service.CurrentUser(ctx, principal)
@@ -138,7 +138,7 @@ func (h *Auth) Me(ctx context.Context, c *app.RequestContext) {
 
 // Logout 撤销当前会话。
 func (h *Auth) Logout(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = h.service.Logout(ctx, principal)
 	}
@@ -151,7 +151,7 @@ func (h *Auth) Logout(ctx context.Context, c *app.RequestContext) {
 
 // LogoutAll 撤销当前用户全部会话。
 func (h *Auth) LogoutAll(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = h.service.LogoutAll(ctx, principal)
 	}
@@ -164,7 +164,7 @@ func (h *Auth) LogoutAll(ctx context.Context, c *app.RequestContext) {
 
 // Sessions 返回当前有效设备列表。
 func (h *Auth) Sessions(ctx context.Context, c *app.RequestContext) {
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	var sessions []service.SessionView
 	if err == nil {
 		sessions, err = h.service.Sessions(ctx, principal)
@@ -180,10 +180,10 @@ func (h *Auth) Sessions(ctx context.Context, c *app.RequestContext) {
 func (h *Auth) KickSession(ctx context.Context, c *app.RequestContext) {
 	sessionID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || sessionID == 0 {
-		middleware.Fail(ctx, c, apierr.InvalidField("id", apierr.FieldInvalidFormat, "会话 id 必须是正整数"))
+		httpx.Fail(ctx, c, apierr.InvalidField("id", apierr.FieldInvalidFormat, "会话 id 必须是正整数"))
 		return
 	}
-	principal, err := middleware.CurrentPrincipal(c)
+	principal, err := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = h.service.KickSession(ctx, principal, sessionID)
 	}
@@ -215,7 +215,7 @@ func failService(ctx context.Context, c *app.RequestContext, err error) {
 		c.Header("Retry-After", strconv.Itoa(rateLimit.RetryAfterSeconds))
 	}
 	if service.ShouldCommitError(err) {
-		middleware.CommitError(c)
+		httpx.CommitError(c)
 	}
-	middleware.Fail(ctx, c, err)
+	httpx.Fail(ctx, c, err)
 }

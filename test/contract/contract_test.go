@@ -23,8 +23,8 @@ import (
 	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
 	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
 	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/router"
-	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 )
 
 const (

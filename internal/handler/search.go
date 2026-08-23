@@ -6,8 +6,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
+	"github.com/jingyijun/danshi_backend_go/internal/httpx"
 	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/router/middleware"
 	"github.com/jingyijun/danshi_backend_go/internal/service"
 )
 
@@ -29,7 +29,7 @@ func (h *Search) Posts(ctx context.Context, c *app.RequestContext) {
 	if err == nil {
 		err = filterErr
 	}
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
@@ -56,7 +56,7 @@ func (h *Search) Users(ctx context.Context, c *app.RequestContext) {
 	if err == nil {
 		err = paramsErr
 	}
-	principal, principalErr := middleware.CurrentPrincipal(c)
+	principal, principalErr := httpx.CurrentPrincipal(c)
 	if err == nil {
 		err = principalErr
 	}
