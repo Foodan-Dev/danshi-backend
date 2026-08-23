@@ -234,7 +234,7 @@ func (s *CommentService) normalizeCommentPayload(
 		}
 	}
 	mentionIDs := uniqueIDs(rawMentionIDs)
-	found, err := s.comments.ActiveUserIDs(ctx, mentionIDs)
+	found, err := s.comments.ActiveUsers(ctx, mentionIDs)
 	if err != nil {
 		return "", nil, apierr.Internal(err)
 	}
@@ -242,6 +242,14 @@ func (s *CommentService) normalizeCommentPayload(
 		return "", nil, apierr.InvalidField(
 			"mentioned_user_ids", apierr.FieldConflict, "包含不存在或已注销的用户",
 		)
+	}
+	for _, user := range found {
+		if user.Name == "" || !strings.Contains(content, "@"+user.Name) {
+			return "", nil, apierr.InvalidField(
+				"mentioned_user_ids", apierr.FieldConflict,
+				"被提及用户必须以 @昵称 的形式出现在评论正文中",
+			)
+		}
 	}
 	return content, mentionIDs, nil
 }

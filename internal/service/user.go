@@ -58,6 +58,11 @@ type UserUpdateResult struct {
 	User UserProfile `json:"user"`
 }
 
+// UserDeleteResult 是本人账号软注销成功后的稳定响应。
+type UserDeleteResult struct {
+	UserID uint64 `json:"user_id"`
+}
+
 // FollowActionResult 是关注/取关后的稳定状态。
 type FollowActionResult struct {
 	IsFollowing   bool  `json:"is_following"`
@@ -87,6 +92,7 @@ type UserService struct {
 	users         repository.UserRepository
 	posts         repository.PostRepository
 	notifications repository.NotificationRepository
+	sessions      repository.SessionRepository
 }
 
 // NewUserService 创建用户服务。
@@ -98,6 +104,28 @@ func NewUserService(moderator ContentModerator, alerter UserModerationAlerter) *
 		alerter = DiscardUserModerationAlerter{}
 	}
 	return &UserService{moderator: moderator, alerter: alerter}
+}
+
+// Delete 只允许本人软注销账号，并在同一事务撤销全部会话。
+func (s *UserService) Delete(
+	ctx context.Context,
+	userID uint64,
+	currentUserID uint64,
+) (*UserDeleteResult, error) {
+	if userID != currentUserID {
+		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能注销自己的账号")
+	}
+	if _, err := s.users.LockByID(ctx, userID); err != nil {
+		return nil, userNotFoundError(err)
+	}
+	now := time.Now().UTC()
+	if err := s.users.SoftDelete(ctx, userID, now); err != nil {
+		return nil, userNotFoundError(err)
+	}
+	if err := s.sessions.RevokeAll(ctx, userID, now); err != nil {
+		return nil, apierr.Internal(err)
+	}
+	return &UserDeleteResult{UserID: userID}, nil
 }
 
 // Profile 返回用户主页，并只在本人视角附带 email 与 roles。

@@ -226,6 +226,6 @@ type AdminService struct {
 }
 
 // NewAdminService 创建管理端服务。
-func NewAdminService(alerter ModerationAlerter) *AdminService {
-	return &AdminService{moderation: NewModerationService(alerter)}
+func NewAdminService(alerter ModerationAlerter, imageAccess ImageAccessController) *AdminService {
+	return &AdminService{moderation: NewModerationService(alerter, imageAccess)}
 }

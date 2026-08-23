@@ -16,6 +16,12 @@ import (
 // 现有 ImageStorage.HeadObject 端口不返回 MD5，所以该错误会沿存储故障路径返回。
 var ErrMockContentMD5Mismatch = errors.New("mock object Content-MD5 mismatch")
 
+// ErrMockPublicAccessDenied 表示对象存在但对象级 ACL 禁止公开读取。
+var ErrMockPublicAccessDenied = errors.New("mock object public access denied")
+
+// ErrMockObjectNotFound 表示 Mock 存储中没有目标对象或公开 URL。
+var ErrMockObjectNotFound = errors.New("mock object not found")
+
 // StoredObject 是 Mock 存储中一个可由测试控制的对象。
 type StoredObject struct {
 	ContentLength int64
@@ -45,6 +51,19 @@ type StorageDeleteBehavior struct {
 	Release <-chan struct{}
 }
 
+// StorageAccessBehavior 覆写下一次对象公开读切换的错误或阻塞。
+type StorageAccessBehavior struct {
+	Err     error
+	Delay   time.Duration
+	Release <-chan struct{}
+}
+
+// StorageAccessCall 是一次对象公开读切换调用。
+type StorageAccessCall struct {
+	ObjectKey string
+	Public    bool
+}
+
 // MockImageStorage 是并发安全、可编程的 service.ImageStorage 实现。
 type MockImageStorage struct {
 	mu sync.Mutex
@@ -54,18 +73,21 @@ type MockImageStorage struct {
 	publicURLBase   string
 	now             func() time.Time
 
-	objects       map[string]StoredObject
-	expectedMD5   map[string]string
-	publicURLs    map[string]string
-	publicURLErrs map[string]error
+	objects        map[string]StoredObject
+	privateObjects map[string]bool
+	expectedMD5    map[string]string
+	publicURLs     map[string]string
+	publicURLErrs  map[string]error
 
 	presignBehaviors []StoragePresignBehavior
 	headBehaviors    []StorageHeadBehavior
 	deleteBehaviors  []StorageDeleteBehavior
+	accessBehaviors  []StorageAccessBehavior
 
 	presignCalls   []service.StoragePresignRequest
 	headCalls      []string
 	deleteCalls    []string
+	accessCalls    []StorageAccessCall
 	publicURLCalls []string
 	signal         callSignal
 }
@@ -74,14 +96,15 @@ type MockImageStorage struct {
 // 调用 MaterializeLastPresign 或 PutObject 后，complete 才能看到对象存在。
 func NewMockImageStorage() *MockImageStorage {
 	return &MockImageStorage{
-		uploadURLBase: "https://upload.example.test/",
-		publicURLBase: "https://image.example.test/",
-		now:           func() time.Time { return time.Now().UTC() },
-		objects:       make(map[string]StoredObject),
-		expectedMD5:   make(map[string]string),
-		publicURLs:    make(map[string]string),
-		publicURLErrs: make(map[string]error),
-		signal:        newCallSignal(),
+		uploadURLBase:  "https://upload.example.test/",
+		publicURLBase:  "https://image.example.test/",
+		now:            func() time.Time { return time.Now().UTC() },
+		objects:        make(map[string]StoredObject),
+		privateObjects: make(map[string]bool),
+		expectedMD5:    make(map[string]string),
+		publicURLs:     make(map[string]string),
+		publicURLErrs:  make(map[string]error),
+		signal:         newCallSignal(),
 	}
 }
 
@@ -142,10 +165,18 @@ func (s *MockImageStorage) QueueDelete(behaviors ...StorageDeleteBehavior) {
 	s.mu.Unlock()
 }
 
+// QueueAccess 按调用顺序编排对象公开读切换行为。
+func (s *MockImageStorage) QueueAccess(behaviors ...StorageAccessBehavior) {
+	s.mu.Lock()
+	s.accessBehaviors = append(s.accessBehaviors, behaviors...)
+	s.mu.Unlock()
+}
+
 // PutObject 写入或覆盖一个测试对象。
 func (s *MockImageStorage) PutObject(objectKey string, object StoredObject) {
 	s.mu.Lock()
 	s.objects[objectKey] = object
+	delete(s.privateObjects, objectKey)
 	s.mu.Unlock()
 }
 
@@ -153,6 +184,7 @@ func (s *MockImageStorage) PutObject(objectKey string, object StoredObject) {
 func (s *MockImageStorage) RemoveObject(objectKey string) {
 	s.mu.Lock()
 	delete(s.objects, objectKey)
+	delete(s.privateObjects, objectKey)
 	s.mu.Unlock()
 }
 
@@ -168,6 +200,7 @@ func (s *MockImageStorage) MaterializeLastPresign() (string, error) {
 		ContentLength: request.ContentLength,
 		ContentMD5:    request.ContentMD5,
 	}
+	delete(s.privateObjects, request.ObjectKey)
 	return request.ObjectKey, nil
 }
 
@@ -184,6 +217,7 @@ func (s *MockImageStorage) PresignPut(
 		s.objects[request.ObjectKey] = StoredObject{
 			ContentLength: request.ContentLength, ContentMD5: request.ContentMD5,
 		}
+		delete(s.privateObjects, request.ObjectKey)
 	}
 	behavior, hasBehavior := popFirst(&s.presignBehaviors)
 	uploadURLBase := s.uploadURLBase
@@ -258,7 +292,37 @@ func (s *MockImageStorage) DeleteObject(ctx context.Context, objectKey string) e
 	}
 	s.mu.Lock()
 	delete(s.objects, objectKey)
+	delete(s.privateObjects, objectKey)
 	s.mu.Unlock()
+	return nil
+}
+
+// SetObjectPublicAccess 记录调用并幂等切换对象公开读状态。
+func (s *MockImageStorage) SetObjectPublicAccess(
+	ctx context.Context,
+	objectKey string,
+	public bool,
+) error {
+	s.mu.Lock()
+	s.accessCalls = append(s.accessCalls, StorageAccessCall{ObjectKey: objectKey, Public: public})
+	behavior, hasBehavior := popFirst(&s.accessBehaviors)
+	s.signal.notify()
+	s.mu.Unlock()
+
+	if hasBehavior {
+		if err := runStorageTiming(ctx, behavior.Delay, behavior.Release); err != nil {
+			return err
+		}
+		if behavior.Err != nil {
+			return behavior.Err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.objects[objectKey]; !exists {
+		return ErrMockObjectNotFound
+	}
+	s.privateObjects[objectKey] = !public
 	return nil
 }
 
@@ -283,6 +347,26 @@ func (s *MockImageStorage) PublicURL(objectKey string) (string, error) {
 	return joinObjectURL(base, objectKey), nil
 }
 
+// ReadPublicURL 模拟匿名客户端通过 PublicURL 读取对象。
+func (s *MockImageStorage) ReadPublicURL(publicURL string) (StoredObject, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for objectKey, object := range s.objects {
+		candidate, exact := s.publicURLs[objectKey]
+		if !exact {
+			candidate = joinObjectURL(s.publicURLBase, objectKey)
+		}
+		if candidate != publicURL {
+			continue
+		}
+		if s.privateObjects[objectKey] {
+			return StoredObject{}, ErrMockPublicAccessDenied
+		}
+		return object, nil
+	}
+	return StoredObject{}, ErrMockObjectNotFound
+}
+
 // PresignCalls 返回不可变请求快照。
 func (s *MockImageStorage) PresignCalls() []service.StoragePresignRequest {
 	s.mu.Lock()
@@ -302,6 +386,13 @@ func (s *MockImageStorage) DeleteCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string{}, s.deleteCalls...)
+}
+
+// AccessCalls 返回对象公开读切换调用顺序。
+func (s *MockImageStorage) AccessCalls() []StorageAccessCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]StorageAccessCall{}, s.accessCalls...)
 }
 
 // PublicURLCalls 返回公开 URL 构造调用顺序。
@@ -354,6 +445,14 @@ func (s *MockImageStorage) RequireDeleteCalls(t testing.TB, want int) {
 	}
 }
 
+// RequireAccessCalls 断言对象公开读切换调用次数。
+func (s *MockImageStorage) RequireAccessCalls(t testing.TB, want int) {
+	t.Helper()
+	if got := len(s.AccessCalls()); got != want {
+		t.Fatalf("对象公开读切换调用次数不符：want=%d got=%d", want, got)
+	}
+}
+
 func runStorageTiming(
 	ctx context.Context,
 	delay time.Duration,
@@ -386,3 +485,42 @@ func popFirst[T any](values *[]T) (T, bool) {
 }
 
 var _ service.ImageStorage = (*MockImageStorage)(nil)
+
+// MockImageCachePurger 是并发安全的 CDN 刷新端口 Mock。
+type MockImageCachePurger struct {
+	mu     sync.Mutex
+	calls  []string
+	errors []error
+}
+
+// NewMockImageCachePurger 创建默认成功的 CDN 刷新 Mock。
+func NewMockImageCachePurger() *MockImageCachePurger { return &MockImageCachePurger{} }
+
+// QueueErrors 按调用顺序编排刷新错误；nil 表示该次成功。
+func (p *MockImageCachePurger) QueueErrors(errors ...error) {
+	p.mu.Lock()
+	p.errors = append(p.errors, errors...)
+	p.mu.Unlock()
+}
+
+// PurgeURL 记录 URL 并返回下一项预设错误。
+func (p *MockImageCachePurger) PurgeURL(_ context.Context, publicURL string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, publicURL)
+	if len(p.errors) == 0 {
+		return nil
+	}
+	err := p.errors[0]
+	p.errors = p.errors[1:]
+	return err
+}
+
+// Calls 返回全部 CDN 刷新 URL。
+func (p *MockImageCachePurger) Calls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string{}, p.calls...)
+}
+
+var _ service.ImageCachePurger = (*MockImageCachePurger)(nil)

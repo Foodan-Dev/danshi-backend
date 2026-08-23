@@ -20,6 +20,7 @@ func registerUser(api *route.RouterGroup, deps Deps) {
 
 	users.GET("/:user_id", requireAuth, userHandler.Profile)
 	users.PUT("/:user_id", requireAuth, userHandler.Update)
+	users.DELETE("/:user_id", requireAuth, userHandler.Delete)
 	users.GET("/:user_id/posts", requireAuth, userHandler.Posts)
 	users.GET("/:user_id/favorites", requireAuth, userHandler.Favorites)
 	users.POST("/:user_id/follow", requireAuth, userHandler.Follow)

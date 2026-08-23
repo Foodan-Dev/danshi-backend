@@ -90,9 +90,15 @@ func TestProviderReviewAndSubmitImageWithoutNetwork(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, submission.ProviderJobID)
 	require.Equal(t, "image-job-1", *submission.ProviderJobID)
+	require.NoError(t, provider.SetObjectPublicAccess(
+		context.Background(), "posts/88/test.jpg", false,
+	))
+	require.NoError(t, provider.SetObjectPublicAccess(
+		context.Background(), "posts/88/test.jpg", true,
+	))
 
 	requests := transport.all()
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 4)
 	require.Equal(t, http.MethodPost, requests[0].method)
 	require.Equal(t, "/text/auditing", requests[0].path)
 	require.Contains(t, requests[0].body,
@@ -106,6 +112,12 @@ func TestProviderReviewAndSubmitImageWithoutNetwork(t *testing.T) {
 	callback, err := url.Parse(requests[1].query.Get("callback"))
 	require.NoError(t, err)
 	require.Equal(t, "callback-token", callback.Query().Get("token"))
+	require.Equal(t, http.MethodPut, requests[2].method)
+	require.Equal(t, "/posts/88/test.jpg", requests[2].path)
+	require.Contains(t, requests[2].query, "acl")
+	require.Equal(t, "private", requests[2].header.Get("x-cos-acl"))
+	require.Equal(t, http.MethodPut, requests[3].method)
+	require.Equal(t, "public-read", requests[3].header.Get("x-cos-acl"))
 }
 
 func TestCallbackDecoderMapsReviewAndRejectsFailedJob(t *testing.T) {
@@ -165,6 +177,7 @@ type capturedTencentRequest struct {
 	method string
 	path   string
 	query  url.Values
+	header http.Header
 	body   string
 }
 
@@ -185,7 +198,7 @@ func (t *captureTencentTransport) RoundTrip(request *http.Request) (*http.Respon
 	t.mu.Lock()
 	t.requests = append(t.requests, capturedTencentRequest{
 		method: request.Method, path: request.URL.Path,
-		query: request.URL.Query(), body: string(body),
+		query: request.URL.Query(), header: request.Header.Clone(), body: string(body),
 	})
 	t.mu.Unlock()
 	responseBody := `<RecognitionResult><JobId>image-job-1</JobId><State>Submitted</State></RecognitionResult>`

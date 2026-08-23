@@ -96,6 +96,20 @@ func (h *User) Update(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("更新成功", result))
 }
 
+// Delete 软注销本人账号并撤销全部会话。
+func (h *User) Delete(ctx context.Context, c *app.RequestContext) {
+	userID, principal, err := userRequestIdentity(c)
+	var result *service.UserDeleteResult
+	if err == nil {
+		result, err = h.service.Delete(ctx, userID, principal.User.ID)
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("注销成功", result))
+}
+
 // Posts 返回用户帖子列表。
 func (h *User) Posts(ctx context.Context, c *app.RequestContext) {
 	query, err := bindQuery[userPostsQuery](c)

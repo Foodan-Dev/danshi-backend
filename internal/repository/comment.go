@@ -202,15 +202,16 @@ func (CommentRepository) MentionIDs(ctx context.Context, commentID uint64) ([]ui
 	return userIDs, err
 }
 
-// ActiveUserIDs 返回一组 id 中当前存在且未注销的用户。
-func (CommentRepository) ActiveUserIDs(ctx context.Context, userIDs []uint64) ([]uint64, error) {
+// ActiveUsers 返回一组 id 中当前存在且未注销的用户及昵称。
+func (CommentRepository) ActiveUsers(ctx context.Context, userIDs []uint64) ([]model.User, error) {
 	userIDs = uniqueSortedIDs(userIDs)
 	if len(userIDs) == 0 {
-		return []uint64{}, nil
+		return []model.User{}, nil
 	}
-	var found []uint64
+	var found []model.User
 	err := db.FromContext(ctx).Model(&model.User{}).
-		Where("id IN ? AND deleted_at IS NULL", userIDs).Order("id").Pluck("id", &found).Error
+		Select("id", "name").Where("id IN ? AND deleted_at IS NULL", userIDs).
+		Order("id").Find(&found).Error
 	return found, err
 }
 

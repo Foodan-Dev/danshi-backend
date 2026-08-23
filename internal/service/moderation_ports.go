@@ -104,6 +104,41 @@ type ImageCallbackDecoder interface {
 	DecodeImageCallback(body []byte) (ImageModerationCallback, error)
 }
 
+// ImageAccessChange 描述审核结论要求的对象可见性与 CDN 缓存状态。
+type ImageAccessChange struct {
+	ImageAssetID uint64
+	ObjectKey    string
+	PublicURL    string
+	Public       bool
+}
+
+// ImageAccessController 在事务提交后应用对象 ACL 并刷新公开 URL 的缓存。
+// 该端口不返回错误，确保外部存储故障不会回滚已经落库的审核结论。
+type ImageAccessController interface {
+	Apply(ctx context.Context, change ImageAccessChange)
+}
+
+// DiscardImageAccessController 供不涉及对象访问控制的独立服务测试显式使用。
+type DiscardImageAccessController struct{}
+
+// Apply 明确丢弃对象访问控制副作用。
+func (DiscardImageAccessController) Apply(context.Context, ImageAccessChange) {}
+
+// ImageCachePurger 隔离 CDN 缓存刷新供应商；本批不绑定 EdgeOne SDK。
+type ImageCachePurger interface {
+	PurgeURL(ctx context.Context, publicURL string) error
+}
+
+var errImageCachePurgerUnconfigured = errors.New("image cache purger is not configured")
+
+// UnavailableImageCachePurger 让未装配 CDN 刷新能力显式失败并由调用端记录。
+type UnavailableImageCachePurger struct{}
+
+// PurgeURL 拒绝伪装缓存已经刷新。
+func (UnavailableImageCachePurger) PurgeURL(context.Context, string) error {
+	return errImageCachePurgerUnconfigured
+}
+
 // DirectPassImageModerator 是 dev/test 使用的同步图片放行实现。
 type DirectPassImageModerator struct{}
 

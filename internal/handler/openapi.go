@@ -37,6 +37,8 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 		getBinding("/api/v2/users/:user_id", apicontract.NoQuery{}, service.UserProfile{}),
 		binding(http.MethodPut, "/api/v2/users/:user_id", updateUserRequest{}, service.UserUpdateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
+		queryBinding(http.MethodDelete, "/api/v2/users/:user_id", apicontract.NoQuery{}, nil,
+			service.UserDeleteResult{}, http.StatusForbidden),
 		getBinding("/api/v2/users/:user_id/posts", userPostsQuery{}, service.PostList{},
 			http.StatusForbidden),
 		getBinding("/api/v2/users/:user_id/favorites", paginationQuery{}, service.PostList{},

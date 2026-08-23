@@ -73,7 +73,7 @@ func (s *AdminService) Comments(
 	return &AdminCommentList{Comments: comments, Pagination: meta}, nil
 }
 
-// Users 返回包含软删除行的用户列表。
+// Users 返回未注销的用户列表；注销用户仍可通过详情与内容取证端点访问。
 func (s *AdminService) Users(
 	ctx context.Context,
 	rawRole string,
@@ -86,7 +86,7 @@ func (s *AdminService) Users(
 	}
 	rows, meta, err := s.admin.FindUserPage(
 		ctx, repository.AdminUserFilter{Role: role, IsActive: isActive}, params,
-		repository.QueryOptions{IncludeDeleted: true},
+		repository.QueryOptions{},
 	)
 	if err != nil {
 		return nil, apierr.Internal(err)

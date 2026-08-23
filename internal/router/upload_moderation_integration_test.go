@@ -65,9 +65,12 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	imageModerator.ProgramImage(
 		testutil.ImageModerationRule{Call: 1, Outcome: tencentPending("ci-md5-job")},
 		testutil.ImageModerationRule{Call: 2, Outcome: tencentPending("ci-image-pass-job")},
-		testutil.ImageModerationRule{Call: 3, Outcome: tencentPending("ci-image-early-job")},
+		testutil.ImageModerationRule{Call: 3, Outcome: tencentPending("ci-image-block-job")},
+		testutil.ImageModerationRule{Call: 4, Outcome: tencentPending("ci-image-acl-retry-job")},
+		testutil.ImageModerationRule{Call: 5, Outcome: tencentPending("ci-image-early-job")},
 	)
-	engine := uploadModerationEngine(cfg, database, sender, storage, imageModerator)
+	cachePurger := testutil.NewMockImageCachePurger()
+	engine := uploadModerationEngine(cfg, database, sender, storage, imageModerator, cachePurger)
 	author := registerPostTestUser(
 		t, engine, sender, "upload-moderation@fdueat.com", "上传审核用户",
 	)
@@ -82,7 +85,7 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("pending image callback approves post exactly once", func(t *testing.T) {
-		testImageCallbackApprovesPost(t, engine, gdb, storage, author, fixture)
+		testImageCallbackAccessControl(t, engine, gdb, storage, cachePurger, author, fixture)
 	})
 
 	t.Run("image callback before post creation publishes immediately", func(t *testing.T) {
@@ -132,18 +135,23 @@ func uploadModerationEngine(
 	sender service.VerificationEmailSender,
 	storage service.ImageStorage,
 	imageModerator service.ImageModerator,
+	cachePurgers ...service.ImageCachePurger,
 ) *server.Hertz {
 	engine := server.New(
 		server.WithHandleMethodNotAllowed(true),
 		hertzconfig.Option{F: func(_ *hertzconfig.Options) {}},
 	)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router.Register(engine, router.Deps{
+	deps := router.Deps{
 		Config: cfg, DB: database, Log: log, EmailSender: sender,
 		ContentModerator: service.DirectPassContentModerator{}, ImageStorage: storage,
 		ImageModerator:    imageModerator,
 		ModerationAlerter: service.DiscardModerationAlerter{},
-	})
+	}
+	if len(cachePurgers) > 0 {
+		deps.ImageCachePurger = cachePurgers[0]
+	}
+	router.Register(engine, deps)
 	return engine
 }
 
@@ -321,7 +329,9 @@ func testUploadBoundaries(
 
 	expired := presignImage(t, engine, author.Token, 2048)
 	uploads := service.NewUploadService(
-		storage, imageModerator, service.NewModerationService(service.DiscardModerationAlerter{}),
+		storage, imageModerator, service.NewModerationService(
+			service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+		),
 		cfg.COSMaxImageBytes, cfg.COSPresignTTL(),
 	)
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
@@ -408,7 +418,9 @@ func testUploadDependencyFailures(
 		},
 	})
 	uploads := service.NewUploadService(
-		storage, imageModerator, service.NewModerationService(service.DiscardModerationAlerter{}),
+		storage, imageModerator, service.NewModerationService(
+			service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+		),
 		10*1024*1024, 10*time.Minute,
 	)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
@@ -515,7 +527,9 @@ func testConcurrentImageCallbacks(
 	results := make(chan callbackResult, workers)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	moderation := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
 	for range workers {
 		go func() {
 			ready <- struct{}{}
@@ -576,7 +590,9 @@ func testOutOfOrderImageCallbacks(
 		ImageAssetID: second.ID, ObjectKey: second.ObjectKey,
 	})
 	require.NoError(t, err)
-	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	moderation := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
 	apply := func(jobID string, verdict model.ModerationVerdict) *service.ImageModerationApplyResult {
 		var result *service.ImageModerationApplyResult
 		runErr := database.RunInTx(context.Background(), func(ctx context.Context) error {
@@ -590,6 +606,18 @@ func testOutOfOrderImageCallbacks(
 	require.False(t, apply("out-of-order-job-2", model.ModerationVerdictBlock).Duplicate)
 	require.False(t, apply("out-of-order-job-1", model.ModerationVerdictPass).Duplicate)
 	require.True(t, apply("out-of-order-job-1", model.ModerationVerdictPass).Duplicate)
+	err = database.RunInTx(context.Background(), func(ctx context.Context) error {
+		_, callbackErr := moderation.ApplyImageCallback(ctx, service.ImageModerationCallback{
+			ImageAssetID:  second.ID,
+			ObjectKey:     second.ObjectKey,
+			Provider:      model.ModerationProviderTencentCI,
+			ProviderJobID: "out-of-order-job-1",
+			Verdict:       model.ModerationVerdictBlock,
+		})
+		return callbackErr
+	})
+	require.Equal(t, http.StatusConflict, apierr.As(err).Status,
+		"同一供应商任务号不得被重放到另一张图片")
 	mock.RequireCallbackOrder(t, "out-of-order-job-2", "out-of-order-job-1", "out-of-order-job-1")
 	require.NoError(t, gdb.First(&first, first.ID).Error)
 	require.NoError(t, gdb.First(&second, second.ID).Error)
@@ -597,11 +625,12 @@ func testOutOfOrderImageCallbacks(
 	require.Equal(t, model.ModerationStatusBlock, second.Moderation)
 }
 
-func testImageCallbackApprovesPost(
+func testImageCallbackAccessControl(
 	t *testing.T,
 	engine *server.Hertz,
 	gdb *gorm.DB,
 	storage *fakeImageStorage,
+	cachePurger *testutil.MockImageCachePurger,
 	author service.AuthResult,
 	fixture postFixture,
 ) {
@@ -672,9 +701,86 @@ func testImageCallbackApprovesPost(
 	require.True(t, records[0].Score.Equal(decimal.NewFromInt(98)))
 	require.Contains(t, string(records[0].RawResponse), "ci-image-pass-job")
 
+	blocked := completeImageForAccessTest(t, engine, author.Token, 5120)
+	blockedPayload := sharePostPayload(fixture, "图片违规后不可访问", []string{"图片访问控制"})
+	blockedPayload["images"] = []string{blocked.PublicURL}
+	blockedPost := createPost(t, engine, author.Token, blockedPayload)
+	require.Equal(t, model.PostStatusPending, blockedPost.Status)
+	_, err := storage.ReadPublicURL(blocked.PublicURL)
+	require.NoError(t, err, "审核结论落地前对象应可公开读取")
+	blockedBody := tencentCallbackBody(
+		blocked.UploadID, "ci-image-block-job", blocked.ObjectKey, 1,
+	)
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, blockedBody, "")
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	_, err = storage.ReadPublicURL(blocked.PublicURL)
+	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
+		"block 结论提交后，匿名客户端不得再通过 PublicURL 读取对象")
+	var blockedAsset model.ImageAsset
+	require.NoError(t, gdb.First(&blockedAsset, blocked.UploadID).Error)
+	require.Equal(t, model.ModerationStatusBlock, blockedAsset.Moderation)
+	require.Equal(t, []testutil.StorageAccessCall{
+		{ObjectKey: completed.ObjectKey, Public: true},
+		{ObjectKey: blocked.ObjectKey, Public: false},
+	}, storage.AccessCalls())
+	require.Equal(t, []string{completed.PublicURL, blocked.PublicURL}, cachePurger.Calls())
+
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, blockedBody, "")
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &duplicate)
+	require.True(t, duplicate.Duplicate)
+	require.Len(t, storage.AccessCalls(), 3, "重复 block 回调必须安全重试对象访问控制")
+	require.Len(t, cachePurger.Calls(), 3, "重复 block 回调必须安全重试 CDN 刷新")
+
+	retry := completeImageForAccessTest(t, engine, author.Token, 6144)
+	retryPayload := sharePostPayload(fixture, "ACL 故障不回滚审核", []string{"ACL 重试"})
+	retryPayload["images"] = []string{retry.PublicURL}
+	createPost(t, engine, author.Token, retryPayload)
+	storage.QueueAccess(testutil.StorageAccessBehavior{Err: errors.New("COS ACL unavailable")})
+	retryBody := tencentCallbackBody(
+		retry.UploadID, "ci-image-acl-retry-job", retry.ObjectKey, 1,
+	)
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, retryBody, "")
+	require.Equal(t, http.StatusOK, status, "存储故障不得让审核回调失败重投")
+	var retryAsset model.ImageAsset
+	require.NoError(t, gdb.First(&retryAsset, retry.UploadID).Error)
+	require.Equal(t, model.ModerationStatusBlock, retryAsset.Moderation,
+		"对象存储故障时审核事实仍必须提交")
+	var retryRecords int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
+		"image_asset_id = ? AND provider_job_id = ?", retry.UploadID, "ci-image-acl-retry-job",
+	).Count(&retryRecords).Error)
+	require.EqualValues(t, 1, retryRecords)
+	_, err = storage.ReadPublicURL(retry.PublicURL)
+	require.NoError(t, err, "模拟 ACL 失败后对象状态不应被 Mock 伪造为私有")
+
+	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, retryBody, "")
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &duplicate)
+	require.True(t, duplicate.Duplicate)
+	_, err = storage.ReadPublicURL(retry.PublicURL)
+	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
+		"重复回调应以幂等 ACL 操作修复上一次存储故障")
+
 	invalidPath := "/api/v2/moderation/tencent-ci/callback?token=wrong"
 	status, _, _ = performJSON(t, engine, http.MethodPost, invalidPath, callbackBody, "")
 	require.Equal(t, http.StatusForbidden, status)
+}
+
+func completeImageForAccessTest(
+	t *testing.T,
+	engine *server.Hertz,
+	token string,
+	size int64,
+) service.UploadCompleteResult {
+	t.Helper()
+	presign := presignImage(t, engine, token, size)
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", presign.UploadID), nil, token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var completed service.UploadCompleteResult
+	decodeData(t, response, &completed)
+	return completed
 }
 
 func presignImage(
@@ -703,7 +809,9 @@ func testCompleteExpiryRace(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	moderation := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
 	uploads := service.NewUploadService(
 		storage, fixedAsyncImageModerator("race-job"), moderation,
 		10*1024*1024, 10*time.Minute,
@@ -782,7 +890,9 @@ func testManualReviewIsAppendOnly(
 	}
 	require.NoError(t, gdb.Create(&machine).Error)
 
-	moderation := service.NewModerationService(service.DiscardModerationAlerter{})
+	moderation := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
 	var manual *model.ModerationRecord
 	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
 		var reviewErr error

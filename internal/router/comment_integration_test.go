@@ -137,13 +137,13 @@ func testCommentCreateContract(
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "评论链帖子", []string{"评论链"}))
 	root := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
-		"content": "楼主评论", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
+		"content": "@被提及者 楼主评论", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
 	})
 	firstReply := createComment(t, engine, actors.Replier.Token, post.ID, map[string]any{
 		"content": "回复楼主", "parent_id": root.Comment.ID,
 	})
 	secondReply := createComment(t, engine, actors.PostAuthor.Token, post.ID, map[string]any{
-		"content": "回复楼内回复", "parent_id": firstReply.Comment.ID,
+		"content": "@被提及者 回复楼内回复", "parent_id": firstReply.Comment.ID,
 		"mentioned_user_ids": []uint64{actors.Mentioned.User.ID, actors.Mentioned.User.ID},
 	})
 
@@ -280,6 +280,23 @@ func testCommentCreateBoundaries(
 		})
 	}
 
+	var mentionsBeforeForgery int64
+	mentionNotifications := gdb.Model(&model.Notification{}).Where(
+		"recipient_id = ? AND sender_id = ? AND type = ?",
+		actors.Mentioned.User.ID, actors.Commenter.User.ID, model.NotificationTypeMention,
+	)
+	require.NoError(t, mentionNotifications.Count(&mentionsBeforeForgery).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
+			"content":            "正文没有任何 @ 标记",
+			"mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
+		}, actors.Commenter.Token)
+	requireFieldError(t, status, response, "mentioned_user_ids", apierr.FieldConflict)
+	var mentionsAfterForgery int64
+	require.NoError(t, mentionNotifications.Count(&mentionsAfterForgery).Error)
+	require.Equal(t, mentionsBeforeForgery, mentionsAfterForgery,
+		"正文未 @ 用户时不得产生提及通知")
+
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/v2/posts/%d/comments", firstPost.ID), map[string]any{
 			"content": "提及不存在用户", "mentioned_user_ids": []uint64{9_999_999_999},
@@ -294,7 +311,7 @@ func testCommentCreateBoundaries(
 	requireFieldError(t, status, response, "mentioned_user_ids", apierr.FieldConflict)
 
 	selfMention := createComment(t, engine, actors.Commenter.Token, firstPost.ID, map[string]any{
-		"content": strings.Repeat("界", 2000), "parent_id": root.Comment.ID,
+		"content": "@评论作者" + strings.Repeat("界", 1995), "parent_id": root.Comment.ID,
 		"mentioned_user_ids": []uint64{actors.Commenter.User.ID},
 	})
 	var mention model.CommentMention
@@ -354,24 +371,24 @@ func testCommentEditVersion(
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "评论编辑帖子", []string{"评论编辑"}))
 	created := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
-		"content": "编辑前", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
+		"content": "@被提及者 编辑前", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
 	})
 	status, response, _ := performJSON(t, engine, http.MethodPut, commentPath(created.Comment.ID), map[string]any{
-		"content": "编辑后的正文", "mentioned_user_ids": []uint64{actors.Replier.User.ID},
+		"content": "@回复作者 编辑后的正文", "mentioned_user_ids": []uint64{actors.Replier.User.ID},
 	}, actors.Commenter.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var updated service.CommentMutationResult
 	decodeData(t, response, &updated)
-	require.Equal(t, "编辑后的正文", updated.Comment.Content)
+	require.Equal(t, "@回复作者 编辑后的正文", updated.Comment.Content)
 	require.True(t, updated.Comment.IsEdited)
 
 	var stored model.Comment
 	require.NoError(t, gdb.First(&stored, created.Comment.ID).Error)
-	require.Equal(t, "编辑后的正文", stored.Content)
+	require.Equal(t, "@回复作者 编辑后的正文", stored.Content)
 	var histories []model.CommentHistory
 	require.NoError(t, gdb.Where("comment_id = ?", stored.ID).Order("revision").Find(&histories).Error)
 	require.Equal(t, []int32{1, 2}, commentRevisions(histories))
-	require.Equal(t, []string{"编辑前", "编辑后的正文"}, commentContents(histories))
+	require.Equal(t, []string{"@被提及者 编辑前", "@回复作者 编辑后的正文"}, commentContents(histories))
 	var moderationCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("comment_id = ?", stored.ID).Count(&moderationCount).Error)
@@ -529,11 +546,11 @@ func testCommentHistoryFailureRollback(
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "评论回滚帖子", []string{"评论回滚"}))
 	created := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
-		"content": "回滚前", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
+		"content": "@被提及者 回滚前", "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
 	})
 	installCommentHistoryFailureTrigger(t, gdb)
 	status, response, _ := performJSON(t, engine, http.MethodPut, commentPath(created.Comment.ID), map[string]any{
-		"content": "不应提交", "mentioned_user_ids": []uint64{actors.Replier.User.ID},
+		"content": "@回复作者 不应提交", "mentioned_user_ids": []uint64{actors.Replier.User.ID},
 	}, actors.Commenter.Token)
 	require.Equal(t, http.StatusInternalServerError, status)
 	require.Equal(t, apierr.BizInternal, response.ErrorCode)
@@ -541,7 +558,7 @@ func testCommentHistoryFailureRollback(
 
 	var stored model.Comment
 	require.NoError(t, gdb.First(&stored, created.Comment.ID).Error)
-	require.Equal(t, "回滚前", stored.Content)
+	require.Equal(t, "@被提及者 回滚前", stored.Content)
 	var mentionIDs []uint64
 	require.NoError(t, gdb.Model(&model.CommentMention{}).Where("comment_id = ?", stored.ID).
 		Pluck("user_id", &mentionIDs).Error)

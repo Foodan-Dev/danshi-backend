@@ -140,6 +140,18 @@ func (p *Provider) DeleteObject(ctx context.Context, objectKey string) error {
 	return err
 }
 
+// SetObjectPublicAccess 通过对象级 ACL 幂等切换公开读；private 可逆且不删除原对象。
+func (p *Provider) SetObjectPublicAccess(ctx context.Context, objectKey string, public bool) error {
+	acl := "private"
+	if public {
+		acl = "public-read"
+	}
+	_, err := p.client.Object.PutACL(ctx, objectKey, &cos.ObjectPutACLOptions{
+		Header: &cos.ACLHeaderOptions{XCosACL: acl},
+	})
+	return err
+}
+
 // PublicURL 只在 complete 成功后按配置的公开读域名构造 URL。
 func (p *Provider) PublicURL(objectKey string) (string, error) {
 	base, err := url.Parse(strings.TrimRight(p.cfg.COSImageDomain, "/") + "/")

@@ -123,6 +123,20 @@ func (UserRepository) UpdateProfile(ctx context.Context, userID uint64, fields m
 	return nil
 }
 
+// SoftDelete 注销用户账号；不修改资料内容或内容更新时间。
+func (UserRepository) SoftDelete(ctx context.Context, userID uint64, deletedAt time.Time) error {
+	result := db.FromContext(ctx).Model(&model.User{}).
+		Where("id = ? AND deleted_at IS NULL", userID).
+		UpdateColumn("deleted_at", deletedAt)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateModerationRecord 追加昵称或简介的审核流水。
 func (UserRepository) CreateModerationRecord(ctx context.Context, record *model.ModerationRecord) error {
 	return db.FromContext(ctx).Create(record).Error

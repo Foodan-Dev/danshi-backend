@@ -10,7 +10,7 @@ import (
 
 func registerUpload(api *route.RouterGroup, deps Deps) {
 	maxImageBytes, presignTTL := uploadLimits(deps)
-	moderationService := service.NewModerationService(deps.ModerationAlerter)
+	moderationService := newModerationService(deps)
 	uploadService := service.NewUploadService(
 		deps.ImageStorage, deps.ImageModerator, moderationService, maxImageBytes, presignTTL,
 	)

@@ -33,16 +33,23 @@ type ManualReviewInput struct {
 
 // ModerationService 处理异步结论的幂等落库与目标状态写回。
 type ModerationService struct {
-	alerter    ModerationAlerter
-	moderation repository.ModerationRepository
+	alerter     ModerationAlerter
+	imageAccess ImageAccessController
+	moderation  repository.ModerationRepository
 }
 
 // NewModerationService 创建审核服务。
-func NewModerationService(alerter ModerationAlerter) *ModerationService {
+func NewModerationService(
+	alerter ModerationAlerter,
+	imageAccess ImageAccessController,
+) *ModerationService {
 	if alerter == nil {
 		alerter = DiscardModerationAlerter{}
 	}
-	return &ModerationService{alerter: alerter}
+	if imageAccess == nil {
+		imageAccess = DiscardImageAccessController{}
+	}
+	return &ModerationService{alerter: alerter, imageAccess: imageAccess}
 }
 
 // ManualReview 追加 manual 行并用 supersedes_id 指回原机器记录；原行永不更新。
@@ -79,10 +86,11 @@ func (s *ModerationService) ManualReview(
 		return nil, err
 	}
 	var imagePostIDs []uint64
+	var imageAssets []model.ImageAsset
 	if snapshot.ImageAssetID != nil {
 		imagePostIDs, err = s.moderation.LockPendingPostsForImage(ctx, *snapshot.ImageAssetID)
 		if err == nil {
-			_, err = s.moderation.LockImagesForPosts(ctx, *snapshot.ImageAssetID, imagePostIDs)
+			imageAssets, err = s.moderation.LockImagesForPosts(ctx, *snapshot.ImageAssetID, imagePostIDs)
 		}
 	} else {
 		err = s.moderation.LockManualTarget(ctx, snapshot)
@@ -126,6 +134,8 @@ func (s *ModerationService) ManualReview(
 		if _, err := s.moderation.ApproveEligiblePendingPosts(ctx, imagePostIDs); err != nil {
 			return nil, apierr.Internal(err)
 		}
+		asset := imageAssetByID(imageAssets, *original.ImageAssetID)
+		s.applyImageAccess(ctx, asset, input.Verdict)
 	} else if err := s.moderation.ApplyManualTextVerdict(ctx, original, input.Verdict); err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -197,17 +207,6 @@ func (s *ModerationService) applyImageResult(
 	if err := validateImageCallback(callback, requireJobID); err != nil {
 		return nil, err
 	}
-	if callback.ProviderJobID != "" {
-		exists, err := s.moderation.MachineRecordExists(
-			ctx, callback.Provider, callback.ProviderJobID,
-		)
-		if err != nil {
-			return nil, apierr.Internal(err)
-		}
-		if exists {
-			return &ImageModerationApplyResult{Duplicate: true}, nil
-		}
-	}
 	postIDs, err := s.moderation.LockPendingPostsForImage(ctx, callback.ImageAssetID)
 	if err != nil {
 		return nil, apierr.Internal(err)
@@ -216,7 +215,8 @@ func (s *ModerationService) applyImageResult(
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	if err := validateCallbackAsset(callback, assets); err != nil {
+	asset, err := validateCallbackAsset(callback, assets)
+	if err != nil {
 		return nil, err
 	}
 	record := imageModerationRecord(callback)
@@ -225,6 +225,19 @@ func (s *ModerationService) applyImageResult(
 		return nil, apierr.Internal(err)
 	}
 	if !created {
+		existing, findErr := s.moderation.FindMachineRecordByProviderJobID(
+			ctx, callback.Provider, callback.ProviderJobID,
+		)
+		if findErr != nil {
+			return nil, apierr.Internal(findErr)
+		}
+		if existing.ImageAssetID == nil || *existing.ImageAssetID != callback.ImageAssetID {
+			return nil, apierr.Conflict(
+				apierr.BizModerationCallbackInvalid,
+				"审核回调任务号与图片不一致",
+			)
+		}
+		s.reconcileImageAccess(ctx, asset)
 		return &ImageModerationApplyResult{Duplicate: true}, nil
 	}
 	status := model.ModerationStatus(callback.Verdict)
@@ -242,6 +255,7 @@ func (s *ModerationService) applyImageResult(
 			Verdict: callback.Verdict, Labels: append([]string{}, callback.Labels...),
 		})
 	}
+	s.applyImageAccess(ctx, asset, callback.Verdict)
 	return &ImageModerationApplyResult{ApprovedPosts: approved}, nil
 }
 
@@ -263,20 +277,61 @@ func validateImageCallback(callback ImageModerationCallback, requireJobID bool) 
 func validateCallbackAsset(
 	callback ImageModerationCallback,
 	assets []model.ImageAsset,
-) error {
+) (*model.ImageAsset, error) {
 	for i := range assets {
 		if assets[i].ID != callback.ImageAssetID {
 			continue
 		}
 		if callback.ObjectKey != "" && callback.ObjectKey != assets[i].ObjectKey {
-			return apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对象与上传记录不一致")
+			return nil, apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对象与上传记录不一致")
 		}
 		if assets[i].Status == model.ImageStatusPending || assets[i].PublicURL == "" {
-			return apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对应的上传尚未完成")
+			return nil, apierr.Conflict(apierr.BizModerationCallbackInvalid, "审核回调对应的上传尚未完成")
 		}
-		return nil
+		return &assets[i], nil
 	}
-	return apierr.NotFound(apierr.BizImageNotFound, "图片")
+	return nil, apierr.NotFound(apierr.BizImageNotFound, "图片")
+}
+
+func imageAssetByID(assets []model.ImageAsset, imageAssetID uint64) *model.ImageAsset {
+	for index := range assets {
+		if assets[index].ID == imageAssetID {
+			return &assets[index]
+		}
+	}
+	return nil
+}
+
+func (s *ModerationService) applyImageAccess(
+	ctx context.Context,
+	asset *model.ImageAsset,
+	verdict model.ModerationVerdict,
+) {
+	if asset == nil {
+		return
+	}
+	public := verdict != model.ModerationVerdictBlock
+	if public && asset.Moderation != model.ModerationStatusBlock {
+		return
+	}
+	s.imageAccess.Apply(ctx, ImageAccessChange{
+		ImageAssetID: asset.ID,
+		ObjectKey:    asset.ObjectKey,
+		PublicURL:    asset.PublicURL,
+		Public:       public,
+	})
+}
+
+func (s *ModerationService) reconcileImageAccess(ctx context.Context, asset *model.ImageAsset) {
+	if asset == nil {
+		return
+	}
+	s.imageAccess.Apply(ctx, ImageAccessChange{
+		ImageAssetID: asset.ID,
+		ObjectKey:    asset.ObjectKey,
+		PublicURL:    asset.PublicURL,
+		Public:       asset.Moderation != model.ModerationStatusBlock,
+	})
 }
 
 func imageModerationRecord(callback ImageModerationCallback) *model.ModerationRecord {

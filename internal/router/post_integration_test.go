@@ -1035,7 +1035,9 @@ func testPostImageModeration(
 	fixture postFixture,
 ) {
 	t.Helper()
-	moderationService := service.NewModerationService(service.DiscardModerationAlerter{})
+	moderationService := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
 
 	passImage := completePostImage(t, h, author.Token, 2048)
 	passPayload := sharePostPayload(fixture, "图片待审后通过", []string{"图片通过"})

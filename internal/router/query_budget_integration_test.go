@@ -149,7 +149,7 @@ func seedQueryBudgetFixture(
 	var firstRoot uint64
 	for rootIndex := range 6 {
 		root := createComment(t, engine, actors.Commenter.Token, approved[0].ID, map[string]any{
-			"content":            fmt.Sprintf("查询预算楼主 %d", rootIndex),
+			"content":            fmt.Sprintf("@%s 查询预算楼主 %d", actors.Ordinary.User.Name, rootIndex),
 			"mentioned_user_ids": []uint64{actors.Ordinary.User.ID},
 		})
 		if firstRoot == 0 {
@@ -157,7 +157,7 @@ func seedQueryBudgetFixture(
 		}
 		for replyIndex := range 6 {
 			createComment(t, engine, actors.Author.Token, approved[0].ID, map[string]any{
-				"content":            fmt.Sprintf("查询预算回复 %d-%d", rootIndex, replyIndex),
+				"content":            fmt.Sprintf("@%s 查询预算回复 %d-%d", actors.Ordinary.User.Name, rootIndex, replyIndex),
 				"parent_id":          root.Comment.ID,
 				"mentioned_user_ids": []uint64{actors.Ordinary.User.ID},
 			})

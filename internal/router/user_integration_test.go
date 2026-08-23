@@ -64,6 +64,10 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 		testUserProfileUpdate(t, engine, gdb, owner, viewer)
 	})
 
+	t.Run("self deletion revokes sessions and preserves published content", func(t *testing.T) {
+		testUserSelfDeletion(t, cfg, engine, gdb, sender, fixtures, viewer, fixture)
+	})
+
 	t.Run("review and block keep user fields and record evidence", func(t *testing.T) {
 		testUserModerationSemantics(t, gdb, database, owner)
 	})
@@ -100,6 +104,7 @@ func testUserRouteInventory(t *testing.T, engine *server.Hertz) {
 	require.ElementsMatch(t, []string{
 		"GET /api/v2/users/:user_id",
 		"PUT /api/v2/users/:user_id",
+		"DELETE /api/v2/users/:user_id",
 		"GET /api/v2/users/:user_id/posts",
 		"GET /api/v2/users/:user_id/favorites",
 		"POST /api/v2/users/:user_id/follow",
@@ -244,6 +249,99 @@ func testUserProfileUpdate(
 		"name": "越权更新",
 	}, viewer.Token)
 	require.Equal(t, http.StatusForbidden, status)
+}
+
+func testUserSelfDeletion(
+	t *testing.T,
+	cfg appconfig.Config,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	sender *captureEmailSender,
+	fixtures *testutil.Fixtures,
+	viewer service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	const email = "self-delete@fdueat.com"
+	account := registerPostTestUser(t, engine, sender, email, "待注销用户")
+	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123", "device_label": "注销测试第二设备",
+	}, "")
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var secondSession service.AuthResult
+	decodeData(t, response, &secondSession)
+
+	post := createPost(t, engine, account.Token,
+		sharePostPayload(fixture, "注销后仍保留的帖子", []string{"账号注销"}))
+	path := userPath(account.User.ID)
+	status, response, _ = performJSON(t, engine, http.MethodDelete, path, nil, viewer.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+	var unchanged model.User
+	require.NoError(t, gdb.First(&unchanged, account.User.ID).Error)
+	require.Nil(t, unchanged.DeletedAt, "他人不得代为注销账号")
+
+	status, response, _ = performJSON(t, engine, http.MethodDelete, path, nil, account.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var deleted service.UserDeleteResult
+	decodeData(t, response, &deleted)
+	require.Equal(t, account.User.ID, deleted.UserID)
+	var stored model.User
+	require.NoError(t, gdb.First(&stored, account.User.ID).Error)
+	require.NotNil(t, stored.DeletedAt)
+
+	var sessions []model.UserSession
+	require.NoError(t, gdb.Where("user_id = ?", account.User.ID).Order("id").Find(&sessions).Error)
+	require.Len(t, sessions, 2)
+	for _, session := range sessions {
+		require.NotNil(t, session.RevokedAt, "注销与全部会话撤销必须在同一事务提交")
+	}
+	for _, token := range []string{account.Token, secondSession.Token} {
+		status, response, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, token)
+		require.Equal(t, http.StatusUnauthorized, status)
+		require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
+	}
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/refresh", map[string]any{
+		"refresh_token": secondSession.RefreshToken,
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, status, "注销账号不得再次登录")
+
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
+		"email": email, "password": "password-123", "verification_code": "123456",
+	}, "")
+	require.Equal(t, http.StatusConflict, status, "注销不得释放邮箱唯一性")
+	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/search/users?q=%E5%BE%85%E6%B3%A8%E9%94%80%E7%94%A8%E6%88%B7", nil, viewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var search service.SearchUserList
+	decodeData(t, response, &search)
+	for _, item := range search.Users {
+		require.NotEqual(t, account.User.ID, item.ID, "注销用户不得出现在搜索结果")
+	}
+
+	superAdmin := fixtures.CreateActor(cfg, testutil.WithUserRole(model.UserRoleSuperAdmin))
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/users?limit=100", nil, superAdmin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var users service.AdminUserList
+	decodeData(t, response, &users)
+	for _, item := range users.Users {
+		require.NotEqual(t, account.User.ID, item.ID, "注销用户不得出现在用户列表")
+	}
+
+	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, viewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	var detail service.PostDetail
+	decodeData(t, response, &detail)
+	require.Equal(t, "已注销用户", detail.Author.Name)
+	require.Nil(t, detail.Author.AvatarURL)
 }
 
 func testUserModerationSemantics(

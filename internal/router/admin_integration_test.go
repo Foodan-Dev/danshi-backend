@@ -86,7 +86,7 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 		testAdminCommentReviewAndRestore(t, engine, reviewEngine, gdb, actors, fixture)
 	})
 
-	t.Run("admin deletion lists deleted rows and fixed query budget", func(t *testing.T) {
+	t.Run("admin content lists deleted rows and fixed query budget", func(t *testing.T) {
 		testAdminListsAndDeletion(t, engine, gdb, actors, fixture)
 	})
 
@@ -97,7 +97,7 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
-	require.Len(t, engine.Routes(), 81, "应注册 79 条业务路由与 2 条 runtime 路由")
+	require.Len(t, engine.Routes(), 82, "应注册 80 条业务路由与 2 条 runtime 路由")
 	operations := make([]string, 0, 17)
 	for _, route := range engine.Routes() {
 		if isAdminDomainPath(route.Path) {
@@ -557,7 +557,8 @@ func testAdminListsAndDeletion(
 	require.Equal(t, http.StatusOK, status)
 	var users service.AdminUserList
 	decodeData(t, response, &users)
-	require.True(t, adminUserPresent(users.Users, actors.Illegal.User.ID))
+	require.False(t, adminUserPresent(users.Users, actors.Illegal.User.ID),
+		"正常管理员用户列表不得包含注销账号")
 
 	require.NoError(t, gdb.Model(&model.Post{}).Where("id = ?", postIDs[1]).
 		UpdateColumn("status", model.PostStatusPending).Error)

@@ -13,12 +13,17 @@ import (
 
 // Memory 是不发网络请求的开发存储；签发后即模拟对象按声明大小存在。
 type Memory struct {
-	mu      sync.RWMutex
-	objects map[string]int64
+	mu             sync.RWMutex
+	objects        map[string]int64
+	privateObjects map[string]bool
 }
 
 // NewMemory 创建空的开发存储。
-func NewMemory() *Memory { return &Memory{objects: make(map[string]int64)} }
+func NewMemory() *Memory {
+	return &Memory{
+		objects: make(map[string]int64), privateObjects: make(map[string]bool),
+	}
+}
 
 // PresignPut 记录声明大小并返回 memory scheme 的开发凭证。
 func (m *Memory) PresignPut(
@@ -46,7 +51,19 @@ func (m *Memory) HeadObject(_ context.Context, objectKey string) (service.Storag
 func (m *Memory) DeleteObject(_ context.Context, objectKey string) error {
 	m.mu.Lock()
 	delete(m.objects, objectKey)
+	delete(m.privateObjects, objectKey)
 	m.mu.Unlock()
+	return nil
+}
+
+// SetObjectPublicAccess 幂等切换开发对象的公开读状态。
+func (m *Memory) SetObjectPublicAccess(_ context.Context, objectKey string, public bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.objects[objectKey]; !exists {
+		return fmt.Errorf("对象不存在: %s", objectKey)
+	}
+	m.privateObjects[objectKey] = !public
 	return nil
 }
 

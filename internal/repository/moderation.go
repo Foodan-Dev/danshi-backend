@@ -104,17 +104,20 @@ func (ModerationRepository) LockImagesForPosts(
 	return assets, err
 }
 
-// MachineRecordExists 按供应商任务号识别已经完整处理过的异步回调。
-func (ModerationRepository) MachineRecordExists(
+// FindMachineRecordByProviderJobID 返回已经落库的异步审核事实。
+func (ModerationRepository) FindMachineRecordByProviderJobID(
 	ctx context.Context,
 	provider model.ModerationProvider,
 	providerJobID string,
-) (bool, error) {
-	var count int64
-	err := db.FromContext(ctx).Model(&model.ModerationRecord{}).
+) (*model.ModerationRecord, error) {
+	var record model.ModerationRecord
+	err := db.FromContext(ctx).
 		Where("provider = ? AND provider_job_id = ?", provider, providerJobID).
-		Limit(1).Count(&count).Error
-	return count > 0, err
+		First(&record).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &record, nil
 }
 
 // CreateMachineRecordIfNew 幂等追加一条带外部任务号的机器审核记录。

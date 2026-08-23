@@ -58,7 +58,7 @@ func testNotificationProducersAndReads(
 	t.Helper()
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "通知语义帖子", []string{"通知语义"}))
-	longContent := strings.Repeat("预览", 60)
+	longContent := "@" + actors.Mentioned.User.Name + " " + strings.Repeat("预览", 60)
 	root := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
 		"content": longContent, "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
 	})
@@ -91,7 +91,8 @@ func testNotificationProducersAndReads(
 	status, _, _ = performJSON(t, engine, http.MethodPost, commentLikePath, nil, actors.Commenter.Token)
 	require.Equal(t, http.StatusOK, status)
 	selfRoot := createComment(t, engine, actors.PostAuthor.Token, post.ID, map[string]any{
-		"content": "自己评论自己的帖子", "mentioned_user_ids": []uint64{actors.PostAuthor.User.ID},
+		"content":            "@帖子作者 自己评论自己的帖子",
+		"mentioned_user_ids": []uint64{actors.PostAuthor.User.ID},
 	})
 	createComment(t, engine, actors.PostAuthor.Token, post.ID, map[string]any{
 		"content": "自己回复自己的评论", "parent_id": selfRoot.Comment.ID,

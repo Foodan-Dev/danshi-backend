@@ -47,6 +47,18 @@ func TestMockImageStorageControlsObjectMetadataMD5AndURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://cdn.example.test/exact.jpg", publicURL)
 	require.Equal(t, []string{request.ObjectKey}, storage.PublicURLCalls())
+	_, err = storage.ReadPublicURL(publicURL)
+	require.NoError(t, err)
+	require.NoError(t, storage.SetObjectPublicAccess(context.Background(), request.ObjectKey, false))
+	_, err = storage.ReadPublicURL(publicURL)
+	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied)
+	require.NoError(t, storage.SetObjectPublicAccess(context.Background(), request.ObjectKey, true))
+	_, err = storage.ReadPublicURL(publicURL)
+	require.NoError(t, err)
+	require.Equal(t, []testutil.StorageAccessCall{
+		{ObjectKey: request.ObjectKey, Public: false},
+		{ObjectKey: request.ObjectKey, Public: true},
+	}, storage.AccessCalls())
 }
 
 func TestMockImageStorageBlocksDeleteForExpiryCompleteRace(t *testing.T) {
@@ -89,4 +101,10 @@ func TestMockImageStorageQueuesProviderFailures(t *testing.T) {
 		ObjectKey: "failure.jpg", TTL: time.Minute,
 	})
 	require.ErrorIs(t, err, presignErr)
+
+	accessErr := errors.New("ACL 5xx")
+	storage.PutObject("failure.jpg", testutil.StoredObject{ContentLength: 10})
+	storage.QueueAccess(testutil.StorageAccessBehavior{Err: accessErr})
+	err = storage.SetObjectPublicAccess(context.Background(), "failure.jpg", false)
+	require.ErrorIs(t, err, accessErr)
 }

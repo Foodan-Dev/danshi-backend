@@ -590,7 +590,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 - 评论：block 软删除并标记审核来源；
 - 标签：block 下架，保留帖子关联；
 - 用户字段：违规时通知管理员，由管理员重置或封禁；
-- 图片：block 后不支持帖子进入公开状态。
+- 图片：block 后不支持帖子进入公开状态，并在事务提交后把 COS 对象 ACL 切为私有；人工改判可恢复公开 ACL。
 
 系统不根据单条机器 verdict 自动封禁用户。
 

@@ -39,6 +39,7 @@ type ImageStorage interface {
 	PresignPut(ctx context.Context, request StoragePresignRequest) (StorageUploadTicket, error)
 	HeadObject(ctx context.Context, objectKey string) (StorageObjectMeta, error)
 	DeleteObject(ctx context.Context, objectKey string) error
+	SetObjectPublicAccess(ctx context.Context, objectKey string, public bool) error
 	PublicURL(objectKey string) (string, error)
 }
 
@@ -112,7 +113,7 @@ func NewUploadService(
 		imageModerator = UnavailableImageModerator{}
 	}
 	if moderation == nil {
-		moderation = NewModerationService(nil)
+		moderation = NewModerationService(nil, DiscardImageAccessController{})
 	}
 	return &UploadService{
 		storage: storage, imageModerator: imageModerator, moderation: moderation,
@@ -318,6 +319,11 @@ func (UnavailableImageStorage) HeadObject(context.Context, string) (StorageObjec
 
 // DeleteObject 拒绝伪造对象已删除。
 func (UnavailableImageStorage) DeleteObject(context.Context, string) error {
+	return errImageStorageUnconfigured
+}
+
+// SetObjectPublicAccess 拒绝伪装对象 ACL 已经更新。
+func (UnavailableImageStorage) SetObjectPublicAccess(context.Context, string, bool) error {
 	return errImageStorageUnconfigured
 }
 

@@ -10,7 +10,12 @@ import (
 )
 
 func registerAdmin(api *route.RouterGroup, deps Deps) {
-	adminHandler := handler.NewAdmin(service.NewAdminService(deps.ModerationAlerter))
+	adminHandler := handler.NewAdmin(service.NewAdminService(
+		deps.ModerationAlerter,
+		afterCommitImageAccessController{
+			storage: deps.ImageStorage, purger: deps.ImageCachePurger, log: deps.Log,
+		},
+	))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 	admin := api.Group("/admin")
