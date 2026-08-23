@@ -234,23 +234,20 @@ func (PostRepository) SoftDelete(ctx context.Context, postID, actorID uint64, no
 	return nil
 }
 
-// LatestHistory 返回锁定帖子当前最新的全量版本。
-func (PostRepository) LatestHistory(ctx context.Context, postID uint64) (*model.PostHistory, error) {
-	var history model.PostHistory
-	err := db.FromContext(ctx).Where("post_id = ?", postID).
-		Order("revision DESC").First(&history).Error
-	if err != nil {
-		return nil, NormalizeError(err)
-	}
-	return &history, nil
+// NextHistoryRevision 返回下一条旧版本快照的连续 revision。调用方必须已锁定帖子主体。
+func (PostRepository) NextHistoryRevision(ctx context.Context, postID uint64) (int32, error) {
+	var revision int32
+	err := db.FromContext(ctx).Model(&model.PostHistory{}).
+		Select("COALESCE(max(revision), 0) + 1").Where("post_id = ?", postID).Scan(&revision).Error
+	return revision, err
 }
 
-// CreateHistory 追加一条全量版本快照。
+// CreateHistory 追加一条被替换版本的完整快照。
 func (PostRepository) CreateHistory(ctx context.Context, history *model.PostHistory) error {
 	return db.FromContext(ctx).Create(history).Error
 }
 
-// ListHistories 按版本倒序返回帖子全量历史。
+// ListHistories 按版本倒序返回帖子被替换的旧版本。
 func (PostRepository) ListHistories(ctx context.Context, postID uint64) ([]model.PostHistory, error) {
 	histories := make([]model.PostHistory, 0)
 	err := db.FromContext(ctx).Where("post_id = ?", postID).

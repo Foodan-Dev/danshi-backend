@@ -122,20 +122,18 @@ type AdminImageView struct {
 
 // AdminModerationView 是通用待人工复核队列的一项。
 type AdminModerationView struct {
-	ID               uint64                   `json:"id"`
-	TargetType       string                   `json:"target_type"`
-	TargetID         uint64                   `json:"target_id"`
-	Field            *model.ModerationField   `json:"field"`
-	PostHistoryID    *uint64                  `json:"post_history_id"`
-	CommentHistoryID *uint64                  `json:"comment_history_id"`
-	Scene            model.ModerationScene    `json:"scene"`
-	Provider         model.ModerationProvider `json:"provider"`
-	ProviderJobID    *string                  `json:"provider_job_id"`
-	Verdict          model.ModerationVerdict  `json:"verdict"`
-	Labels           []string                 `json:"labels"`
-	Score            *decimal.Decimal         `json:"score"`
-	Content          *string                  `json:"content"`
-	CreatedAt        ptime.Time               `json:"created_at"`
+	ID            uint64                   `json:"id"`
+	TargetType    string                   `json:"target_type"`
+	TargetID      uint64                   `json:"target_id"`
+	Field         *model.ModerationField   `json:"field"`
+	Scene         model.ModerationScene    `json:"scene"`
+	Provider      model.ModerationProvider `json:"provider"`
+	ProviderJobID *string                  `json:"provider_job_id"`
+	Verdict       model.ModerationVerdict  `json:"verdict"`
+	Labels        []string                 `json:"labels"`
+	Score         *decimal.Decimal         `json:"score"`
+	Content       *string                  `json:"content"`
+	CreatedAt     ptime.Time               `json:"created_at"`
 }
 
 // AdminModerationList 是待人工复核页。

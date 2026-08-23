@@ -217,11 +217,16 @@ func testConcurrentRevisionSequences(
 	var postHistories []model.PostHistory
 	require.NoError(t, harness.Database.GORM.Where("post_id = ?", post.ID).
 		Order("revision").Find(&postHistories).Error)
-	require.Equal(t, continuousRevisions(concurrencyWidth+1), postRevisions(postHistories))
+	require.Equal(t, continuousRevisions(concurrencyWidth), postRevisions(postHistories))
 	var storedPost model.Post
 	require.NoError(t, harness.Database.GORM.First(&storedPost, post.ID).Error)
-	assertSnapshotMatchesPost(t, harness.Database.GORM, storedPost,
-		postHistories[len(postHistories)-1].Snapshot)
+	postTitles := make([]string, 0, len(postHistories)+1)
+	for _, history := range postHistories {
+		postTitles = append(postTitles, decodePostSnapshot(t, history.Snapshot).Title)
+	}
+	postTitles = append(postTitles, storedPost.Title)
+	require.Len(t, postTitles, concurrencyWidth+1)
+	require.Contains(t, postTitles, "十六路帖子编辑")
 
 	comment := createComment(t, harness.Engine, author.Token, post.ID,
 		map[string]any{"content": "十六路评论编辑"})
@@ -242,10 +247,16 @@ func testConcurrentRevisionSequences(
 	var commentHistories []model.CommentHistory
 	require.NoError(t, harness.Database.GORM.Where("comment_id = ?", comment.Comment.ID).
 		Order("revision").Find(&commentHistories).Error)
-	require.Equal(t, continuousRevisions(concurrencyWidth+1), commentRevisions(commentHistories))
+	require.Equal(t, continuousRevisions(concurrencyWidth), commentRevisions(commentHistories))
 	var storedComment model.Comment
 	require.NoError(t, harness.Database.GORM.First(&storedComment, comment.Comment.ID).Error)
-	require.Equal(t, commentHistories[len(commentHistories)-1].Content, storedComment.Content)
+	commentContents := make([]string, 0, len(commentHistories)+1)
+	for _, history := range commentHistories {
+		commentContents = append(commentContents, history.Content)
+	}
+	commentContents = append(commentContents, storedComment.Content)
+	require.Len(t, commentContents, concurrencyWidth+1)
+	require.Contains(t, commentContents, "十六路评论编辑")
 }
 
 func continuousRevisions(count int) []int32 {

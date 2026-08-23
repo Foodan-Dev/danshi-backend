@@ -203,12 +203,6 @@
       },
       "AdminModerationView": {
         "properties": {
-          "comment_history_id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
-          },
           "content": {
             "nullable": true,
             "type": "string"
@@ -236,12 +230,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "post_history_id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "nullable": true,
-            "type": "integer"
           },
           "provider": {
             "type": "string"

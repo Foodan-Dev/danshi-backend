@@ -197,9 +197,7 @@ map_<table>(
   → users
   → image_assets
   → posts
-  → post_histories
   → comments（按父链拓扑）
-  → comment_histories
   → post_tags / post_flavors / post_images / comment_mentions
   → follows / favorites / post_likes / comment_likes
   → notifications
@@ -282,7 +280,8 @@ banned_by        = NULL
 - 数值转整数使用 `trunc(numeric)::int`；PostgreSQL 直接 `numeric::int` 会四舍五入。
 - 来源没有窗口概念，`canteen_window_id` 留空。
 - 图片使用 `WITH ORDINALITY` 保序，目标 position 从 0 开始。
-- 每条迁入帖子必须补写 `post_histories revision=1`，snapshot 来自转换后的目标内容。
+- 来源只提供当前帖子时不得合成 `post_histories`；目标主表直接承载当前版本，历史表保持为空。
+  只有来源能提供确凿的、已经被替换的旧版本及其顺序时，才可以按证据迁入历史。
 
 ### 7.4 评论
 
@@ -292,7 +291,7 @@ banned_by        = NULL
 - 预检 parent 链无环、无跨帖、无缺失；
 - `reply_to_user_id` 不照搬：楼主评论取帖子作者，回复取直接父评论作者；
 - 来源没有软删除记录时 `deleted_at` 为空；
-- 每条评论补写 `comment_histories revision=1`；
+- 来源只提供当前评论时不得合成 `comment_histories`；首次由目标服务编辑后才产生 `revision=1`；
 - 提及数组如果存在值，过滤非 UUID 和不存在用户的元素，并记录每条过滤决定；历史快照预期为空表。
 
 ### 7.5 动作表
@@ -427,7 +426,7 @@ COMMIT
 3. 关联表不存在跨属主、跨帖子或错餐厅关系；
 4. `post_images` 总数等于来源有效图片元素数，顺序一致；
 5. `comment_mentions` 总数与来源有效提及元素数一致；
-6. 每条帖子和评论恰有 `revision=1`；
+6. 没有来源旧版本证据的帖子和评论，其历史表行数为 0；不得把当前版本复制为 `revision=1`；
 7. grandfather 对象恰有一条 `legacy_migration` 记录；
 8. 通知 type、目标和 content 形态全部合法；
 9. 计数器与动作表完全一致；
@@ -452,7 +451,7 @@ COMMIT
 - [ ] 验证每个迁入头像和帖子图片都命中图片资产。
 - [ ] 确认历史图片/标签 grandfather 决策仍有效。
 - [ ] 确认旧停用用户迁入后仍被封禁。
-- [ ] 确认每个帖子/评论生成 `revision=1`。
+- [ ] 确认未给当前帖子/评论合成 `revision=1`；若迁入真实旧版本，逐行核对来源证据与顺序。
 - [ ] 确认脚本不写来源计数，也不设置 `allow_counter_write`。
 - [ ] 确认每张 identity 表都推进 sequence，包括空表分支。
 - [ ] 在来源恢复副本上连续三次完整演练并零差异。
@@ -514,7 +513,7 @@ COMMIT
 4. 数据库外键替代裸多态 ID。
 5. 计数器由触发器维护并定期只读对账。
 6. 图片、评论层级、通知目标和词表关系受 schema 约束。
-7. 审核与内容版本采用追加不可篡改流水。
+7. 审核流水与被替换的内容历史分别追加不可篡改；审核只按对象和字段归属当前内容。
 8. 备份必须有异机副本，并定期做隔离恢复演练；仓库当前尚未提供备份自动化实现，部署方不能仅凭“生成了备份文件”宣称可恢复。
 
 ## 15. 存量邮箱运营事项

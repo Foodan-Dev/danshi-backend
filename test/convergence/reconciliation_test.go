@@ -88,7 +88,7 @@ func TestEndpointReconciliation(t *testing.T) {
 		"Python 基线端点既未在 Go 实现，也没有在 BREAKING-CHANGES 登记删除或改名:\n%s",
 		strings.Join(missingPython, "\n"))
 	require.Empty(t, undocumentedGo,
-		"Go 新增端点既未在新增登记表，也没有在 domain 报告中提供依据:\n%s",
+		"Go 新增端点未在 api/BREAKING-CHANGES.md 的新增登记表中提供依据:\n%s",
 		strings.Join(undocumentedGo, "\n"))
 }
 

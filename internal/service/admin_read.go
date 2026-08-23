@@ -215,8 +215,7 @@ func (s *AdminService) PendingModeration(
 		}
 		records = append(records, AdminModerationView{
 			ID: row.ID, TargetType: row.TargetType, TargetID: row.TargetID,
-			Field: row.Field, PostHistoryID: row.PostHistoryID,
-			CommentHistoryID: row.CommentHistoryID, Scene: row.Scene,
+			Field: row.Field, Scene: row.Scene,
 			Provider: row.Provider, ProviderJobID: row.ProviderJobID, Verdict: row.Verdict,
 			Labels: append([]string{}, row.Labels...), Score: row.Score,
 			Content: content, CreatedAt: ptime.Time(row.CreatedAt),

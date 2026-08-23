@@ -210,7 +210,7 @@ func (AdminRepository) FindUserBanRecords(
 	return records, err
 }
 
-// FindPendingModerationPage 返回尚未被 supersedes_id 指过的机器 review 记录。
+// FindPendingModerationPage 返回尚未处理且仍是对象同字段最新一次机审的 review 记录。
 func (AdminRepository) FindPendingModerationPage(
 	ctx context.Context,
 	label *string,
@@ -255,12 +255,27 @@ func (AdminRepository) FindPendingPostReview(
 
 func pendingModerationQuery(ctx context.Context) *gorm.DB {
 	return db.FromContext(ctx).Table("moderation_records AS mr").Where(`
-		mr.verdict = ? AND mr.provider <> ?
-		AND NOT EXISTS (
-			SELECT 1 FROM moderation_records AS manual
-			WHERE manual.supersedes_id = mr.id
-		)
-	`, model.ModerationVerdictReview, model.ModerationProviderManual)
+			mr.verdict = ? AND mr.provider <> ?
+			AND NOT EXISTS (
+				SELECT 1 FROM moderation_records AS manual
+				WHERE manual.supersedes_id = mr.id
+			)
+			AND (
+				(mr.post_id IS NULL AND mr.comment_id IS NULL)
+				OR NOT EXISTS (
+					SELECT 1 FROM moderation_records AS newer
+					WHERE newer.provider <> ?
+					  AND newer.scene = mr.scene
+					  AND newer.field IS NOT DISTINCT FROM mr.field
+					  AND (
+						(newer.post_id = mr.post_id AND mr.post_id IS NOT NULL)
+						OR (newer.comment_id = mr.comment_id AND mr.comment_id IS NOT NULL)
+					  )
+					  AND (newer.created_at, newer.id) > (mr.created_at, mr.id)
+				)
+			)
+		`, model.ModerationVerdictReview, model.ModerationProviderManual,
+		model.ModerationProviderManual)
 }
 
 func loadAdminPostImages(ctx context.Context, records []AdminPostRecord) error {

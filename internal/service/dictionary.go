@@ -177,7 +177,7 @@ func (s *DictionaryService) Approve(
 	if err != nil {
 		return nil, err
 	}
-	post, latest, err := s.lockSourcePost(ctx, suggestion)
+	post, err := s.lockSourcePost(ctx, suggestion)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (s *DictionaryService) Approve(
 	}
 	if post != nil {
 		if err := s.bindSuggestionToPost(
-			ctx, suggestion, post, latest, resultID, parentCanteenID, reviewerID, now,
+			ctx, suggestion, post, resultID, parentCanteenID, reviewerID, now,
 		); err != nil {
 			return nil, err
 		}
@@ -458,26 +458,18 @@ func (s *DictionaryService) resolveApprovedParentSuggestion(
 func (s *DictionaryService) lockSourcePost(
 	ctx context.Context,
 	suggestion *model.DictionarySuggestion,
-) (*model.Post, *model.PostHistory, error) {
+) (*model.Post, error) {
 	if suggestion.PostID == nil {
-		return nil, nil, nil
+		return nil, nil
 	}
 	post, err := s.posts.LockByID(ctx, *suggestion.PostID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
-		return nil, nil, postRepositoryError(err)
+		return nil, postRepositoryError(err)
 	}
 	if post.DeletedAt != nil {
-		return nil, nil, nil
+		return nil, nil
 	}
-	latest, err := s.posts.LatestHistory(ctx, post.ID)
-	if err != nil {
-		return nil, nil, apierr.Internal(fmt.Errorf("来源帖子 %d 缺少版本历史: %w", post.ID, err))
-	}
-	postService := PostService{posts: s.posts}
-	if err := postService.assertCurrentMatchesLatest(ctx, post, latest); err != nil {
-		return nil, nil, err
-	}
-	return post, latest, nil
+	return post, nil
 }
 
 func (s *DictionaryService) approveDictionaryItem(
@@ -569,12 +561,31 @@ func (s *DictionaryService) bindSuggestionToPost(
 	ctx context.Context,
 	suggestion *model.DictionarySuggestion,
 	post *model.Post,
-	latest *model.PostHistory,
 	resultID uint64,
 	parentCanteenID *uint64,
 	reviewerID uint64,
 	now time.Time,
 ) error {
+	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	reason := fmt.Sprintf("词条提议 #%d 审批回绑", suggestion.ID)
+	history := &model.PostHistory{
+		PostID: post.ID, Revision: revision, EditedBy: reviewerID,
+		EditedAt: now, Snapshot: snapshot, EditReason: &reason,
+	}
+	if err := s.posts.CreateHistory(ctx, history); err != nil {
+		return historyWriteError(err)
+	}
 	fields := map[string]any{"updated_at": now}
 	switch suggestion.Kind {
 	case model.SuggestionKindFlavor:
@@ -601,22 +612,6 @@ func (s *DictionaryService) bindSuggestionToPost(
 	}
 	if err := s.posts.UpdateContent(ctx, post.ID, fields); err != nil {
 		return postRepositoryError(err)
-	}
-	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	reason := fmt.Sprintf("词条提议 #%d 审批回绑", suggestion.ID)
-	history := &model.PostHistory{
-		PostID: post.ID, Revision: latest.Revision + 1, EditedBy: reviewerID,
-		EditedAt: now, Snapshot: snapshot, EditReason: &reason,
-	}
-	if err := s.posts.CreateHistory(ctx, history); err != nil {
-		return historyWriteError(err)
 	}
 	return nil
 }

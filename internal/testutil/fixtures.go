@@ -3,7 +3,6 @@ package testutil
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -233,11 +232,10 @@ type PostFlavorFixture struct {
 
 // PostSpec 是帖子主体与关联数据的可覆写输入。
 type PostSpec struct {
-	Post         model.Post
-	TagNames     []string
-	Flavors      []PostFlavorFixture
-	Images       []model.ImageAsset
-	WriteHistory bool
+	Post     model.Post
+	TagNames []string
+	Flavors  []PostFlavorFixture
+	Images   []model.ImageAsset
 }
 
 // PostOverride 以闭包方式组合帖子状态、图片、标签和口味。
@@ -268,13 +266,12 @@ func WithPostImages(images ...model.ImageAsset) PostOverride {
 	return func(spec *PostSpec) { spec.Images = append([]model.ImageAsset{}, images...) }
 }
 
-// PostFixture 是完整帖子主体、关联和 revision 1。
+// PostFixture 是完整帖子主体与关联；新建内容没有编辑历史。
 type PostFixture struct {
 	Post    model.Post
 	Tags    []model.Tag
 	Flavors []model.Flavor
 	Images  []model.ImageAsset
-	History *model.PostHistory
 }
 
 // CreatePost 创建默认 approved 分享帖，可组合覆写状态和全部关联。
@@ -290,7 +287,6 @@ func (f *Fixtures) CreatePost(authorID uint64, overrides ...PostOverride) PostFi
 			Title:    fmt.Sprintf("夹具帖子 %04d", sequence),
 			Content:  "夹具帖子正文",
 		},
-		WriteHistory: true,
 	}
 	for _, override := range overrides {
 		override(&spec)
@@ -336,20 +332,6 @@ func (f *Fixtures) CreatePost(authorID uint64, overrides ...PostOverride) PostFi
 			}
 			result.Images = append(result.Images, image)
 		}
-		if spec.WriteHistory {
-			snapshot, err := postFixtureSnapshot(spec)
-			if err != nil {
-				return err
-			}
-			history := model.PostHistory{
-				PostID: spec.Post.ID, Revision: 1, EditedBy: authorID,
-				EditedAt: time.Now().UTC(), Snapshot: snapshot,
-			}
-			if err := tx.Create(&history).Error; err != nil {
-				return err
-			}
-			result.History = &history
-		}
 		return nil
 	})
 	if err != nil {
@@ -358,10 +340,9 @@ func (f *Fixtures) CreatePost(authorID uint64, overrides ...PostOverride) PostFi
 	return result
 }
 
-// CommentSpec 是评论主体和 revision 1 的可覆写输入。
+// CommentSpec 是评论主体的可覆写输入。
 type CommentSpec struct {
-	Comment      model.Comment
-	WriteHistory bool
+	Comment model.Comment
 }
 
 // CommentOverride 以闭包方式组合楼主、回复与深层回复。
@@ -385,10 +366,9 @@ func WithCommentParent(parent model.Comment) CommentOverride {
 	}
 }
 
-// CommentFixture 是评论主体和 revision 1。
+// CommentFixture 是评论主体；新建内容没有编辑历史。
 type CommentFixture struct {
 	Comment model.Comment
-	History *model.CommentHistory
 }
 
 // CreateComment 创建楼主评论；WithCommentParent 可把它组合成任意深度回复。
@@ -405,7 +385,6 @@ func (f *Fixtures) CreateComment(
 			ReplyToUserID: post.AuthorID,
 			Content:       fmt.Sprintf("夹具评论 %04d", sequence),
 		},
-		WriteHistory: true,
 	}
 	for _, override := range overrides {
 		override(&spec)
@@ -416,16 +395,6 @@ func (f *Fixtures) CreateComment(
 			return err
 		}
 		result.Comment = spec.Comment
-		if spec.WriteHistory {
-			history := model.CommentHistory{
-				CommentID: spec.Comment.ID, Revision: 1, EditedBy: authorID,
-				EditedAt: time.Now().UTC(), Content: spec.Comment.Content,
-			}
-			if err := tx.Create(&history).Error; err != nil {
-				return err
-			}
-			result.History = &history
-		}
 		return nil
 	})
 	if err != nil {
@@ -532,32 +501,6 @@ func (f *Fixtures) CompleteWorld(config appconfig.Config) *CompleteWorld {
 // CompleteWorld 用统一 Harness 的配置和数据库创建完整世界。
 func (h *Harness) CompleteWorld() *CompleteWorld {
 	return h.Fixtures.CompleteWorld(h.Config)
-}
-
-func postFixtureSnapshot(spec PostSpec) (json.RawMessage, error) {
-	flavors := make([]map[string]any, 0, len(spec.Flavors))
-	for _, flavor := range spec.Flavors {
-		flavors = append(flavors, map[string]any{
-			"id": flavor.Flavor.ID, "stance": flavor.Stance,
-		})
-	}
-	tags := append([]string{}, spec.TagNames...)
-	images := make([]string, len(spec.Images))
-	for index := range spec.Images {
-		images[index] = spec.Images[index].PublicURL
-	}
-	encoded, err := json.Marshal(map[string]any{
-		"post_type": spec.Post.PostType, "share_type": spec.Post.ShareType,
-		"status": spec.Post.Status, "category": spec.Post.Category,
-		"title": spec.Post.Title, "content": spec.Post.Content,
-		"canteen_id":        spec.Post.CanteenID,
-		"canteen_window_id": spec.Post.CanteenWindowID,
-		"cuisine_id":        spec.Post.CuisineID,
-		"price":             spec.Post.Price, "budget_min": spec.Post.BudgetMin,
-		"budget_max": spec.Post.BudgetMax,
-		"tags":       tags, "flavors": flavors, "images": images,
-	})
-	return json.RawMessage(encoded), err
 }
 
 func (f *Fixtures) mustCreate(value any, description string) {

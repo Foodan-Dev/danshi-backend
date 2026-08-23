@@ -160,7 +160,7 @@ func (ModerationRepository) UpdateImageModeration(
 	return nil
 }
 
-// ApplyManualTextVerdict 把人工结论写回仍指向同一最新版本的文本对象。
+// ApplyManualTextVerdict 把人工结论写回当前文本对象。
 func (ModerationRepository) ApplyManualTextVerdict(
 	ctx context.Context,
 	original *model.ModerationRecord,
@@ -202,13 +202,9 @@ func (ModerationRepository) ApproveEligiblePendingPosts(
 		  )
 		  AND (
 		    SELECT mr.verdict
-		    FROM moderation_records AS mr
-		    WHERE mr.post_id = p.id
-		      AND mr.post_history_id = (
-		        SELECT ph.id FROM post_histories AS ph
-		        WHERE ph.post_id = p.id ORDER BY ph.revision DESC LIMIT 1
-		      )
-		    ORDER BY mr.created_at DESC, mr.id DESC
+			    FROM moderation_records AS mr
+			    WHERE mr.post_id = p.id
+			    ORDER BY mr.created_at DESC, mr.id DESC
 		    LIMIT 1
 		  ) = ?
 	`, model.PostStatusApproved, postIDs, model.PostStatusPending,
@@ -238,9 +234,6 @@ func applyManualPostVerdict(
 	original *model.ModerationRecord,
 	verdict model.ModerationVerdict,
 ) error {
-	if original.PostHistoryID == nil {
-		return ErrNotFound
-	}
 	status := model.PostStatusRejected
 	imageClause := ""
 	if verdict == model.ModerationVerdictPass {
@@ -253,13 +246,10 @@ func applyManualPostVerdict(
 	}
 	return db.FromContext(ctx).Exec(`
 		UPDATE posts
-		SET status = ?
-		WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
-		  AND ? = (
-			SELECT id FROM post_histories
-			WHERE post_id = posts.id ORDER BY revision DESC LIMIT 1
-		  ) `+imageClause,
-		status, *original.PostID, *original.PostHistoryID).Error
+			SET status = ?
+			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+			  `+imageClause,
+		status, *original.PostID).Error
 }
 
 func applyManualCommentVerdict(
@@ -270,15 +260,9 @@ func applyManualCommentVerdict(
 	if verdict == model.ModerationVerdictPass {
 		return nil
 	}
-	if original.CommentHistoryID == nil {
-		return ErrNotFound
-	}
 	now := time.Now().UTC()
 	return db.FromContext(ctx).Model(&model.Comment{}).
-		Where(`id = ? AND deleted_at IS NULL AND ? = (
-			SELECT id FROM comment_histories
-			WHERE comment_id = comments.id ORDER BY revision DESC LIMIT 1
-		)`, *original.CommentID, *original.CommentHistoryID).
+		Where("id = ? AND deleted_at IS NULL", *original.CommentID).
 		Updates(map[string]any{
 			"deleted_at": now, "deleted_reason": model.DeleteReasonModeration, "deleted_by": nil,
 		}).Error

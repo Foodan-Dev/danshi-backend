@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -48,7 +46,7 @@ type snapshotFlavor struct {
 	Stance model.FlavorStance `json:"stance"`
 }
 
-// Create 在一个 UoW 内创建主体、全部关联、revision 1 与审核流水。
+// Create 在一个 UoW 内创建主体、全部关联与审核流水；首次创建不写编辑历史。
 func (s *PostService) Create(
 	ctx context.Context,
 	input CreatePostInput,
@@ -70,11 +68,10 @@ func (s *PostService) Create(
 	if err := s.posts.Create(ctx, post); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	history, err := s.persistPostVersion(ctx, post, resolved, 1, authorID)
-	if err != nil {
-		return nil, historyWriteError(err)
+	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
+		return nil, apierr.Internal(err)
 	}
-	status, err := s.finishModeration(ctx, post.ID, history.ID, resolved)
+	status, err := s.finishModeration(ctx, post.ID, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +81,7 @@ func (s *PostService) Create(
 	return &PostCreateResult{ID: post.ID, PostType: post.PostType, Status: status}, nil
 }
 
-// Update 串行化同帖编辑，并严格追加 latest+1 版本。
+// Update 串行化同帖编辑，先追加被替换的当前版本，再更新主体与关联。
 func (s *PostService) Update(
 	ctx context.Context,
 	postID uint64,
@@ -113,26 +110,21 @@ func (s *PostService) Update(
 	if err != nil {
 		return nil, err
 	}
-	latest, err := s.posts.LatestHistory(ctx, postID)
-	if err != nil {
-		return nil, apierr.Internal(fmt.Errorf("帖子 %d 缺少初始版本: %w", postID, err))
-	}
-	if err := s.assertCurrentMatchesLatest(ctx, post, latest); err != nil {
-		return nil, err
-	}
 	initialStatus := model.PostStatusPending
 	if !resolved.Publish {
 		initialStatus = model.PostStatusDraft
 	}
 	now := time.Now().UTC()
+	if err := s.appendCurrentPostHistory(ctx, post, authorID, resolved.EditReason, now); err != nil {
+		return nil, historyWriteError(err)
+	}
 	if err := s.posts.UpdateContent(ctx, postID, contentFields(resolved, initialStatus, now)); err != nil {
 		return nil, postRepositoryError(err)
 	}
-	history, err := s.persistPostVersion(ctx, post, resolved, latest.Revision+1, authorID)
-	if err != nil {
-		return nil, historyWriteError(err)
+	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
+		return nil, apierr.Internal(err)
 	}
-	status, err := s.finishModeration(ctx, postID, history.ID, resolved)
+	status, err := s.finishModeration(ctx, postID, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -170,47 +162,59 @@ func (s *PostService) Delete(ctx context.Context, postID, authorID uint64) error
 	return nil
 }
 
-func (s *PostService) persistPostVersion(
+func (s *PostService) applyPostRelations(
 	ctx context.Context,
-	post *model.Post,
-	resolved resolvedPostPayload,
-	revision int32,
-	editorID uint64,
-) (*model.PostHistory, error) {
+	postID uint64,
+	resolved *resolvedPostPayload,
+) error {
 	tagIDs, canonicalTags, err := s.replaceTags(ctx, resolved.Tags)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	resolved.Tags = canonicalTags
-	if err := s.posts.ReplaceTags(ctx, post.ID, tagIDs); err != nil {
-		return nil, err
+	if err := s.posts.ReplaceTags(ctx, postID, tagIDs); err != nil {
+		return err
 	}
 	if err := s.posts.ReplaceFlavors(
-		ctx, post.ID, resolved.PostType, resolved.Flavors, resolved.FlavorStances,
+		ctx, postID, resolved.PostType, resolved.Flavors, resolved.FlavorStances,
 	); err != nil {
-		return nil, err
+		return err
 	}
-	if err := s.posts.ReplaceImages(ctx, post.ID, resolved.ImageIDs); err != nil {
-		return nil, err
+	if err := s.posts.ReplaceImages(ctx, postID, resolved.ImageIDs); err != nil {
+		return err
 	}
-	snapshot, err := json.Marshal(buildSnapshot(resolved))
+	return nil
+}
+
+func (s *PostService) appendCurrentPostHistory(
+	ctx context.Context,
+	post *model.Post,
+	editorID uint64,
+	editReason *string,
+	editedAt time.Time,
+) error {
+	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
+	if err != nil {
+		return err
+	}
+	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
+	if err != nil {
+		return err
 	}
 	history := &model.PostHistory{
-		PostID: post.ID, Revision: revision, EditedBy: editorID, EditedAt: time.Now().UTC(),
-		Snapshot: snapshot, EditReason: resolved.EditReason,
+		PostID: post.ID, Revision: revision, EditedBy: editorID, EditedAt: editedAt,
+		Snapshot: snapshot, EditReason: editReason,
 	}
-	if err := s.posts.CreateHistory(ctx, history); err != nil {
-		return nil, err
-	}
-	return history, nil
+	return s.posts.CreateHistory(ctx, history)
 }
 
 func (s *PostService) finishModeration(
 	ctx context.Context,
 	postID uint64,
-	historyID uint64,
 	resolved resolvedPostPayload,
 ) (model.PostStatus, error) {
 	if !resolved.Publish {
@@ -225,7 +229,7 @@ func (s *PostService) finishModeration(
 	if err := validateModerationResult(result); err != nil {
 		return "", err
 	}
-	record := moderationRecordForPost(postID, historyID, result)
+	record := moderationRecordForPost(postID, result)
 	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
 		return "", apierr.Internal(err)
 	}
@@ -291,7 +295,7 @@ func (s *PostService) moderateTag(ctx context.Context, tag *model.Tag) error {
 		return apierr.Internal(err)
 	}
 	tagID := tag.ID
-	record := moderationRecordForTarget(nil, &tagID, nil, result)
+	record := moderationRecordForTarget(nil, &tagID, result)
 	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
 		return apierr.Internal(err)
 	}
@@ -448,72 +452,6 @@ func contentFields(
 	return fields
 }
 
-func buildSnapshot(resolved resolvedPostPayload) postSnapshot {
-	flavors := append([]model.Flavor{}, resolved.Flavors...)
-	sort.Slice(flavors, func(i, j int) bool {
-		if flavors[i].SortOrder == flavors[j].SortOrder {
-			return flavors[i].ID < flavors[j].ID
-		}
-		return flavors[i].SortOrder < flavors[j].SortOrder
-	})
-	snapshot := postSnapshot{
-		PostType: resolved.PostType, ShareType: resolved.ShareType, Title: resolved.Title,
-		Content: resolved.Content, Category: resolved.Category, CanteenID: resolved.CanteenID,
-		CanteenWindowID: resolved.CanteenWindowID, CuisineID: resolved.CuisineID,
-		Tags: snapshotTags(resolved.Tags), Images: nonNilStrings(resolved.Images),
-	}
-	if resolved.Price != nil {
-		price := resolved.Price.String()
-		snapshot.Price = &price
-	}
-	snapshot.BudgetMin, snapshot.BudgetMax = budgetColumns(resolved.BudgetRange)
-	for _, flavor := range flavors {
-		snapshot.Flavors = append(snapshot.Flavors, snapshotFlavor{
-			Name: flavor.Name, Stance: resolved.FlavorStances[flavor.Name],
-		})
-	}
-	if snapshot.Flavors == nil {
-		snapshot.Flavors = []snapshotFlavor{}
-	}
-	return snapshot
-}
-
-func (s *PostService) assertCurrentMatchesLatest(
-	ctx context.Context,
-	post *model.Post,
-	latest *model.PostHistory,
-) error {
-	return assertPostCurrentMatchesLatest(ctx, s.posts, post, latest)
-}
-
-func assertPostCurrentMatchesLatest(
-	ctx context.Context,
-	posts repository.PostRepository,
-	post *model.Post,
-	latest *model.PostHistory,
-) error {
-	relations, err := posts.LoadSnapshotRelations(ctx, post.ID)
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	current, err := json.Marshal(snapshotFromCurrent(post, relations))
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	var currentValue any
-	var latestValue any
-	if err := json.Unmarshal(current, &currentValue); err != nil {
-		return apierr.Internal(err)
-	}
-	if err := json.Unmarshal(latest.Snapshot, &latestValue); err != nil {
-		return apierr.Internal(fmt.Errorf("帖子 %d 最新快照损坏: %w", post.ID, err))
-	}
-	if !reflect.DeepEqual(currentValue, latestValue) {
-		return apierr.Conflict(apierr.BizConflict, "帖子当前内容与最新历史不一致")
-	}
-	return nil
-}
-
 func snapshotFromCurrent(post *model.Post, relations repository.PostRelations) postSnapshot {
 	snapshot := postSnapshot{
 		PostType: post.PostType, ShareType: post.ShareType, Title: post.Title, Content: post.Content,
@@ -554,16 +492,14 @@ func budgetColumns(value *BudgetRangeInput) (*int32, *int32) {
 
 func moderationRecordForPost(
 	postID uint64,
-	historyID uint64,
 	result ModerationResult,
 ) *model.ModerationRecord {
-	return moderationRecordForTarget(&postID, nil, &historyID, result)
+	return moderationRecordForTarget(&postID, nil, result)
 }
 
 func moderationRecordForTarget(
 	postID *uint64,
 	tagID *uint64,
-	historyID *uint64,
 	result ModerationResult,
 ) *model.ModerationRecord {
 	labels := pq.StringArray(result.Labels)
@@ -571,7 +507,7 @@ func moderationRecordForTarget(
 		labels = pq.StringArray{}
 	}
 	return &model.ModerationRecord{
-		PostID: postID, TagID: tagID, PostHistoryID: historyID,
+		PostID: postID, TagID: tagID,
 		Scene: model.ModerationSceneText, Provider: result.Provider,
 		ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
 		Labels: labels, Score: result.Score, RawResponse: result.RawResponse,

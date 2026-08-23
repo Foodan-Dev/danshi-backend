@@ -88,7 +88,7 @@ type PostLike struct {
 // TableName 返回帖子点赞表名。
 func (PostLike) TableName() string { return "post_likes" }
 
-// PostHistory 是帖子每一版完整内容的不可变快照。
+// PostHistory 是帖子被编辑替换掉的一版完整内容快照。
 type PostHistory struct {
 	ID         uint64 `gorm:"primaryKey"`
 	PostID     uint64

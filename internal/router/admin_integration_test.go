@@ -83,6 +83,10 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 		testAdminPostReview(t, reviewEngine, gdb, actors, fixture)
 	})
 
+	t.Run("edited content hides stale pending reviews", func(t *testing.T) {
+		testEditedContentHidesStalePendingReviews(t, engine, reviewEngine, gdb, actors, fixture)
+	})
+
 	t.Run("generic queue review restore and counter refill", func(t *testing.T) {
 		testAdminCommentReviewAndRestore(t, engine, reviewEngine, gdb, actors, fixture)
 	})
@@ -550,6 +554,52 @@ func testAdminCommentReviewAndRestore(
 		fmt.Sprintf("/api/v2/admin/comments/%d/restore", nonModeration.Comment.ID), nil, actors.Admin.Token)
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode)
+}
+
+func testEditedContentHidesStalePendingReviews(
+	t *testing.T,
+	engine *server.Hertz,
+	reviewEngine *server.Hertz,
+	gdb *gorm.DB,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, reviewEngine, actors.Author.Token,
+		sharePostPayload(fixture, "编辑前待复核帖子", []string{"旧待复核"}))
+	status, response, _ := performJSON(t, reviewEngine, http.MethodPut, postPath(post.ID),
+		sharePostPayload(fixture, "编辑后待复核帖子", []string{"新待复核"}), actors.Author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var postReviews []model.ModerationRecord
+	require.NoError(t, gdb.Where("post_id = ? AND verdict = ?", post.ID, model.ModerationVerdictReview).
+		Order("id").Find(&postReviews).Error)
+	require.Len(t, postReviews, 2, "帖子编辑后必须重新送审并追加一条审核记录")
+
+	approvedPost := createPost(t, engine, actors.Author.Token,
+		sharePostPayload(fixture, "评论待复核父帖", []string{"评论待复核"}))
+	comment := createComment(t, reviewEngine, actors.Commenter.Token, approvedPost.ID,
+		map[string]any{"content": "编辑前待复核评论"})
+	status, response, _ = performJSON(t, reviewEngine, http.MethodPut, commentPath(comment.Comment.ID),
+		map[string]any{"content": "编辑后待复核评论"}, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var commentReviews []model.ModerationRecord
+	require.NoError(t, gdb.Where("comment_id = ? AND verdict = ?",
+		comment.Comment.ID, model.ModerationVerdictReview).Order("id").Find(&commentReviews).Error)
+	require.Len(t, commentReviews, 2, "评论编辑后必须重新送审并追加一条审核记录")
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending?limit=100", nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var queue service.AdminModerationList
+	decodeData(t, response, &queue)
+	require.False(t, moderationRecordPresent(queue.Records, postReviews[0].ID),
+		"帖子编辑前的旧待复核记录不得继续展示")
+	require.True(t, moderationRecordPresent(queue.Records, postReviews[1].ID),
+		"帖子编辑后的最新待复核记录必须展示")
+	require.False(t, moderationRecordPresent(queue.Records, commentReviews[0].ID),
+		"评论编辑前的旧待复核记录不得继续展示")
+	require.True(t, moderationRecordPresent(queue.Records, commentReviews[1].ID),
+		"评论编辑后的最新待复核记录必须展示")
 }
 
 func testAdminListsAndDeletion(

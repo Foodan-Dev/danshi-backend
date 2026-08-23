@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -74,7 +73,7 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostRouteInventory(t, engine)
 	})
 
-	t.Run("create revision one and full contract", func(t *testing.T) {
+	t.Run("create has no history and full contract", func(t *testing.T) {
 		testPostCreateContract(t, engine, gdb, author, fixture)
 	})
 
@@ -102,12 +101,8 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostEditEdges(t, engine, gdb, author, other, fixture)
 	})
 
-	t.Run("concurrent revisions are two and three", func(t *testing.T) {
+	t.Run("concurrent revisions start at one without gaps", func(t *testing.T) {
 		testConcurrentPostEdits(t, engine, gdb, database, author, fixture)
-	})
-
-	t.Run("bypassed main update is detected", func(t *testing.T) {
-		testBypassedHistoryDetected(t, engine, gdb, database, author, fixture)
 	})
 
 	t.Run("history failure rolls back main and associations", func(t *testing.T) {
@@ -185,13 +180,10 @@ func testPostCreateContract(
 
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Len(t, histories, 1)
-	require.EqualValues(t, 1, histories[0].Revision)
-	assertSnapshotMatchesPost(t, gdb, stored, histories[0].Snapshot)
+	require.Empty(t, histories, "新建帖子不得写入编辑历史")
 
 	var moderation model.ModerationRecord
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).First(&moderation).Error)
-	require.Equal(t, histories[0].ID, *moderation.PostHistoryID)
 	require.Equal(t, model.ModerationVerdictPass, moderation.Verdict)
 	require.Equal(t, testutil.MockModerationProvider, moderation.Provider)
 
@@ -227,8 +219,7 @@ func testPostCreateContract(
 	require.Equal(t, http.StatusOK, status)
 	var historyResponse service.PostHistoryList
 	decodeData(t, response, &historyResponse)
-	require.Len(t, historyResponse.Histories, 1)
-	require.EqualValues(t, 1, historyResponse.Histories[0].Revision)
+	require.Empty(t, historyResponse.Histories)
 }
 
 func testPostValidationErrors(
@@ -509,32 +500,54 @@ func testPostEditVersion(
 	fixture postFixture,
 ) {
 	t.Helper()
-	post := createPost(t, engine, author.Token, sharePostPayload(fixture, "待编辑", []string{"旧标签"}))
-	payload := sharePostPayload(fixture, "编辑后的标题", []string{"新标签"})
+	post := createPost(t, engine, author.Token, sharePostPayload(fixture, "第一版标题", []string{"第一版标签"}))
+	payload := sharePostPayload(fixture, "第二版标题", []string{"第二版标签"})
 	payload["edit_reason"] = "修正文案"
 	status, response, _ := performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 
-	var stored model.Post
-	require.NoError(t, gdb.First(&stored, post.ID).Error)
-	require.Equal(t, "编辑后的标题", stored.Title)
-	require.Equal(t, model.PostStatusApproved, stored.Status)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Len(t, histories, 2)
-	require.EqualValues(t, []int32{1, 2}, []int32{histories[0].Revision, histories[1].Revision})
-	require.Equal(t, "修正文案", *histories[1].EditReason)
-	assertSnapshotMatchesPost(t, gdb, stored, histories[1].Snapshot)
+	require.Len(t, histories, 1, "首次编辑必须只保存被替换的创建版本")
+	require.EqualValues(t, 1, histories[0].Revision)
+	first := decodePostSnapshot(t, histories[0].Snapshot)
+	require.Equal(t, "第一版标题", first.Title)
+	require.Equal(t, []string{"第一版标签"}, first.Tags)
+	require.Equal(t, "修正文案", *histories[0].EditReason)
+
+	for _, version := range []struct {
+		title string
+		tag   string
+	}{
+		{title: "第三版标题", tag: "第三版标签"},
+		{title: "第四版标题", tag: "第四版标签"},
+	} {
+		payload = sharePostPayload(fixture, version.title, []string{version.tag})
+		status, response, _ = performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
+		require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	}
+
+	var stored model.Post
+	require.NoError(t, gdb.First(&stored, post.ID).Error)
+	require.Equal(t, "第四版标题", stored.Title)
+	require.Equal(t, model.PostStatusApproved, stored.Status)
+	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
+	require.Equal(t, []int32{1, 2, 3}, postRevisions(histories))
+	require.Equal(t, []string{"第一版标题", "第二版标题", "第三版标题"}, []string{
+		decodePostSnapshot(t, histories[0].Snapshot).Title,
+		decodePostSnapshot(t, histories[1].Snapshot).Title,
+		decodePostSnapshot(t, histories[2].Snapshot).Title,
+	})
 
 	var moderationCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("post_id = ?", post.ID).Count(&moderationCount).Error)
-	require.EqualValues(t, 2, moderationCount, "每次编辑必须重新送审")
+	require.EqualValues(t, 4, moderationCount, "创建和每次编辑必须分别产生审核记录")
 	var tagNames []string
 	require.NoError(t, gdb.Table("post_tags AS pt").Select("t.name").
 		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).
 		Order("t.name").Scan(&tagNames).Error)
-	require.Equal(t, []string{"新标签"}, tagNames)
+	require.Equal(t, []string{"第四版标签"}, tagNames)
 }
 
 func testTagCanonicalCaseRemainsEditable(
@@ -585,8 +598,8 @@ func testPostEditEdges(
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1, 2}, postRevisions(histories),
-		"全量 PUT 即使内容相同也必须形成可追溯的新版本")
+	require.Equal(t, []int32{1}, postRevisions(histories),
+		"全量 PUT 即使内容相同也必须记录被替换的当前版本")
 
 	clearPayload := map[string]any{
 		"post_type": model.PostTypeShare, "share_type": model.ShareTypeRecommend,
@@ -666,37 +679,15 @@ func testConcurrentPostEdits(
 	for _, history := range histories {
 		revisions = append(revisions, history.Revision)
 	}
-	require.Equal(t, []int32{1, 2, 3}, revisions, "并发编辑不得重复或跳号")
+	require.Equal(t, []int32{1, 2}, revisions, "并发编辑必须从 1 开始且不得重复或跳号")
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, post.ID).Error)
-	assertSnapshotMatchesPost(t, gdb, stored, histories[len(histories)-1].Snapshot)
-}
-
-func testBypassedHistoryDetected(
-	t *testing.T,
-	engine *server.Hertz,
-	gdb *gorm.DB,
-	database *dbinfra.DB,
-	author service.AuthResult,
-	fixture postFixture,
-) {
-	t.Helper()
-	post := createPost(t, engine, author.Token, sharePostPayload(fixture, "绕过前", []string{"历史"}))
-	require.NoError(t, gdb.Model(&model.Post{}).Where("id = ?", post.ID).
-		UpdateColumn("title", "绕过历史直接改主表").Error)
-	postService := service.NewPostService(service.DirectPassContentModerator{})
-	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
-		_, updateErr := postService.Update(
-			ctx, post.ID, postUpdateInput(t, fixture, "服务层编辑", []string{"历史"}), author.User.ID,
-		)
-		return updateErr
-	})
-	require.Error(t, err)
-	require.Equal(t, http.StatusConflict, apierr.As(err).Status)
-	require.Equal(t, apierr.BizConflict, apierr.As(err).Code)
-	var historyCount int64
-	require.NoError(t, gdb.Model(&model.PostHistory{}).Where("post_id = ?", post.ID).Count(&historyCount).Error)
-	require.EqualValues(t, 1, historyCount)
+	titles := []string{
+		decodePostSnapshot(t, histories[0].Snapshot).Title,
+		decodePostSnapshot(t, histories[1].Snapshot).Title,
+		stored.Title,
+	}
+	require.ElementsMatch(t, []string{"并发初始", "并发编辑 A", "并发编辑 B"}, titles)
 }
 
 func testHistoryFailureRollback(
@@ -720,7 +711,7 @@ func testHistoryFailureRollback(
 	require.Equal(t, "回滚前", stored.Title)
 	var historyCount int64
 	require.NoError(t, gdb.Model(&model.PostHistory{}).Where("post_id = ?", post.ID).Count(&historyCount).Error)
-	require.EqualValues(t, 1, historyCount)
+	require.Zero(t, historyCount)
 	var tagNames []string
 	require.NoError(t, gdb.Table("post_tags AS pt").Select("t.name").
 		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).Scan(&tagNames).Error)
@@ -1032,11 +1023,11 @@ func testPostTextModeration(
 	require.Equal(t, "编辑后违规标题", stored.Title)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1, 2}, postRevisions(histories))
+	require.Equal(t, []int32{1}, postRevisions(histories))
+	require.Equal(t, "编辑前已发布帖子", decodePostSnapshot(t, histories[0].Snapshot).Title)
 	var records []model.ModerationRecord
 	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("id").Find(&records).Error)
 	require.Len(t, records, 2)
-	require.Equal(t, histories[1].ID, *records[1].PostHistoryID)
 	require.Equal(t, model.ModerationVerdictBlock, records[1].Verdict)
 	require.Equal(t, []string{"edited_block"}, []string(records[1].Labels))
 	assertPrivatePostVisibility(t, engine, edited.ID, author.Token, other.Token)
@@ -1413,7 +1404,6 @@ func assertPostModeration(
 	require.NoError(t, gdb.Where("post_id = ?", postID).Order("id DESC").First(&record).Error)
 	require.Equal(t, verdict, record.Verdict)
 	require.Equal(t, labels, []string(record.Labels))
-	require.NotNil(t, record.PostHistoryID)
 }
 
 func completePostImage(
@@ -1545,58 +1535,27 @@ func createPostAsset(t *testing.T, gdb *gorm.DB, authorID uint64, suffix string)
 	return asset
 }
 
-func assertSnapshotMatchesPost(
-	t *testing.T,
-	gdb *gorm.DB,
-	post model.Post,
-	raw json.RawMessage,
-) {
-	t.Helper()
-	var snapshot struct {
-		PostType        model.PostType     `json:"post_type"`
-		ShareType       *model.ShareType   `json:"share_type"`
-		Title           string             `json:"title"`
-		Content         string             `json:"content"`
-		Category        model.PostCategory `json:"category"`
-		CanteenID       *uint64            `json:"canteen_id"`
-		CanteenWindowID *uint64            `json:"canteen_window_id"`
-		CuisineID       *uint64            `json:"cuisine_id"`
-		Price           *string            `json:"price"`
-		BudgetMin       *int32             `json:"budget_min"`
-		BudgetMax       *int32             `json:"budget_max"`
-		Tags            []string           `json:"tags"`
-		Images          []string           `json:"images"`
-	}
-	require.NoError(t, json.Unmarshal(raw, &snapshot))
-	require.Equal(t, post.PostType, snapshot.PostType)
-	require.Equal(t, post.ShareType, snapshot.ShareType)
-	require.Equal(t, post.Title, snapshot.Title)
-	require.Equal(t, post.Content, snapshot.Content)
-	require.Equal(t, post.Category, snapshot.Category)
-	require.Equal(t, post.CanteenID, snapshot.CanteenID)
-	require.Equal(t, post.CanteenWindowID, snapshot.CanteenWindowID)
-	require.Equal(t, post.CuisineID, snapshot.CuisineID)
-	if post.Price == nil {
-		require.Nil(t, snapshot.Price)
-	} else {
-		require.Equal(t, post.Price.StringFixed(2), *snapshot.Price)
-	}
-	require.Equal(t, post.BudgetMin, snapshot.BudgetMin)
-	require.Equal(t, post.BudgetMax, snapshot.BudgetMax)
+type postSnapshotAssertion struct {
+	PostType        model.PostType     `json:"post_type"`
+	ShareType       *model.ShareType   `json:"share_type"`
+	Title           string             `json:"title"`
+	Content         string             `json:"content"`
+	Category        model.PostCategory `json:"category"`
+	CanteenID       *uint64            `json:"canteen_id"`
+	CanteenWindowID *uint64            `json:"canteen_window_id"`
+	CuisineID       *uint64            `json:"cuisine_id"`
+	Price           *string            `json:"price"`
+	BudgetMin       *int32             `json:"budget_min"`
+	BudgetMax       *int32             `json:"budget_max"`
+	Tags            []string           `json:"tags"`
+	Images          []string           `json:"images"`
+}
 
-	var tags []string
-	require.NoError(t, gdb.Table("post_tags AS pt").Select("t.name").
-		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).Scan(&tags).Error)
-	sort.Slice(tags, func(i, j int) bool { return strings.ToLower(tags[i]) < strings.ToLower(tags[j]) })
-	require.Equal(t, tags, snapshot.Tags)
-	var images []string
-	require.NoError(t, gdb.Table("post_images AS pi").Select("a.public_url").
-		Joins("JOIN image_assets AS a ON a.id = pi.image_asset_id").Where("pi.post_id = ?", post.ID).
-		Order("pi.position").Scan(&images).Error)
-	if images == nil {
-		images = []string{}
-	}
-	require.Equal(t, images, snapshot.Images)
+func decodePostSnapshot(t *testing.T, raw json.RawMessage) postSnapshotAssertion {
+	t.Helper()
+	var snapshot postSnapshotAssertion
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	return snapshot
 }
 
 func installHistoryFailureTrigger(t *testing.T, gdb *gorm.DB) {

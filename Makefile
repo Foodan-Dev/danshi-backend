@@ -68,7 +68,6 @@ bench: ## 运行不依赖容器的性能基准并报告内存分配
 .PHONY: bench-db
 bench-db: ## 运行需要 PostgreSQL testcontainer 的端到端基准
 	go test -run '^$$' -bench '^BenchmarkPostListEndToEnd$$' -benchmem ./internal/router
-	go test -run '^$$' -bench '^BenchmarkAssertCurrentMatchesLatest$$' -benchmem ./internal/service
 
 .PHONY: build
 build: build-server build-migrate build-jobs ## 构建三个二进制

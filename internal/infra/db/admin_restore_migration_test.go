@@ -18,9 +18,13 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	version, err := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, err)
+	for version > 6 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	require.EqualValues(t, 6, version)
 
 	user := model.User{Email: "restore-migration@fdueat.com", PasswordHash: "x", Name: "迁移操作人"}
@@ -72,10 +76,13 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 		"机器记录仍必须拒绝 reviewer_id 与 reviewed_at")
 
 	err = dbinfra.DownOne(ctx, database.SQL)
+	require.NoError(t, err, "v8 对仅含非内容对象的审核流水必须可无损回滚")
+	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,
 		"cannot restore mr_manual_shape_check: non-manual moderation records carry reviewer metadata",
 		"存在新形态流水时 down 必须显式失败，不能静默丢弃操作人")
 	version, versionErr := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, versionErr)
-	require.Equal(t, dbinfra.ExpectedVersion, version)
+	require.EqualValues(t, 7, version)
+	require.NoError(t, dbinfra.Up(ctx, database.SQL))
 }

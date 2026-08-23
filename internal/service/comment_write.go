@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -30,7 +29,7 @@ type UpdateCommentInput struct {
 	MentionedUserIDs []uint64
 }
 
-// Create 创建评论主体、提及关联、revision 1、审核流水与通知。
+// Create 创建评论主体、提及关联、审核流水与通知；首次创建不写编辑历史。
 func (s *CommentService) Create(
 	ctx context.Context,
 	postID uint64,
@@ -66,13 +65,7 @@ func (s *CommentService) Create(
 	if err := s.comments.ReplaceMentions(ctx, comment.ID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	history := &model.CommentHistory{
-		CommentID: comment.ID, Revision: 1, EditedBy: authorID, EditedAt: now, Content: content,
-	}
-	if err := s.comments.CreateHistory(ctx, history); err != nil {
-		return nil, commentHistoryWriteError(err)
-	}
-	removed, err := s.moderateComment(ctx, comment.ID, history.ID, content)
+	removed, err := s.moderateComment(ctx, comment.ID, content)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +78,7 @@ func (s *CommentService) Create(
 	return s.commentMutationResult(ctx, comment.ID, post.AuthorID, authorID)
 }
 
-// Update 串行化评论编辑，校验主表与最新版一致并严格追加 latest+1。
+// Update 串行化评论编辑，先追加被替换的当前正文，再更新评论。
 func (s *CommentService) Update(
 	ctx context.Context,
 	commentID uint64,
@@ -113,32 +106,29 @@ func (s *CommentService) Update(
 	if post.DeletedAt != nil {
 		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
-	latest, err := s.comments.LatestHistory(ctx, commentID)
-	if err != nil {
-		return nil, apierr.Internal(fmt.Errorf("评论 %d 缺少初始版本: %w", commentID, err))
-	}
-	if latest.Content != comment.Content {
-		return nil, apierr.Conflict(apierr.BizConflict, "评论当前内容与最新历史不一致")
-	}
 	oldMentionIDs, err := s.comments.MentionIDs(ctx, commentID)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
 	now := time.Now().UTC()
+	revision, err := s.comments.NextHistoryRevision(ctx, commentID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	history := &model.CommentHistory{
+		CommentID: commentID, Revision: revision,
+		EditedBy: authorID, EditedAt: now, Content: comment.Content,
+	}
+	if err := s.comments.CreateHistory(ctx, history); err != nil {
+		return nil, commentHistoryWriteError(err)
+	}
 	if err := s.comments.UpdateContent(ctx, commentID, content, now); err != nil {
 		return nil, commentRepositoryError(err)
 	}
 	if err := s.comments.ReplaceMentions(ctx, commentID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	history := &model.CommentHistory{
-		CommentID: commentID, Revision: latest.Revision + 1,
-		EditedBy: authorID, EditedAt: now, Content: content,
-	}
-	if err := s.comments.CreateHistory(ctx, history); err != nil {
-		return nil, commentHistoryWriteError(err)
-	}
-	removed, err := s.moderateComment(ctx, commentID, history.ID, content)
+	removed, err := s.moderateComment(ctx, commentID, content)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +247,6 @@ func (s *CommentService) normalizeCommentPayload(
 func (s *CommentService) moderateComment(
 	ctx context.Context,
 	commentID uint64,
-	historyID uint64,
 	content string,
 ) (bool, error) {
 	result, err := s.moderator.Review(ctx, ModerationRequest{
@@ -269,7 +258,7 @@ func (s *CommentService) moderateComment(
 	if err := validateModerationResult(result); err != nil {
 		return false, err
 	}
-	record := moderationRecordForComment(commentID, historyID, result)
+	record := moderationRecordForComment(commentID, result)
 	if err := s.comments.CreateModerationRecord(ctx, record); err != nil {
 		return false, apierr.Internal(err)
 	}
@@ -312,7 +301,6 @@ func (s *CommentService) commentMutationResult(
 
 func moderationRecordForComment(
 	commentID uint64,
-	historyID uint64,
 	result ModerationResult,
 ) *model.ModerationRecord {
 	labels := pq.StringArray(result.Labels)
@@ -320,8 +308,8 @@ func moderationRecordForComment(
 		labels = pq.StringArray{}
 	}
 	return &model.ModerationRecord{
-		CommentID: &commentID, CommentHistoryID: &historyID,
-		Scene: model.ModerationSceneText, Provider: result.Provider,
+		CommentID: &commentID,
+		Scene:     model.ModerationSceneText, Provider: result.Provider,
 		ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
 		Labels: labels, Score: result.Score, RawResponse: result.RawResponse,
 		CreatedAt: time.Now().UTC(),

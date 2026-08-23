@@ -36,7 +36,12 @@ func TestCompleteWorldSatisfiesRealSchemaConstraints(t *testing.T) {
 	require.Len(t, world.Posts.Approved.Tags, 1)
 	require.Len(t, world.Posts.Approved.Flavors, 1)
 	require.Len(t, world.Posts.WithImage.Images, 1)
-	require.NotNil(t, world.Posts.Approved.History)
+	var postHistoryCount int64
+	require.NoError(t, harness.Database.GORM.Model(&model.PostHistory{}).Count(&postHistoryCount).Error)
+	require.Zero(t, postHistoryCount)
+	var commentHistoryCount int64
+	require.NoError(t, harness.Database.GORM.Model(&model.CommentHistory{}).Count(&commentHistoryCount).Error)
+	require.Zero(t, commentHistoryCount)
 
 	require.Nil(t, world.Comments.Root.Comment.ParentID)
 	require.Equal(t, &world.Comments.Root.Comment.ID, world.Comments.Reply.Comment.ParentID)

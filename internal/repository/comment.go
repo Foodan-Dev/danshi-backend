@@ -153,23 +153,20 @@ func (CommentRepository) SoftDelete(
 	return nil
 }
 
-// LatestHistory 返回评论当前最新的全量正文版本。
-func (CommentRepository) LatestHistory(ctx context.Context, commentID uint64) (*model.CommentHistory, error) {
-	var history model.CommentHistory
-	err := db.FromContext(ctx).Where("comment_id = ?", commentID).
-		Order("revision DESC").First(&history).Error
-	if err != nil {
-		return nil, NormalizeError(err)
-	}
-	return &history, nil
+// NextHistoryRevision 返回下一条旧版本正文的连续 revision。调用方必须已锁定评论主体。
+func (CommentRepository) NextHistoryRevision(ctx context.Context, commentID uint64) (int32, error) {
+	var revision int32
+	err := db.FromContext(ctx).Model(&model.CommentHistory{}).
+		Select("COALESCE(max(revision), 0) + 1").Where("comment_id = ?", commentID).Scan(&revision).Error
+	return revision, err
 }
 
-// CreateHistory 追加不可篡改的评论正文版本。
+// CreateHistory 追加不可篡改的被替换评论正文。
 func (CommentRepository) CreateHistory(ctx context.Context, history *model.CommentHistory) error {
 	return db.FromContext(ctx).Create(history).Error
 }
 
-// ListHistories 按版本倒序返回评论全量历史。
+// ListHistories 按版本倒序返回评论被替换的旧正文。
 func (CommentRepository) ListHistories(ctx context.Context, commentID uint64) ([]model.CommentHistory, error) {
 	histories := make([]model.CommentHistory, 0)
 	err := db.FromContext(ctx).Where("comment_id = ?", commentID).

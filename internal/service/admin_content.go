@@ -74,11 +74,7 @@ func (s *AdminService) RestorePost(
 			return nil, apierr.Conflict(apierr.BizImageNotApproved, "帖子仍引用未通过审核的图片")
 		}
 	}
-	history, err := s.posts.LatestHistory(ctx, postID)
-	if err != nil {
-		return nil, apierr.Internal(err)
-	}
-	record, err := restorationRecord(actorID, &postID, nil, history.ID, 0)
+	record, err := restorationRecord(actorID, &postID, nil)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -121,11 +117,7 @@ func (s *AdminService) RestoreComment(
 	if !isModerationDeletion(comment.DeletedAt, comment.DeletedReason) {
 		return nil, apierr.Conflict(apierr.BizContentNotRestorable, "只有机审软删除的评论可以恢复")
 	}
-	history, err := s.comments.LatestHistory(ctx, commentID)
-	if err != nil {
-		return nil, apierr.Internal(err)
-	}
-	record, err := restorationRecord(actorID, nil, &commentID, 0, history.ID)
+	record, err := restorationRecord(actorID, nil, &commentID)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -148,8 +140,6 @@ func restorationRecord(
 	actorID uint64,
 	postID *uint64,
 	commentID *uint64,
-	postHistoryID uint64,
-	commentHistoryID uint64,
 ) (*model.ModerationRecord, error) {
 	raw, err := json.Marshal(struct {
 		Action string `json:"action"`
@@ -163,12 +153,6 @@ func restorationRecord(
 		Provider: adminRestoreProvider, Verdict: model.ModerationVerdictPass,
 		Labels: pq.StringArray{}, RawResponse: raw, ReviewerID: &actorID, ReviewedAt: &now,
 		CreatedAt: now,
-	}
-	if postID != nil {
-		record.PostHistoryID = &postHistoryID
-	}
-	if commentID != nil {
-		record.CommentHistoryID = &commentHistoryID
 	}
 	return record, nil
 }

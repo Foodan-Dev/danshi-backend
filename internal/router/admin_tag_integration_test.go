@@ -71,7 +71,7 @@ func TestAdminTagCapabilitiesAgainstPostgres(t *testing.T) {
 		var renamed service.AdminTagView
 		decodeData(t, response, &renamed)
 		require.Equal(t, "改名后", renamed.Name)
-		require.EqualValues(t, 2, postRevisionCount(t, gdb, renamePost.ID),
+		require.EqualValues(t, 1, postRevisionCount(t, gdb, renamePost.ID),
 			"管理端重命名必须追加帖子快照，不能破坏下一次编辑")
 
 		payload := sharePostPayload(fixture, "标签重命名后仍可编辑", []string{"改名后"})
@@ -104,7 +104,7 @@ func TestAdminTagCapabilitiesAgainstPostgres(t *testing.T) {
 				Count(&targetRelations).Error)
 			require.EqualValues(t, 1, targetRelations,
 				"同时关联源和目标的帖子合并后只能保留一条目标关联")
-			require.EqualValues(t, 2, postRevisionCount(t, gdb, postID))
+			require.EqualValues(t, 1, postRevisionCount(t, gdb, postID))
 		}
 
 		payload := sharePostPayload(fixture, "标签合并后仍可编辑", []string{"合并目标"})

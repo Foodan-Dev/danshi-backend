@@ -96,7 +96,7 @@ type CommentLikeResult struct {
 	LikeCount int32 `json:"like_count"`
 }
 
-// CommentHistoryView 是评论的一版不可变正文。
+// CommentHistoryView 是评论被替换的一版不可变正文。
 type CommentHistoryView struct {
 	ID       uint64     `json:"id"`
 	Revision int32      `json:"revision"`
@@ -178,7 +178,7 @@ func (s *CommentService) Replies(
 	return &CommentReplies{Replies: items, Pagination: meta}, nil
 }
 
-// Histories 仅允许作者查看未删除评论的全量版本历史。
+// Histories 仅允许作者查看未删除评论的旧版本历史。
 func (s *CommentService) Histories(
 	ctx context.Context,
 	commentID uint64,

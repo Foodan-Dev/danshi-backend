@@ -182,7 +182,7 @@ type PostFavoriteResult struct {
 	FavoriteCount int32 `json:"favorite_count"`
 }
 
-// PostHistoryView 是一条可展示的全量版本历史。
+// PostHistoryView 是一条可展示的被替换旧版本历史。
 type PostHistoryView struct {
 	ID         uint64          `json:"id"`
 	Revision   int32           `json:"revision"`
@@ -350,7 +350,7 @@ func (s *PostService) Get(
 	return detail, nil
 }
 
-// Histories 仅允许作者查看未删除帖子的全量版本历史。
+// Histories 仅允许作者查看未删除帖子的旧版本历史。
 func (s *PostService) Histories(
 	ctx context.Context,
 	postID uint64,

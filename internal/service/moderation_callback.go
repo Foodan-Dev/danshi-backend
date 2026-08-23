@@ -113,8 +113,7 @@ func (s *ModerationService) ManualReview(
 	record := &model.ModerationRecord{
 		PostID: original.PostID, CommentID: original.CommentID,
 		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
-		Field: original.Field, PostHistoryID: original.PostHistoryID,
-		CommentHistoryID: original.CommentHistoryID, Scene: original.Scene,
+		Field: original.Field, Scene: original.Scene,
 		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
 		Labels: labels, Score: input.Score, RawResponse: input.RawResponse,
 		ReviewerID: &input.ReviewerID, ReviewedAt: &now,
