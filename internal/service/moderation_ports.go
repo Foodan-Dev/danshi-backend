@@ -8,8 +8,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
 )
 
 // ModerationAlert 是交给告警渠道的供应商无关载荷。

@@ -6,8 +6,8 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
 )
 
 // UploadRepository 是上传资产生命周期的持久化边界。

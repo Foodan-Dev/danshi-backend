@@ -17,9 +17,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 )
+
+// version 由构建时 -ldflags "-X main.version=..." 注入；
+// 本地 go build 不注入时保持 dev。
+var version = "dev"
 
 func main() {
 	cmd := flag.String("cmd", "up", "up | down | status | version")
@@ -77,7 +81,7 @@ func run(cmd string) (runErr error) {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("当前 %d，期望 %d\n", v, db.ExpectedVersion)
+		fmt.Printf("当前 %d，期望 %d（构建版本 %s）\n", v, db.ExpectedVersion, version)
 		if v != db.ExpectedVersion {
 			return errors.New("版本不符")
 		}

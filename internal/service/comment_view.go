@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 func (s *CommentService) buildCommentList(

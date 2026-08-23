@@ -14,9 +14,9 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
 )
 
 // ErrNotFound 是 repository 层统一的“没有命中行”错误。

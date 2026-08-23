@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 )
 
 // 期望值由本机 Python 实际执行 datetime.isoformat() 产出，不是手写的。

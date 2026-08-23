@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
 )
 
 func TestParseAndFormat(t *testing.T) {

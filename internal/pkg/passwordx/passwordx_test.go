@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/passwordx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
 )
 
 // 由本机 Python bcrypt 实际生成：bcrypt.hashpw(b"danshi-test-password", bcrypt.gensalt())

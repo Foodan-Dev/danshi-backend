@@ -6,9 +6,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // Search 处理 Search 域 HTTP 请求。

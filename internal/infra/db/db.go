@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
 
 // DB 包装 GORM 连接并提供项目统一的关闭入口。

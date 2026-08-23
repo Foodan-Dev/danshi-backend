@@ -12,8 +12,8 @@ import (
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	ses "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses/v20201002"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 const (

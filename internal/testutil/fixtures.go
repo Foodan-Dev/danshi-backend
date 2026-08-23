@@ -12,9 +12,9 @@ import (
 
 	"gorm.io/gorm"
 
-	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
+	appconfig "github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
 )
 
 const fixturePasswordHash = "$2b$12$.tR4UmM4YnDt97LElAniw.6SCzecEr7vDX9lNteF5bDqWoJNW2.wq"

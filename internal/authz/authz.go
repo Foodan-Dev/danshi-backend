@@ -1,7 +1,7 @@
 // Package authz 集中定义角色到能力的映射与能力并集计算。
 package authz
 
-import "github.com/jingyijun/danshi_backend_go/internal/model"
+import "github.com/Foodan-Dev/danshi-backend/internal/model"
 
 // Capability 是业务端点检查的权限能力，而不是用户角色。
 type Capability string

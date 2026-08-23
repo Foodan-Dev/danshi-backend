@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const dbInstrumentationName = "github.com/jingyijun/danshi_backend_go/internal/infra/db"
+const dbInstrumentationName = "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 
 type callbackRegister interface {
 	Register(string, func(*gorm.DB)) error

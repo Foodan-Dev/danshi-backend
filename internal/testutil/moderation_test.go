@@ -11,10 +11,10 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestMockModerationProgramsContentByTargetKeywordAndCall(t *testing.T) {

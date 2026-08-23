@@ -18,12 +18,12 @@ import (
 	"github.com/getkin/kin-openapi/openapi3gen"
 	"github.com/shopspring/decimal"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/apicontract"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 )
 
 const bearerScheme = "BearerAuth"

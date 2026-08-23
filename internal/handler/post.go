@@ -10,13 +10,13 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // Post 处理 Post 域 HTTP 请求。

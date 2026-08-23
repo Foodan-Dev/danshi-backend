@@ -42,11 +42,11 @@ linters:
           deny:
             - pkg: gorm.io/gorm
               desc: handler 不得直接使用 GORM，数据访问必须经 repository
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/repository
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/repository
               desc: handler 不得直接调 repository，必须经 service
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/router
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/router
               desc: handler 不得反向依赖 router 及其子包
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/middleware
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/middleware
               desc: handler 不得依赖 middleware，两者共用的 HTTP 词汇放在 httpx
 
         # httpx 是 handler 与 middleware 共用的底层 HTTP 词汇，不许反向依赖上层
@@ -54,11 +54,11 @@ linters:
           files:
             - "**/internal/httpx/**"
           deny:
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/handler
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/handler
               desc: httpx 不得反向依赖 handler
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/middleware
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/middleware
               desc: httpx 不得反向依赖 middleware
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/router
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/router
               desc: httpx 不得反向依赖 router
 
         # service 是纯业务逻辑，不该知道自己跑在 HTTP 里
@@ -76,7 +76,7 @@ linters:
           deny:
             - pkg: github.com/cloudwego/hertz
               desc: repository 不得依赖 hertz
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/service
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/service
               desc: repository 不得反向依赖 service
 
         # model 是最底层，不许依赖任何上层
@@ -86,9 +86,9 @@ linters:
           deny:
             - pkg: github.com/cloudwego/hertz
               desc: model 不得依赖 hertz
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/repository
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/repository
               desc: model 不得依赖 repository
-            - pkg: github.com/jingyijun/danshi_backend_go/internal/service
+            - pkg: github.com/Foodan-Dev/danshi-backend/internal/service
               desc: model 不得依赖 service
 
   exclusions:

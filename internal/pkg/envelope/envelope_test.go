@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 )
 
 // 成功响应不能出现 error_code / error_id 字段。

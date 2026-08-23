@@ -7,10 +7,10 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/authz"
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/authz"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 var errMalformedAuthorization = errors.New("authorization header malformed")

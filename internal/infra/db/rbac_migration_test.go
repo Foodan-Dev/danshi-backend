@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestRBACMigrationMapsLegacyRolesAndDropsSourceColumn(t *testing.T) {

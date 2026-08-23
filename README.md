@@ -279,6 +279,51 @@ go run ./cmd/danshi-migrate -cmd version
 
 完整文档索引见 [docs/README.md](docs/README.md)。
 
+## 参与贡献
+
+欢迎提 issue 与 pull request。动手之前请先读[架构与设计决策](docs/architecture.md)与仓库根目录的
+[`AGENTS.md`](AGENTS.md)——后者写明了本项目的第一性原理，与它冲突的方案即使更省事也不会被采纳。
+
+### 提交前
+
+```bash
+make fmt          # 格式化
+make lint         # 静态检查，含分层纪律，必须 0 issues
+make test-fast    # 秒级反馈，不起容器
+make test         # 全量，含 -race 与 PostgreSQL 集成测试（需要 Docker）
+make openapi      # 契约生成与四道门禁
+make schema-test  # schema 回归断言
+```
+
+`make test-fast` 用于日常迭代，**提交前仍须跑 `make test`**：并发一致性测试依赖 `-race`
+与真实数据库，跳过等于没测。
+
+### 提交信息
+
+遵循 [Conventional Commits](https://www.conventionalcommits.org/)，格式与 type 清单见
+[`AGENTS.md`](AGENTS.md) 的 Git 规范一节。一次提交只做一件事；正文保持简短，
+根因分析与验证过程写在 PR 描述里，不写进每一条提交。
+
+### 契约变更
+
+`api/openapi.json` 由运行时路由表与 Go 类型生成，**不要手改**。改了接口跑
+`make openapi-generate` 重新生成并提交。破坏性变更登记在
+[`api/BREAKING-CHANGES.md`](api/BREAKING-CHANGES.md)。
+
+四道门禁会拦住常见疏漏：路由未登记、spec 漂移、错误码未同步、GET 端点未声明 query 参数。
+
+### 数据库
+
+`migrations/00001_init.sql` 是 schema 真源。已发布的迁移不要修改，新增变更写新文件并更新
+`db.ExpectedVersion`；服务启动时会核对版本，不匹配直接拒绝启动。
+
+## 安全
+
+发现安全问题请**不要**公开提 issue，直接联系维护者。
+
+本项目对以下几类问题特别关注：权限边界绕过、用户内容越权访问、错误响应泄露内部信息、
+审核链路可被规避。
+
 ## 许可证
 
-仓库当前没有 `LICENSE` 文件，项目尚未声明开源许可证。在维护者明确选择许可证之前，不能推定代码已按某种开源条款授权使用或分发。
+本项目采用 [Apache License 2.0](LICENSE)。

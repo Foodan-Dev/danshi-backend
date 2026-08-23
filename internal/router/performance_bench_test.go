@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func BenchmarkPostListEndToEnd(b *testing.B) {

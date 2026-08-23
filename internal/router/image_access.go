@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 type afterCommitImageAccessController struct {

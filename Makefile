@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-MODULE  := github.com/jingyijun/danshi_backend_go
+MODULE  := github.com/Foodan-Dev/danshi-backend
 BIN     := bin
 LDFLAGS := -s -w
 GOFLAGS := -trimpath
@@ -24,8 +24,15 @@ lint: ## 静态检查（含分层纪律）
 	golangci-lint run ./...
 
 .PHONY: test
-test: ## 单元测试
+test: ## 全量测试（需要 Docker，约 4 分钟）
 	go test -race -count=1 ./...
+
+# 排除依赖 testcontainers 的包：model / router / service / testutil / test-contract。
+# 本地改代码时用它拿秒级反馈；提交前仍须跑 make test。
+.PHONY: test-fast
+test-fast: ## 快速测试（不起容器，秒级）
+	go test -race -count=1 $(shell go list ./... \
+		| grep -vE '/(internal/(model|router|service|testutil)|test/contract)$$')
 
 .PHONY: test-contract
 test-contract: ## 独立运行 HTTP 契约黑盒套件（需要 Docker）

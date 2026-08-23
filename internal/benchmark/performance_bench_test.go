@@ -8,14 +8,14 @@ import (
 	"github.com/bytedance/sonic"
 	hertzjson "github.com/cloudwego/hertz/pkg/common/json"
 
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/passwordx"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 const benchmarkPasswordHash = "$2b$12$.tR4UmM4YnDt97LElAniw.6SCzecEr7vDX9lNteF5bDqWoJNW2.wq"

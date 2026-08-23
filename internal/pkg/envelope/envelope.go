@@ -11,7 +11,7 @@
 // （error_handlers.py:220），位置保持不变，不要挪到顶层。
 package envelope
 
-import "github.com/jingyijun/danshi_backend_go/internal/apierr"
+import "github.com/Foodan-Dev/danshi-backend/internal/apierr"
 
 // Envelope 是响应体。code 与 HTTP 状态码一致（历史契约如此，不做改动）。
 type Envelope[T any] struct {

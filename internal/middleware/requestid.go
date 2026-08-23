@@ -7,7 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/obs"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 )
 
 // 请求 ID 的 HTTP 头名与内部上下文键。

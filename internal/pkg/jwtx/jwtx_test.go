@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
 )
 
 const secret = "a-sufficiently-long-secret-value-1234567890"

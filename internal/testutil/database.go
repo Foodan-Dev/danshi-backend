@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 )
 
 const defaultPostgresImage = "postgres:18"

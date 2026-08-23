@@ -13,10 +13,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 var benchmarkSnapshot postSnapshot

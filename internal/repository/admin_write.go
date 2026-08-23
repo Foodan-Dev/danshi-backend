@@ -6,8 +6,8 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
 )
 
 // UserBanState 是一次完整的封禁字段组更新。

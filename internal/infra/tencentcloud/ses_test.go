@@ -9,7 +9,7 @@ import (
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	ses "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses/v20201002"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
 
 type fakeSESClient struct {

@@ -19,13 +19,17 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/obs"
-	"github.com/jingyijun/danshi_backend_go/internal/router"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
+	"github.com/Foodan-Dev/danshi-backend/internal/router"
 
 	_ "time/tzdata" // 内置时区库：distroless 镜像里没有 /usr/share/zoneinfo
 )
+
+// version 由构建时 -ldflags "-X main.version=..." 注入；
+// 本地 go build 不注入时保持 dev。
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -73,7 +77,8 @@ func run() error {
 	if err := db.AssertVersion(ctx, sqlDB); err != nil {
 		return err
 	}
-	log.Info("schema 版本核对通过", slog.Int64("version", db.ExpectedVersion))
+	log.Info("schema 版本核对通过", slog.Int64("version", db.ExpectedVersion),
+		slog.String("build", version))
 	metrics, err := obs.NewMetrics(sqlDB)
 	if err != nil {
 		return err

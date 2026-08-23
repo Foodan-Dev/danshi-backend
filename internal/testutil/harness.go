@@ -8,9 +8,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 
-	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/router"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	appconfig "github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/router"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 const testingSecret = "danshi-test-secret-longer-than-thirty-two-bytes"

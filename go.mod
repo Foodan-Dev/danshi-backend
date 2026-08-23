@@ -1,4 +1,4 @@
-module github.com/jingyijun/danshi_backend_go
+module github.com/Foodan-Dev/danshi-backend
 
 go 1.26.7
 

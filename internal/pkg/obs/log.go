@@ -9,7 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
 
 // NewLogger 建结构化日志器。

@@ -10,9 +10,9 @@ import (
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 // ImageModerationApplyResult 描述回调是否为重复投递及补发布数量。

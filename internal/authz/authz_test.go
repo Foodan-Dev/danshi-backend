@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/authz"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/authz"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
 )
 
 func TestRoleCapabilityMatrixAndUnion(t *testing.T) {

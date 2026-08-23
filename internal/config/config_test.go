@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
 
 const goodSecret = "a-sufficiently-long-secret-value-1234567890"
@@ -140,9 +140,10 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.Port != 9001 {
 		t.Fatalf("PORT 未生效: %d", cfg.Port)
 	}
-	// 默认值应当来自 bindings，而不是零值
-	if len(cfg.EmailDomains()) != 3 {
-		t.Fatalf("默认邮箱白名单应有 3 项，实际 %v", cfg.EmailDomains())
+	// 默认值应当来自 bindings，而不是零值。具体域名是部署方配置，
+	// 这里只断言默认值能被解析成非空列表，不钉住任何一所学校的域名。
+	if len(cfg.EmailDomains()) == 0 {
+		t.Fatalf("默认邮箱白名单不应为空，实际 %v", cfg.EmailDomains())
 	}
 	if cfg.TencentSecretID != "env-secret-id" || cfg.TencentSecretKey != "env-secret-key" ||
 		cfg.TencentRegion != "ap-hongkong" || cfg.TencentSESFromEmail != "sender@example.com" ||

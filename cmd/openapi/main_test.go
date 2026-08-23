@@ -13,7 +13,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
+	"github.com/Foodan-Dev/danshi-backend/internal/codegen/apierrcodes"
 )
 
 const repositoryCodesPath = "../../internal/apierr/codes.go"

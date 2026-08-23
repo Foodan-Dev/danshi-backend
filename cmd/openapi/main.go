@@ -13,10 +13,10 @@ import (
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
-	openapigen "github.com/jingyijun/danshi_backend_go/internal/openapi"
-	"github.com/jingyijun/danshi_backend_go/internal/router"
+	"github.com/Foodan-Dev/danshi-backend/internal/apicontract"
+	"github.com/Foodan-Dev/danshi-backend/internal/codegen/apierrcodes"
+	openapigen "github.com/Foodan-Dev/danshi-backend/internal/openapi"
+	"github.com/Foodan-Dev/danshi-backend/internal/router"
 )
 
 func main() {

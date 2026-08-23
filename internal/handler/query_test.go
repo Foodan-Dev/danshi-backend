@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 )
 
 func TestQueryBindingPreservesRawParsingSemantics(t *testing.T) {

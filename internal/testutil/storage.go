@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // ErrMockContentMD5Mismatch 表示测试对象内容与 presign 声明的 MD5 不一致。

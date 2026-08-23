@@ -3,7 +3,7 @@ package router
 import (
 	"github.com/cloudwego/hertz/pkg/route"
 
-	"github.com/jingyijun/danshi_backend_go/internal/handler"
+	"github.com/Foodan-Dev/danshi-backend/internal/handler"
 )
 
 func registerModeration(api *route.RouterGroup, deps Deps) {

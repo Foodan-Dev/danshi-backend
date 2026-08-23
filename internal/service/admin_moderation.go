@@ -7,10 +7,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 // ReviewPost 通过帖子 id 找到未处理的机器 review 记录，并复用统一人工复核动作。

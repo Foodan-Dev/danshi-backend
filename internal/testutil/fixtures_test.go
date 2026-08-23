@@ -5,9 +5,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestCompleteWorldSatisfiesRealSchemaConstraints(t *testing.T) {

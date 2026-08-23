@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jingyijun/danshi_backend_go/internal/codegen/apierrcodes"
+	"github.com/Foodan-Dev/danshi-backend/internal/codegen/apierrcodes"
 )
 
 // 错误码是对外契约，重复的字面量意味着两种情形在前端无法区分。

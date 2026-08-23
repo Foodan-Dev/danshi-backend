@@ -22,7 +22,7 @@ import (
 
 const (
 	serviceName         = "danshi-server"
-	instrumentationName = "github.com/jingyijun/danshi_backend_go/internal/pkg/obs"
+	instrumentationName = "github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	requestIDHeader     = "X-Request-Id"
 )
 

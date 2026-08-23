@@ -68,7 +68,7 @@ func (c Config) Validate() error {
 	}
 	for _, d := range c.EmailDomains() {
 		if strings.HasPrefix(d, "@") || strings.ContainsAny(d, " \t") {
-			add("ALLOWED_EMAIL_DOMAINS 的 %q 格式不正确，应为裸域名如 fdueat.com", d)
+			add("ALLOWED_EMAIL_DOMAINS 的 %q 格式不正确，应为裸域名如 example.edu", d)
 		}
 	}
 	if c.EmailVerificationRequired {

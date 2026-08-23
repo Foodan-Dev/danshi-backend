@@ -8,9 +8,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"gorm.io/gorm"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 )
 
 // UnitOfWork 给每个请求开一个事务，对应 Python 侧 get_db() 的 yield/commit/rollback。

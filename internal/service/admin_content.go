@@ -7,9 +7,9 @@ import (
 
 	"github.com/lib/pq"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 // DeletePost 以管理员来源软删除帖子，不解除任何内容关联。

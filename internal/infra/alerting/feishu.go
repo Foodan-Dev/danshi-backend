@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 const webhookTimeout = 5 * time.Second

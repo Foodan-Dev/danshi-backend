@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // ErrMockEmailDelivery 是测试发信失败的稳定错误。

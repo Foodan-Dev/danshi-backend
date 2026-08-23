@@ -12,12 +12,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/config"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/tencentcloud"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/obs"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
+
+// version 由构建时 -ldflags "-X main.version=..." 注入；
+// 本地 go build 不注入时保持 dev。
+var version = "dev"
 
 const expirePendingCommand = "expire-pending"
 
@@ -137,6 +141,7 @@ func logExpirationResult(
 		)
 	}
 	log.InfoContext(ctx, "图片过期回收批次完成",
+		slog.String("build", version),
 		slog.Time("created_before", before),
 		slog.Bool("dry_run", dryRun),
 		slog.Int("selected", result.Selected),

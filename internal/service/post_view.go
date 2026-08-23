@@ -1,10 +1,10 @@
 package service
 
 import (
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/money"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 func buildPostListItem(

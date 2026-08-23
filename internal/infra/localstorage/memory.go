@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // Memory 是不发网络请求的开发存储；签发后即模拟对象按声明大小存在。

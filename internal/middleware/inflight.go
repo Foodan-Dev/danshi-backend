@@ -7,7 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
 )
 
 // LimitInFlight 对精确匹配的方法和路径施加无等待的在途请求上限。

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestMockEmailSenderCapturesFailuresSlowDeliveryAndAbsence(t *testing.T) {

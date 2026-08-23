@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/apicontract"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // OpenAPIBindings 在 handler 包内绑定私有请求 DTO，不改变它们的可见性。

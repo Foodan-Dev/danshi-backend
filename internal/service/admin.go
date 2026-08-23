@@ -6,10 +6,10 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/ptime"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
 const adminRestoreProvider model.ModerationProvider = "admin_restore"

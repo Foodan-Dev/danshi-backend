@@ -10,7 +10,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
+	"github.com/Foodan-Dev/danshi-backend/internal/apicontract"
 )
 
 var testCodeCatalog = CodeCatalog{

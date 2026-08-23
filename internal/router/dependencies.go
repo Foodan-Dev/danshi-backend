@@ -3,10 +3,10 @@ package router
 import (
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/alerting"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/localstorage"
-	"github.com/jingyijun/danshi_backend_go/internal/infra/tencentcloud"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/alerting"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/localstorage"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 const (

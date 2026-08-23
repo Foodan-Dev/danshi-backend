@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestSearchDomainAgainstPostgres(t *testing.T) {

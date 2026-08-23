@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 )
 
 const (

@@ -13,13 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
-	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	appRouter "github.com/jingyijun/danshi_backend_go/internal/router"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	appconfig "github.com/Foodan-Dev/danshi-backend/internal/config"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	appRouter "github.com/Foodan-Dev/danshi-backend/internal/router"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 type captureUserModerationAlerter struct {

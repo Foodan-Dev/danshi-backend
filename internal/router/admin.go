@@ -3,10 +3,10 @@ package router
 import (
 	"github.com/cloudwego/hertz/pkg/route"
 
-	"github.com/jingyijun/danshi_backend_go/internal/authz"
-	"github.com/jingyijun/danshi_backend_go/internal/handler"
-	"github.com/jingyijun/danshi_backend_go/internal/middleware"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/authz"
+	"github.com/Foodan-Dev/danshi-backend/internal/handler"
+	"github.com/Foodan-Dev/danshi-backend/internal/middleware"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 func registerAdmin(api *route.RouterGroup, deps Deps) {

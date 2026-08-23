@@ -10,12 +10,12 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/jwtx"
-	"github.com/jingyijun/danshi_backend_go/internal/repository"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
-	"github.com/jingyijun/danshi_backend_go/internal/testutil"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 // concurrencyWidth is deliberately larger than the connection-level races seen in two-way tests.

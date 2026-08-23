@@ -7,7 +7,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"github.com/jingyijun/danshi_backend_go/migrations"
+	"github.com/Foodan-Dev/danshi-backend/migrations"
 )
 
 // ExpectedVersion 是本次构建期望的 schema 版本。

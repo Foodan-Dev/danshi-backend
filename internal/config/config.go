@@ -143,7 +143,7 @@ var bindings = map[string]any{
 
 	"EMAIL_VERIFICATION_REQUIRED": true,
 	"EMAIL_VERIFICATION_SECRET":   "",
-	"ALLOWED_EMAIL_DOMAINS":       "fdueat.com,m.fudan.edu.cn,fudan.edu.cn",
+	"ALLOWED_EMAIL_DOMAINS":       "example.edu",
 
 	"CORS_ALLOW_ORIGINS":     "",
 	"CORS_ALLOW_CREDENTIALS": false,
@@ -151,7 +151,7 @@ var bindings = map[string]any{
 	"TENCENT_CLOUD_SECRET_ID":  "",
 	"TENCENT_CLOUD_SECRET_KEY": "",
 	"TENCENT_CLOUD_REGION":     "ap-guangzhou",
-	"TENCENT_SES_FROM_EMAIL":   "no-reply@danshi.fdueat.com",
+	"TENCENT_SES_FROM_EMAIL":   "",
 	"TENCENT_SES_FROM_NAME":    "旦食",
 	"TENCENT_SES_TEMPLATE_ID":  uint64(0),
 	"COS_BUCKET":               "",

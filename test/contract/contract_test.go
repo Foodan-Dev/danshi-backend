@@ -20,11 +20,11 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apicontract"
-	appconfig "github.com/jingyijun/danshi_backend_go/internal/config"
-	dbinfra "github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	routermiddleware "github.com/jingyijun/danshi_backend_go/internal/middleware"
-	"github.com/jingyijun/danshi_backend_go/internal/router"
+	"github.com/Foodan-Dev/danshi-backend/internal/apicontract"
+	appconfig "github.com/Foodan-Dev/danshi-backend/internal/config"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	routermiddleware "github.com/Foodan-Dev/danshi-backend/internal/middleware"
+	"github.com/Foodan-Dev/danshi-backend/internal/router"
 )
 
 const (

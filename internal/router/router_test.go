@@ -14,10 +14,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/jingyijun/danshi_backend_go/internal/apierr"
-	"github.com/jingyijun/danshi_backend_go/internal/httpx"
-	"github.com/jingyijun/danshi_backend_go/internal/middleware"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
+	"github.com/Foodan-Dev/danshi-backend/internal/middleware"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
 )
 
 // 用 ut 直接驱动路由，不占端口、不连数据库。

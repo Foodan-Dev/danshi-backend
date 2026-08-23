@@ -12,3 +12,6 @@ coverage.out
 /danshi-migrate
 /danshi-server
 /openapi
+
+# AI 协作过程记录，不进公开仓库
+.codex/

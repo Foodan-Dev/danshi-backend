@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 func TestFeishuWebhookAlertDoesNotLeakUserContent(t *testing.T) {

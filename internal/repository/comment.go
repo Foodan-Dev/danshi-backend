@@ -6,9 +6,9 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/pagination"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
 )
 
 // CommentRepository 是无状态的评论仓储；事务句柄始终来自 context。

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/jingyijun/danshi_backend_go/internal/infra/db"
-	"github.com/jingyijun/danshi_backend_go/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
+	"github.com/Foodan-Dev/danshi-backend/internal/model"
 )
 
 // CommentUserRow 是评论展示所需的用户与头像批量查询结果。

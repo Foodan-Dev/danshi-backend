@@ -6,7 +6,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/jingyijun/danshi_backend_go/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
 )
 
 // RuntimeStatus 与 Python 侧 /health /ready 的响应形态保持一致。
