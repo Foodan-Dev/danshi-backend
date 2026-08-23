@@ -246,10 +246,8 @@ func sampleCommentList(size int) service.CommentList {
 		}
 	}
 	return service.CommentList{
-		Comments: comments,
-		Pagination: pagination.Meta{
-			Page: 1, Limit: size, Total: 86, TotalPages: (86 + size - 1) / size,
-		},
+		Comments:   comments,
+		Pagination: pagination.CursorMeta{Limit: size},
 	}
 }
 
@@ -264,7 +262,8 @@ func sampleComment(id uint64, reply bool) service.CommentItem {
 		},
 		MentionedUsers: []service.MentionedUserView{{ID: 42, Name: "旦食用户"}},
 		LikeCount:      23, IsLiked: id%2 == 0, IsAuthor: false, IsEdited: true,
-		CreatedAt: now, Replies: []service.CommentItem{},
+		Moderation: model.ModerationStatusPass,
+		CreatedAt:  now, Replies: []service.CommentItem{},
 	}
 	if reply {
 		item.ReplyTo = &service.ReplyToUserView{ID: 42, Name: "旦食用户"}

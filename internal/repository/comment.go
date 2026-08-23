@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
@@ -13,6 +14,14 @@ import (
 
 // CommentRepository 是无状态的评论仓储；事务句柄始终来自 context。
 type CommentRepository struct{}
+
+const commentVisibilityPredicate = `(
+	(c.deleted_at IS NULL AND c.moderation = ?)
+	OR (
+		c.author_id = ? AND c.moderation <> ?
+		AND (c.deleted_at IS NULL OR c.deleted_reason = ?)
+	)
+)`
 
 // FindByID 返回评论主体，包括软删除行。
 func (CommentRepository) FindByID(ctx context.Context, commentID uint64) (*model.Comment, error) {
@@ -39,35 +48,63 @@ func (CommentRepository) Create(ctx context.Context, comment *model.Comment) err
 	return db.FromContext(ctx).Create(comment).Error
 }
 
-// FindRootPage 分页返回一帖的楼主评论；软删除行保留为展示占位。
+// FindRootPage 以稳定复合游标返回当前用户可见的楼主评论。
 func (CommentRepository) FindRootPage(
 	ctx context.Context,
 	postID uint64,
+	currentUserID uint64,
 	sortBy string,
-	params pagination.Params,
-) ([]model.Comment, pagination.Meta, error) {
-	query := db.FromContext(ctx).Model(&model.Comment{}).
-		Where("post_id = ? AND root_id IS NULL", postID)
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, pagination.Meta{}, err
+	params pagination.CursorParams,
+) ([]model.Comment, bool, error) {
+	query := visibleCommentQuery(ctx, currentUserID).
+		Where("c.post_id = ? AND c.root_id IS NULL", postID)
+	query, err := applyRootCommentCursor(query, sortBy, params.After)
+	if err != nil {
+		return nil, false, err
 	}
+	comments := make([]model.Comment, 0, params.Limit+1)
+	if err := query.Limit(params.Limit + 1).Scan(&comments).Error; err != nil {
+		return nil, false, err
+	}
+	hasMore := len(comments) > params.Limit
+	if hasMore {
+		comments = comments[:params.Limit]
+	}
+	return comments, hasMore, nil
+}
+
+func applyRootCommentCursor(
+	query *gorm.DB,
+	sortBy string,
+	after *pagination.Cursor,
+) (*gorm.DB, error) {
 	if sortBy == "hot" {
-		query = query.Order("like_count DESC, created_at DESC, id DESC")
-	} else {
-		query = query.Order("created_at ASC, id ASC")
+		return applyHotCommentCursor(query, after)
 	}
-	comments := make([]model.Comment, 0, params.Limit)
-	if err := query.Offset(params.Offset()).Limit(params.Limit).Find(&comments).Error; err != nil {
-		return nil, pagination.Meta{}, err
+	if after != nil {
+		query = query.Where("(c.created_at, c.id) > (?, ?)", after.CreatedAt, after.ID)
 	}
-	return comments, pagination.NewMeta(params, total), nil
+	return query.Order("c.created_at ASC, c.id ASC"), nil
+}
+
+func applyHotCommentCursor(query *gorm.DB, after *pagination.Cursor) (*gorm.DB, error) {
+	if after != nil && after.Rank == nil {
+		return nil, pagination.ErrInvalidCursor
+	}
+	if after != nil {
+		query = query.Where(
+			"(c.like_count, c.created_at, c.id) < (?, ?, ?)",
+			*after.Rank, after.CreatedAt, after.ID,
+		)
+	}
+	return query.Order("c.like_count DESC, c.created_at DESC, c.id DESC"), nil
 }
 
 // FindReplyPreviews 为每个楼批量取最新 limit 条回复，最终按时间正序展示。
 func (CommentRepository) FindReplyPreviews(
 	ctx context.Context,
 	rootIDs []uint64,
+	currentUserID uint64,
 	limit int,
 ) ([]model.Comment, error) {
 	rootIDs = uniqueSortedIDs(rootIDs)
@@ -83,34 +120,48 @@ func (CommentRepository) FindReplyPreviews(
 			           ORDER BY c.created_at DESC, c.id DESC
 			       ) AS preview_rank
 			FROM comments AS c
-			WHERE c.root_id IN ?
+			WHERE c.root_id IN ? AND `+commentVisibilityPredicate+`
 		)
 		SELECT *
 		FROM ranked
 		WHERE preview_rank <= ?
 		ORDER BY root_id, created_at, id
-	`, rootIDs, limit).Scan(&comments).Error
+	`, rootIDs, model.ModerationStatusPass, currentUserID, model.ModerationStatusPass,
+		model.DeleteReasonModeration, limit).Scan(&comments).Error
 	return comments, err
 }
 
-// FindReplyPage 分页返回某一楼内的全部回复，按时间正序拍扁展示。
+// FindReplyPage 以正序复合游标返回某一楼内当前用户可见的回复。
 func (CommentRepository) FindReplyPage(
 	ctx context.Context,
 	rootID uint64,
-	params pagination.Params,
-) ([]model.Comment, pagination.Meta, error) {
-	query := db.FromContext(ctx).Model(&model.Comment{}).Where("root_id = ?", rootID)
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, pagination.Meta{}, err
+	currentUserID uint64,
+	params pagination.CursorParams,
+) ([]model.Comment, bool, error) {
+	query := visibleCommentQuery(ctx, currentUserID).Where("c.root_id = ?", rootID)
+	if params.After != nil {
+		query = query.Where(
+			"(c.created_at, c.id) > (?, ?)", params.After.CreatedAt, params.After.ID,
+		)
 	}
-	comments := make([]model.Comment, 0, params.Limit)
-	err := query.Order("created_at, id").Offset(params.Offset()).Limit(params.Limit).
-		Find(&comments).Error
+	comments := make([]model.Comment, 0, params.Limit+1)
+	err := query.Order("c.created_at, c.id").Limit(params.Limit + 1).Scan(&comments).Error
 	if err != nil {
-		return nil, pagination.Meta{}, err
+		return nil, false, err
 	}
-	return comments, pagination.NewMeta(params, total), nil
+	hasMore := len(comments) > params.Limit
+	if hasMore {
+		comments = comments[:params.Limit]
+	}
+	return comments, hasMore, nil
+}
+
+func visibleCommentQuery(ctx context.Context, currentUserID uint64) *gorm.DB {
+	return db.FromContext(ctx).Table("comments AS c").Where(
+		commentVisibilityPredicate,
+		model.ModerationStatusPass, currentUserID, model.ModerationStatusPass,
+		model.DeleteReasonModeration,
+	)
 }
 
 // UpdateContent 写入评论主体的新正文。调用方必须先锁行并在同事务追加历史。
@@ -122,6 +173,34 @@ func (CommentRepository) UpdateContent(
 ) error {
 	result := db.FromContext(ctx).Model(&model.Comment{}).Where("id = ?", commentID).
 		Updates(map[string]any{"content": content, "updated_at": updatedAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ApplyModeration 写回评论当前审核状态；block 软删除，重新送审通过或待复核时撤销机审删除。
+func (CommentRepository) ApplyModeration(
+	ctx context.Context,
+	commentID uint64,
+	moderation model.ModerationStatus,
+	now time.Time,
+) error {
+	updates := map[string]any{"moderation": moderation}
+	if moderation == model.ModerationStatusBlock {
+		updates["deleted_at"] = now
+		updates["deleted_reason"] = model.DeleteReasonModeration
+		updates["deleted_by"] = nil
+	} else {
+		updates["deleted_at"] = nil
+		updates["deleted_reason"] = nil
+		updates["deleted_by"] = nil
+	}
+	result := db.FromContext(ctx).Model(&model.Comment{}).Where("id = ?", commentID).
+		UpdateColumns(updates)
 	if result.Error != nil {
 		return result.Error
 	}

@@ -104,7 +104,7 @@ func (s *AdminService) lockApprovedPostImages(ctx context.Context, postID uint64
 	return true, nil
 }
 
-// RestoreComment 只恢复机审软删除；计数回补完全由数据库触发器完成。
+// RestoreComment 只恢复机审软删除；审核状态与计数回补由同一数据库更新完成。
 func (s *AdminService) RestoreComment(
 	ctx context.Context,
 	commentID uint64,

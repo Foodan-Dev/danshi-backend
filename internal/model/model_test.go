@@ -118,7 +118,7 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 
 	comment := &model.Comment{
 		PostID: post.ID, AuthorID: actor.ID, ReplyToUserID: author.ID,
-		Content: "模型层测试评论",
+		Content: "模型层测试评论", Moderation: model.ModerationStatusPass,
 	}
 	gotComment := insertAndSelect(t, gdb, comment).(*model.Comment)
 	require.Equal(t, comment.ID, gotComment.EffectiveRootID)

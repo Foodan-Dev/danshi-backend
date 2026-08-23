@@ -68,7 +68,7 @@ func (h *Comment) Replies(ctx context.Context, c *app.RequestContext) {
 	query, err := bindQuery[replyPaginationQuery](c)
 	var commentID uint64
 	var principal *service.Principal
-	var params pagination.Params
+	var params pagination.CursorRequest
 	if err == nil {
 		commentID, principal, params, err = commentListIdentity(c, query)
 	}
@@ -198,7 +198,7 @@ func commentIdentity(c *app.RequestContext) (uint64, *service.Principal, error) 
 func commentListIdentity(
 	c *app.RequestContext,
 	query replyPaginationQuery,
-) (uint64, *service.Principal, pagination.Params, error) {
+) (uint64, *service.Principal, pagination.CursorRequest, error) {
 	commentID, principal, err := commentIdentity(c)
 	params, paramsErr := query.params()
 	if err == nil {

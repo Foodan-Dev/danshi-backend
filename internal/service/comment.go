@@ -11,10 +11,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-const (
-	commentReplyPreviewLimit = 2
-	deletedCommentContent    = "该评论已删除"
-)
+const commentReplyPreviewLimit = 2
 
 // CommentService 实现真实回复链、按楼拍扁展示与评论版本协议。
 type CommentService struct {
@@ -22,10 +19,44 @@ type CommentService struct {
 	posts     repository.PostRepository
 	moderator ContentModerator
 	alerter   ModerationAlerter
+	rootTime  *pagination.CursorCodec
+	rootHot   *pagination.CursorCodec
+	replies   *pagination.CursorCodec
 }
 
 // NewCommentService 创建评论服务。
 func NewCommentService(moderator ContentModerator, alerters ...ModerationAlerter) *CommentService {
+	return newCommentService(
+		moderator,
+		pagination.NewEphemeralCursorCodec("comments.roots.time"),
+		pagination.NewEphemeralCursorCodec("comments.roots.hot"),
+		pagination.NewEphemeralCursorCodec("comments.replies"),
+		alerters...,
+	)
+}
+
+// NewCommentServiceWithCursorSecret 创建跨实例可互认评论游标的服务。
+func NewCommentServiceWithCursorSecret(
+	moderator ContentModerator,
+	cursorSecret string,
+	alerters ...ModerationAlerter,
+) *CommentService {
+	return newCommentService(
+		moderator,
+		pagination.NewCursorCodec(cursorSecret, "comments.roots.time"),
+		pagination.NewCursorCodec(cursorSecret, "comments.roots.hot"),
+		pagination.NewCursorCodec(cursorSecret, "comments.replies"),
+		alerters...,
+	)
+}
+
+func newCommentService(
+	moderator ContentModerator,
+	rootTime *pagination.CursorCodec,
+	rootHot *pagination.CursorCodec,
+	replies *pagination.CursorCodec,
+	alerters ...ModerationAlerter,
+) *CommentService {
 	if moderator == nil {
 		moderator = UnavailableContentModerator{}
 	}
@@ -33,7 +64,10 @@ func NewCommentService(moderator ContentModerator, alerters ...ModerationAlerter
 	if len(alerters) > 0 && alerters[0] != nil {
 		alerter = alerters[0]
 	}
-	return &CommentService{moderator: moderator, alerter: alerter}
+	return &CommentService{
+		moderator: moderator, alerter: alerter,
+		rootTime: rootTime, rootHot: rootHot, replies: replies,
+	}
 }
 
 // CommentAuthorView 是评论作者的公开信息。
@@ -58,31 +92,31 @@ type ReplyToUserView struct {
 
 // CommentItem 是楼主评论与拍扁回复共享的响应形态。
 type CommentItem struct {
-	ID             uint64              `json:"id"`
-	Content        string              `json:"content"`
-	Author         CommentAuthorView   `json:"author"`
-	ReplyTo        *ReplyToUserView    `json:"reply_to"`
-	MentionedUsers []MentionedUserView `json:"mentioned_users"`
-	LikeCount      int32               `json:"like_count"`
-	IsLiked        bool                `json:"is_liked"`
-	IsAuthor       bool                `json:"is_author"`
-	IsEdited       bool                `json:"is_edited"`
-	IsDeleted      bool                `json:"is_deleted"`
-	CreatedAt      ptime.Time          `json:"created_at"`
-	ReplyCount     int32               `json:"reply_count"`
-	Replies        []CommentItem       `json:"replies"`
+	ID             uint64                 `json:"id"`
+	Content        string                 `json:"content"`
+	Author         CommentAuthorView      `json:"author"`
+	ReplyTo        *ReplyToUserView       `json:"reply_to"`
+	MentionedUsers []MentionedUserView    `json:"mentioned_users"`
+	LikeCount      int32                  `json:"like_count"`
+	IsLiked        bool                   `json:"is_liked"`
+	IsAuthor       bool                   `json:"is_author"`
+	IsEdited       bool                   `json:"is_edited"`
+	Moderation     model.ModerationStatus `json:"moderation"`
+	CreatedAt      ptime.Time             `json:"created_at"`
+	ReplyCount     int32                  `json:"reply_count"`
+	Replies        []CommentItem          `json:"replies"`
 }
 
 // CommentList 是帖子楼主评论页及回复预览。
 type CommentList struct {
-	Comments   []CommentItem   `json:"comments"`
-	Pagination pagination.Meta `json:"pagination"`
+	Comments   []CommentItem         `json:"comments"`
+	Pagination pagination.CursorMeta `json:"pagination"`
 }
 
 // CommentReplies 是一楼内按真实 root_id 拍扁的回复页。
 type CommentReplies struct {
-	Replies    []CommentItem   `json:"replies"`
-	Pagination pagination.Meta `json:"pagination"`
+	Replies    []CommentItem         `json:"replies"`
+	Pagination pagination.CursorMeta `json:"pagination"`
 }
 
 // CommentMutationResult 是创建、编辑成功后的评论数据。
@@ -116,7 +150,7 @@ func (s *CommentService) List(
 	postID uint64,
 	currentUserID uint64,
 	sortBy string,
-	params pagination.Params,
+	request pagination.CursorRequest,
 ) (*CommentList, error) {
 	post, err := s.visiblePost(ctx, postID, currentUserID)
 	if err != nil {
@@ -126,7 +160,18 @@ func (s *CommentService) List(
 	if err != nil {
 		return nil, err
 	}
-	roots, meta, err := s.comments.FindRootPage(ctx, postID, sortBy, params)
+	codec := s.rootTime
+	if sortBy == "hot" {
+		codec = s.rootHot
+	}
+	params, err := codec.DecodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	if sortBy == "hot" && params.After != nil && params.After.Rank == nil {
+		return nil, apierr.InvalidField("cursor", apierr.FieldInvalidFormat, "cursor 无效或已被篡改")
+	}
+	roots, hasMore, err := s.comments.FindRootPage(ctx, postID, currentUserID, sortBy, params)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -134,11 +179,17 @@ func (s *CommentService) List(
 	for _, root := range roots {
 		rootIDs = append(rootIDs, root.ID)
 	}
-	previews, err := s.comments.FindReplyPreviews(ctx, rootIDs, commentReplyPreviewLimit)
+	previews, err := s.comments.FindReplyPreviews(
+		ctx, rootIDs, currentUserID, commentReplyPreviewLimit,
+	)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
 	items, err := s.buildCommentList(ctx, roots, previews, post.AuthorID, currentUserID)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := commentCursorMeta(codec, roots, params.Limit, hasMore, sortBy == "hot")
 	if err != nil {
 		return nil, err
 	}
@@ -150,11 +201,14 @@ func (s *CommentService) Replies(
 	ctx context.Context,
 	commentID uint64,
 	currentUserID uint64,
-	params pagination.Params,
+	request pagination.CursorRequest,
 ) (*CommentReplies, error) {
 	root, err := s.comments.FindByID(ctx, commentID)
 	if err != nil {
 		return nil, commentRepositoryError(err)
+	}
+	if !commentVisibleToViewer(root, currentUserID) {
+		return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
 	}
 	if root.RootID != nil {
 		return nil, apierr.InvalidField("comment_id", apierr.FieldConflict, "只能查询楼主评论的回复")
@@ -163,7 +217,11 @@ func (s *CommentService) Replies(
 	if err != nil {
 		return nil, err
 	}
-	replies, meta, err := s.comments.FindReplyPage(ctx, root.ID, params)
+	params, err := s.replies.DecodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	replies, hasMore, err := s.comments.FindReplyPage(ctx, root.ID, currentUserID, params)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -175,10 +233,14 @@ func (s *CommentService) Replies(
 	for index := range replies {
 		items = append(items, buildCommentItem(&replies[index], post.AuthorID, false, relations))
 	}
+	meta, err := commentCursorMeta(s.replies, replies, params.Limit, hasMore, false)
+	if err != nil {
+		return nil, err
+	}
 	return &CommentReplies{Replies: items, Pagination: meta}, nil
 }
 
-// Histories 仅允许作者查看未删除评论的旧版本历史。
+// Histories 允许作者查看未删除或因审核违规软删除评论的旧版本历史。
 func (s *CommentService) Histories(
 	ctx context.Context,
 	commentID uint64,
@@ -189,7 +251,11 @@ func (s *CommentService) Histories(
 		return nil, commentRepositoryError(err)
 	}
 	if comment.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizCommentDeleted, "评论")
+		moderationDeletion := comment.DeletedReason != nil &&
+			*comment.DeletedReason == model.DeleteReasonModeration
+		if !moderationDeletion || comment.AuthorID != currentUserID {
+			return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
+		}
 	}
 	if comment.AuthorID != currentUserID {
 		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能查看自己的评论编辑历史")
@@ -276,7 +342,19 @@ func (s *CommentService) interactiveComment(
 		return nil, commentRepositoryError(err)
 	}
 	if comment.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizCommentDeleted, "评论")
+		return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
+	}
+	if comment.Moderation != model.ModerationStatusPass {
+		return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
+	}
+	if comment.RootID != nil {
+		root, rootErr := s.comments.FindByID(ctx, *comment.RootID)
+		if rootErr != nil {
+			return nil, commentRepositoryError(rootErr)
+		}
+		if root.DeletedAt != nil || root.Moderation != model.ModerationStatusPass {
+			return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
+		}
 	}
 	post, err := s.posts.FindByID(ctx, comment.PostID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
@@ -286,6 +364,42 @@ func (s *CommentService) interactiveComment(
 		return nil, apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
 	}
 	return comment, nil
+}
+
+func commentVisibleToViewer(comment *model.Comment, currentUserID uint64) bool {
+	if comment.DeletedAt == nil && comment.Moderation == model.ModerationStatusPass {
+		return true
+	}
+	if comment.AuthorID != currentUserID || comment.Moderation == model.ModerationStatusPass {
+		return false
+	}
+	return comment.DeletedAt == nil || comment.DeletedReason != nil &&
+		*comment.DeletedReason == model.DeleteReasonModeration
+}
+
+func commentCursorMeta(
+	codec *pagination.CursorCodec,
+	comments []model.Comment,
+	limit int,
+	hasMore bool,
+	ranked bool,
+) (pagination.CursorMeta, error) {
+	meta := pagination.CursorMeta{Limit: limit, HasMore: hasMore}
+	if !hasMore || len(comments) == 0 {
+		return meta, nil
+	}
+	last := comments[len(comments)-1]
+	cursor := pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	if ranked {
+		rank := int64(last.LikeCount)
+		cursor.Rank = &rank
+	}
+	token, err := codec.Encode(cursor)
+	if err != nil {
+		return pagination.CursorMeta{}, apierr.Internal(err)
+	}
+	meta.NextCursor = &token
+	return meta, nil
 }
 
 func normalizeCommentSort(value string) (string, error) {

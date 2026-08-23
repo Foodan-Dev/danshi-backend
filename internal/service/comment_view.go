@@ -52,18 +52,13 @@ func buildCommentItem(
 	isRoot bool,
 	relations repository.CommentRelations,
 ) CommentItem {
-	content := comment.Content
 	mentionedUsers := buildMentionedUsers(comment.ID, relations)
-	if comment.DeletedAt != nil {
-		content = deletedCommentContent
-		mentionedUsers = []MentionedUserView{}
-	}
 	item := CommentItem{
-		ID: comment.ID, Content: content,
+		ID: comment.ID, Content: comment.Content,
 		Author:         buildCommentAuthor(comment.AuthorID, relations),
 		MentionedUsers: mentionedUsers, LikeCount: comment.LikeCount,
 		IsLiked: relations.Liked[comment.ID], IsAuthor: comment.AuthorID == postAuthorID,
-		IsEdited: relations.Revisions[comment.ID] > 0, IsDeleted: comment.DeletedAt != nil,
+		IsEdited: relations.Revisions[comment.ID] > 0, Moderation: comment.Moderation,
 		CreatedAt: ptime.Time(comment.CreatedAt), Replies: []CommentItem{},
 	}
 	if isRoot {

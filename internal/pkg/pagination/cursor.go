@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	cursorVersion     = byte(1)
-	cursorPayloadSize = 1 + 8 + 8
+	cursorVersion           = byte(1)
+	rankedCursorVersion     = byte(2)
+	cursorPayloadSize       = 1 + 8 + 8
+	rankedCursorPayloadSize = cursorPayloadSize + 8
 )
 
 // ErrInvalidCursor 是无法解密、被篡改或载荷不合法的游标。
@@ -26,6 +28,7 @@ var ErrInvalidCursor = errors.New("游标无效")
 type Cursor struct {
 	CreatedAt time.Time
 	ID        uint64
+	Rank      *int64
 }
 
 // CursorRequest 是已校验 limit、尚待按端点作用域解码的请求。
@@ -91,15 +94,24 @@ func (c *CursorCodec) DecodeRequest(request CursorRequest) (CursorParams, error)
 	return CursorParams{After: after, Limit: request.Limit}, nil
 }
 
-// Encode 加密一个完整的 (created_at, id) 排序键。
+// Encode 加密一个完整的 (created_at, id) 或 (rank, created_at, id) 排序键。
 func (c *CursorCodec) Encode(value Cursor) (string, error) {
 	if value.CreatedAt.IsZero() || value.ID == 0 {
 		return "", fmt.Errorf("编码游标: %w", ErrInvalidCursor)
 	}
-	payload := make([]byte, cursorPayloadSize)
-	payload[0] = cursorVersion
+	payloadSize := cursorPayloadSize
+	version := cursorVersion
+	if value.Rank != nil {
+		payloadSize = rankedCursorPayloadSize
+		version = rankedCursorVersion
+	}
+	payload := make([]byte, payloadSize)
+	payload[0] = version
 	binary.BigEndian.PutUint64(payload[1:9], uint64(value.CreatedAt.UTC().UnixMicro()))
 	binary.BigEndian.PutUint64(payload[9:17], value.ID)
+	if value.Rank != nil {
+		binary.BigEndian.PutUint64(payload[17:25], uint64(*value.Rank))
+	}
 	nonce := make([]byte, c.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("生成游标 nonce: %w", err)
@@ -114,12 +126,12 @@ func (c *CursorCodec) Decode(raw string) (*Cursor, error) {
 		return nil, nil
 	}
 	sealed, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil || len(sealed) != c.aead.NonceSize()+cursorPayloadSize+c.aead.Overhead() {
+	if err != nil || len(sealed) < c.aead.NonceSize()+c.aead.Overhead() {
 		return nil, ErrInvalidCursor
 	}
 	nonceSize := c.aead.NonceSize()
 	payload, err := c.aead.Open(nil, sealed[:nonceSize], sealed[nonceSize:], c.scope)
-	if err != nil || len(payload) != cursorPayloadSize || payload[0] != cursorVersion {
+	if err != nil || !validCursorPayload(payload) {
 		return nil, ErrInvalidCursor
 	}
 	id := binary.BigEndian.Uint64(payload[9:17])
@@ -127,5 +139,15 @@ func (c *CursorCodec) Decode(raw string) (*Cursor, error) {
 		return nil, ErrInvalidCursor
 	}
 	micros := int64(binary.BigEndian.Uint64(payload[1:9]))
-	return &Cursor{CreatedAt: time.UnixMicro(micros).UTC(), ID: id}, nil
+	value := &Cursor{CreatedAt: time.UnixMicro(micros).UTC(), ID: id}
+	if payload[0] == rankedCursorVersion {
+		rank := int64(binary.BigEndian.Uint64(payload[17:25]))
+		value.Rank = &rank
+	}
+	return value, nil
+}
+
+func validCursorPayload(payload []byte) bool {
+	return len(payload) == cursorPayloadSize && payload[0] == cursorVersion ||
+		len(payload) == rankedCursorPayloadSize && payload[0] == rankedCursorVersion
 }

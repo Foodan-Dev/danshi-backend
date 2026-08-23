@@ -31,16 +31,16 @@ func (query cursorPaginationQuery) params() (pagination.CursorRequest, error) {
 }
 
 type replyPaginationQuery struct {
-	Page  string `query:"page" query_type:"integer" query_default:"1" query_min:"1"`
-	Limit string `query:"limit" query_type:"integer" query_default:"10" query_min:"1" query_max:"100"`
+	Cursor string `query:"cursor"`
+	Limit  string `query:"limit" query_type:"integer" query_default:"10" query_min:"1" query_max:"100"`
 }
 
-func (query replyPaginationQuery) params() (pagination.Params, error) {
+func (query replyPaginationQuery) params() (pagination.CursorRequest, error) {
 	rawLimit := query.Limit
 	if rawLimit == "" {
 		rawLimit = "10"
 	}
-	return pagination.Parse(query.Page, rawLimit)
+	return pagination.ParseCursorRequest(query.Cursor, rawLimit)
 }
 
 type postFiltersQuery struct {
@@ -85,7 +85,7 @@ type userPostsQuery struct {
 
 type commentListQuery struct {
 	SortBy     string `query:"sort_by" query_enum:"latest,hot" query_default:"latest"`
-	Pagination paginationQuery
+	Pagination cursorPaginationQuery
 }
 
 type notificationListQuery struct {

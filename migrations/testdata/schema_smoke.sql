@@ -217,16 +217,16 @@ DELETE FROM canteen_windows WHERE id IN (203,204,205);
 \echo '########## 1d. comments：同帖 + 楼号一致，存真实链、展示拍扁 ##########'
 INSERT INTO posts (id,author_id,post_type,share_type,status,category,title,content) VALUES (1004,2,'share','recommend','approved','food','另一帖','y');
 -- 行为 1：点帖子的评论按钮 → 楼主评论
-INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content)
- VALUES (2001,1001,2,NULL,NULL,1,'楼主评论');
+INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
+ VALUES (2001,1001,2,NULL,NULL,1,'楼主评论','pass');
 -- 行为 2：点楼主评论的回复 → parent_id = root_id = 楼主评论
-INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content)
- VALUES (2002,1001,1,2001,2001,2,'回复楼主');
+INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
+ VALUES (2002,1001,1,2001,2001,2,'回复楼主','pass');
 -- 行为 3：点楼内非 root 评论的回复 → parent 指向它，root 沿用同一楼
-INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content)
- VALUES (2003,1001,2,2002,2001,1,'回复楼内回复');
-INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content)
- VALUES (2004,1001,1,2003,2001,2,'第四层，存储允许');
+INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
+ VALUES (2003,1001,2,2002,2001,1,'回复楼内回复','pass');
+INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
+ VALUES (2004,1001,1,2003,2001,2,'第四层，存储允许','pass');
 DO $$ BEGIN
   PERFORM _assert((SELECT count(*) FROM comments WHERE root_id=2001)=3, '同一楼下 3 条回复（任意深度都拍扁到同一楼）');
   PERFORM _assert((SELECT effective_root_id FROM comments WHERE id=2001)=2001, '楼主评论 effective_root = 自身');
@@ -249,7 +249,28 @@ DO $$ BEGIN
     ARRAY['23514'], '软删除必须同时写 deleted_reason');
   PERFORM _assert_rejects($q$UPDATE comments SET deleted_at=now(), deleted_reason='whatever' WHERE id=2004$q$,
     ARRAY['23514'], 'deleted_reason 枚举收敛');
+  PERFORM _assert_rejects($q$UPDATE comments SET moderation='unknown' WHERE id=2004$q$,
+    ARRAY['23514'], '评论当前审核状态枚举收敛');
 END $$;
+
+UPDATE comments SET moderation='review' WHERE id=2002;
+DO $$ BEGIN
+  PERFORM _assert((SELECT reply_count FROM comments WHERE id=2001)=2,
+    '待复核回复不计入楼层回复数');
+  PERFORM _assert((SELECT comment_count FROM posts WHERE id=1001)=3,
+    '待复核回复不计入帖子评论数');
+END $$;
+UPDATE comments SET moderation='pass' WHERE id=2002;
+UPDATE comments SET moderation='review' WHERE id=2001;
+DO $$ BEGIN
+  PERFORM _assert((SELECT comment_count FROM posts WHERE id=1001)=0,
+    '根评论待复核时整层楼不计入帖子评论数');
+  PERFORM _assert((SELECT count(*) FROM comments WHERE root_id=2001 AND moderation='pass')=3,
+    '隐藏整层楼不得改写回复行审核状态');
+  PERFORM _assert((SELECT reply_count FROM comments WHERE id=2001)=3,
+    '根楼隐藏时保留有效回复派生数供恢复使用');
+END $$;
+UPDATE comments SET moderation='pass' WHERE id=2001;
 
 \echo '########## 1d-1. 软删除防线：内容一律不可物理删除 ##########'
 DO $$ BEGIN

@@ -76,6 +76,8 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 		"机器记录仍必须拒绝 reviewer_id 与 reviewed_at")
 
 	err = dbinfra.DownOne(ctx, database.SQL)
+	require.NoError(t, err, "v9 对仅含非评论对象的审核流水必须可无损回滚")
+	err = dbinfra.DownOne(ctx, database.SQL)
 	require.NoError(t, err, "v8 对仅含非内容对象的审核流水必须可无损回滚")
 	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,

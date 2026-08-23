@@ -384,6 +384,7 @@ func (f *Fixtures) CreateComment(
 			PostID: post.ID, AuthorID: authorID,
 			ReplyToUserID: post.AuthorID,
 			Content:       fmt.Sprintf("夹具评论 %04d", sequence),
+			Moderation:    model.ModerationStatusPass,
 		},
 	}
 	for _, override := range overrides {

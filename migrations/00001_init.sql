@@ -753,7 +753,7 @@ CREATE TABLE comments (
     like_count       integer     NOT NULL DEFAULT 0,
     reply_count      integer     NOT NULL DEFAULT 0,
     -- 软删除：删一条评论不能连带毁掉挂在它下面的别人的回复，
-    -- 因此删除只打标记、保留行，前端渲染成「该评论已删除」占位。
+    -- 因此删除只打标记、保留行；公开查询整条过滤，不渲染占位。
     -- content 不清空，管理员复核时要能看到原文。
     deleted_at       timestamptz,
     deleted_reason   varchar(16),
@@ -840,7 +840,7 @@ COMMENT ON COLUMN comments.reply_count IS
   '整层楼**未删除**的回复总数（按 root_id 统计，不是直接子节点数），由触发器维护，应用层禁止直接写。'
   '回复行上恒为 0，见 comments_reply_count_root_only_check。';
 COMMENT ON COLUMN comments.deleted_at IS
-  '软删除标记。非空即视为已删除：前端渲染「该评论已删除」占位，行保留以维系回复链，'
+  '软删除标记。非空行不进入公开评论响应，行保留以维系回复链和管理员复核。'
   '不计入 posts.comment_count 与楼主的 reply_count。'
   '物理删除被 trg_comments_forbid_delete 拒绝——帖子与用户现在也都是软删除，'
   '不存在「删帖/注销顺带硬删评论」这条路径了。';
@@ -1221,8 +1221,8 @@ COMMENT ON TABLE comment_histories IS
 --
 -- 结论如何影响内容可见性：
 --   帖子   pass → status=approved；review → status=pending 转人工；block → status=rejected
---   评论   pass → 不动（先发后审）；review → 仍然可见，进人工复核队列；
---          block → deleted_at 置位、deleted_reason='moderation'、deleted_by 留空
+--   评论   pass → 公开；review → 仅作者可见并进入人工复核队列；
+--          block → deleted_at 置位、deleted_reason='moderation'、deleted_by 留空，仅作者可见
 --   标签   pass → 不动；review → 仍然可用，进人工队列；block → 下架（deleted_at），关联行保留
 --   图片   写回 image_assets.moderation；block 不可被引用，pending/review 可先引用，
 --          但只要还有图片未 pass，所属帖子就不得进入 approved（§5.2.9）

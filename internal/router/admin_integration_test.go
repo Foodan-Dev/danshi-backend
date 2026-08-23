@@ -501,6 +501,7 @@ func testAdminCommentReviewAndRestore(
 	var deleted model.Comment
 	require.NoError(t, gdb.First(&deleted, comment.Comment.ID).Error)
 	require.Equal(t, model.DeleteReasonModeration, *deleted.DeletedReason)
+	require.Equal(t, model.ModerationStatusBlock, deleted.Moderation)
 	var postAfterDelete model.Post
 	require.NoError(t, gdb.First(&postAfterDelete, post.ID).Error)
 	require.Zero(t, postAfterDelete.CommentCount)
@@ -516,8 +517,9 @@ func testAdminCommentReviewAndRestore(
 	require.Nil(t, restored.DeletedAt)
 	require.Nil(t, restored.DeletedReason)
 	require.Nil(t, restored.DeletedBy)
+	require.Equal(t, model.ModerationStatusPass, restored.Moderation)
 	require.NoError(t, gdb.First(&postAfterDelete, post.ID).Error)
-	require.EqualValues(t, 1, postAfterDelete.CommentCount, "恢复只能靠 deleted_at 触发器回补计数")
+	require.EqualValues(t, 1, postAfterDelete.CommentCount, "恢复由可见性触发器回补计数")
 	var audit model.ModerationRecord
 	require.NoError(t, gdb.First(&audit, restoredResult.ModerationRecordID).Error)
 	require.Equal(t, model.ModerationProvider("admin_restore"), audit.Provider)

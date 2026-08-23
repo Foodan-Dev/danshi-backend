@@ -9,8 +9,8 @@ import (
 )
 
 func registerComment(api *route.RouterGroup, deps Deps) {
-	commentHandler := handler.NewComment(service.NewCommentService(
-		deps.ContentModerator, deps.ModerationAlerter,
+	commentHandler := handler.NewComment(service.NewCommentServiceWithCursorSecret(
+		deps.ContentModerator, deps.Config.JWTSecretKey, deps.ModerationAlerter,
 	))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)

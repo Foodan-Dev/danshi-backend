@@ -372,15 +372,9 @@ func applyManualCommentVerdict(
 	original *model.ModerationRecord,
 	verdict model.ModerationVerdict,
 ) error {
-	if verdict == model.ModerationVerdictPass {
-		return nil
-	}
-	now := time.Now().UTC()
-	return db.FromContext(ctx).Model(&model.Comment{}).
-		Where("id = ? AND deleted_at IS NULL", *original.CommentID).
-		Updates(map[string]any{
-			"deleted_at": now, "deleted_reason": model.DeleteReasonModeration, "deleted_by": nil,
-		}).Error
+	return (CommentRepository{}).ApplyModeration(
+		ctx, *original.CommentID, model.ModerationStatus(verdict), time.Now().UTC(),
+	)
 }
 
 func applyManualTagVerdict(

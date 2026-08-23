@@ -1130,9 +1130,6 @@
           "is_author": {
             "type": "boolean"
           },
-          "is_deleted": {
-            "type": "boolean"
-          },
           "is_edited": {
             "type": "boolean"
           },
@@ -1148,6 +1145,15 @@
               "$ref": "#/components/schemas/MentionedUserView"
             },
             "type": "array"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
           },
           "replies": {
             "items": {
@@ -1186,7 +1192,7 @@
             "type": "array"
           },
           "pagination": {
-            "$ref": "#/components/schemas/Meta"
+            "$ref": "#/components/schemas/CursorMeta"
           }
         },
         "type": "object"
@@ -1202,7 +1208,7 @@
       "CommentReplies": {
         "properties": {
           "pagination": {
-            "$ref": "#/components/schemas/Meta"
+            "$ref": "#/components/schemas/CursorMeta"
           },
           "replies": {
             "items": {
@@ -16057,12 +16063,9 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "cursor",
             "schema": {
-              "default": 1,
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
+              "type": "string"
             }
           },
           {
@@ -18773,12 +18776,9 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "cursor",
             "schema": {
-              "default": 1,
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
+              "type": "string"
             }
           },
           {

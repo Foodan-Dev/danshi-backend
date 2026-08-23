@@ -57,7 +57,8 @@ func (s *CommentService) Create(
 	now := time.Now().UTC()
 	comment := &model.Comment{
 		PostID: postID, AuthorID: authorID, ParentID: input.ParentID, RootID: rootID,
-		ReplyToUserID: replyToUserID, Content: content, CreatedAt: now, UpdatedAt: now,
+		ReplyToUserID: replyToUserID, Content: content,
+		Moderation: model.ModerationStatusPending, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.comments.Create(ctx, comment); err != nil {
 		return nil, apierr.Internal(err)
@@ -65,11 +66,11 @@ func (s *CommentService) Create(
 	if err := s.comments.ReplaceMentions(ctx, comment.ID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	removed, err := s.moderateComment(ctx, comment.ID, content)
+	moderation, err := s.moderateComment(ctx, comment.ID, content)
 	if err != nil {
 		return nil, err
 	}
-	if !removed {
+	if moderation == model.ModerationStatusPass {
 		rows := createCommentNotifications(comment, parent, post.AuthorID, mentionIDs)
 		if err := s.comments.CreateNotifications(ctx, rows); err != nil {
 			return nil, apierr.Internal(err)
@@ -93,11 +94,12 @@ func (s *CommentService) Update(
 	if err != nil {
 		return nil, commentRepositoryError(err)
 	}
-	if comment.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizCommentDeleted, "评论")
-	}
 	if comment.AuthorID != authorID {
 		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能修改自己的评论")
+	}
+	if comment.DeletedAt != nil && (comment.DeletedReason == nil ||
+		*comment.DeletedReason != model.DeleteReasonModeration) {
+		return nil, apierr.NotFound(apierr.BizCommentDeleted, "评论")
 	}
 	post, err := s.posts.FindByID(ctx, comment.PostID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
@@ -128,11 +130,11 @@ func (s *CommentService) Update(
 	if err := s.comments.ReplaceMentions(ctx, commentID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	removed, err := s.moderateComment(ctx, commentID, content)
+	moderation, err := s.moderateComment(ctx, commentID, content)
 	if err != nil {
 		return nil, err
 	}
-	if !removed {
+	if moderation == model.ModerationStatusPass {
 		newMentions := differenceIDs(mentionIDs, oldMentionIDs)
 		rows := mentionNotifications(commentID, authorID, content, newMentions)
 		if err := s.comments.CreateNotifications(ctx, rows); err != nil {
@@ -187,6 +189,9 @@ func (s *CommentService) resolveCommentParent(
 	if parent.DeletedAt != nil {
 		return nil, nil, 0, apierr.NotFound(apierr.BizCommentDeleted, "父评论")
 	}
+	if parent.Moderation != model.ModerationStatusPass {
+		return nil, nil, 0, apierr.NotFound(apierr.BizCommentNotFound, "父评论")
+	}
 	if parent.PostID != postID {
 		return nil, nil, 0, apierr.InvalidField(
 			"parent_id", apierr.FieldConflict, "父评论不属于当前帖子",
@@ -195,6 +200,13 @@ func (s *CommentService) resolveCommentParent(
 	rootID := parent.ID
 	if parent.RootID != nil {
 		rootID = *parent.RootID
+		root, rootErr := s.comments.FindByID(ctx, rootID)
+		if rootErr != nil {
+			return nil, nil, 0, commentRepositoryError(rootErr)
+		}
+		if root.DeletedAt != nil || root.Moderation != model.ModerationStatusPass {
+			return nil, nil, 0, apierr.NotFound(apierr.BizCommentNotFound, "父评论")
+		}
 	}
 	if err := validateReplyToUser(input.ReplyToUserID, parent.AuthorID); err != nil {
 		return nil, nil, 0, err
@@ -248,19 +260,19 @@ func (s *CommentService) moderateComment(
 	ctx context.Context,
 	commentID uint64,
 	content string,
-) (bool, error) {
+) (model.ModerationStatus, error) {
 	result, err := s.moderator.Review(ctx, ModerationRequest{
 		Target: ModerationTargetComment, Text: content,
 	})
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if err := validateModerationResult(result); err != nil {
-		return false, err
+		return "", err
 	}
 	record := moderationRecordForComment(commentID, result)
 	if err := s.comments.CreateModerationRecord(ctx, record); err != nil {
-		return false, apierr.Internal(err)
+		return "", apierr.Internal(err)
 	}
 	if result.Verdict != model.ModerationVerdictPass {
 		s.alerter.Alert(ctx, ModerationAlert{
@@ -269,15 +281,11 @@ func (s *CommentService) moderateComment(
 			Labels: append([]string{}, result.Labels...),
 		})
 	}
-	if result.Verdict != model.ModerationVerdictBlock {
-		return false, nil
+	moderation := model.ModerationStatus(result.Verdict)
+	if err := s.comments.ApplyModeration(ctx, commentID, moderation, time.Now().UTC()); err != nil {
+		return "", commentRepositoryError(err)
 	}
-	if err := s.comments.SoftDelete(
-		ctx, commentID, model.DeleteReasonModeration, nil, time.Now().UTC(),
-	); err != nil {
-		return false, commentRepositoryError(err)
-	}
-	return true, nil
+	return moderation, nil
 }
 
 func (s *CommentService) commentMutationResult(

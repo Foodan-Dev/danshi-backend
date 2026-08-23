@@ -143,7 +143,7 @@ func (AdminRepository) RestorePost(ctx context.Context, postID uint64) error {
 	return nil
 }
 
-// RestoreComment 清空机审软删除字段；deleted_at 翻转会由触发器回补计数。
+// RestoreComment 清空机审软删除字段并把恢复审计的 pass 结论写回当前状态。
 func (AdminRepository) RestoreComment(ctx context.Context, commentID uint64) error {
 	result := db.FromContext(ctx).Model(&model.Comment{}).
 		Where("id = ? AND deleted_at IS NOT NULL AND deleted_reason = ?", commentID, model.DeleteReasonModeration).
@@ -151,6 +151,7 @@ func (AdminRepository) RestoreComment(ctx context.Context, commentID uint64) err
 			"deleted_at":     nil,
 			"deleted_reason": nil,
 			"deleted_by":     nil,
+			"moderation":     model.ModerationStatusPass,
 		})
 	if result.Error != nil {
 		return result.Error

@@ -68,6 +68,23 @@ func TestCursorCodecRoundTripScopeAndTamperDetection(t *testing.T) {
 	require.Equal(t, apierr.FieldInvalidFormat, fieldErr.Fields[0].Code)
 }
 
+func TestRankedCursorCodecRoundTrip(t *testing.T) {
+	codec := pagination.NewCursorCodec("cursor-test-secret", "comments.roots.hot")
+	rank := int64(17)
+	value := pagination.Cursor{
+		CreatedAt: time.Date(2026, time.August, 23, 1, 2, 3, 456789000, time.UTC),
+		ID:        42, Rank: &rank,
+	}
+	token, err := codec.Encode(value)
+	require.NoError(t, err)
+	decoded, err := codec.Decode(token)
+	require.NoError(t, err)
+	require.Equal(t, value.CreatedAt, decoded.CreatedAt)
+	require.Equal(t, value.ID, decoded.ID)
+	require.NotNil(t, decoded.Rank)
+	require.Equal(t, rank, *decoded.Rank)
+}
+
 func TestCursorRequestAndMetaContracts(t *testing.T) {
 	request, err := pagination.ParseCursorRequest("opaque", "")
 	require.NoError(t, err)

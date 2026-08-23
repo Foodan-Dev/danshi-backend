@@ -4,7 +4,7 @@
 “**破坏性**”重新计数，原重写计划共 **12 项**；后续产品批次确认的破坏性变更继续编号。
 新增端点、附加字段和非破坏行为变更另列在文末。
 
-## 破坏性变更（17 项）
+## 破坏性变更（18 项）
 
 ### BC-001 / §4.3：分页参数改为严格校验
 
@@ -249,7 +249,7 @@ Python v1/旧库与 Go v2/新库并行隔离。
 | `GET /api/v2/notifications` 请求 | `page`、`limit` | `cursor`、`limit` |
 | 上述响应 `pagination` | `{page,limit,total,total_pages}` | `{limit,next_cursor,has_more}` |
 | `GET /api/v2/posts` 的 `hot/trending/price` | offset | 仍为 offset，本批不变 |
-| 评论、搜索、用户页、管理端、词表 | offset | 仍为 offset，本批不变 |
+| 评论、搜索、用户页、管理端、词表 | offset | 本批仍为 offset；评论随后由 BC-018 改为游标 |
 
 游标是加密认证的不透明字符串；无效、跨端点使用或被篡改时返回 422，字段为 `cursor`、
 代码为 `invalid_format`。`latest` 下显式请求 `page > 1` 返回 422，避免把旧客户端请求静默
@@ -260,7 +260,7 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - [ ] 信息流 latest 与通知状态删除页码和总页数依赖，保存 `next_cursor` 并按 `has_more` 续取。
 - [ ] 刷新时清空旧 cursor；加载更多时原样回传，不解析、不拼接、不跨筛选条件复用。
 - [ ] `next_cursor=null` 或 `has_more=false` 时停止加载。
-- [ ] 帖子非 latest 排序继续使用 `page`；评论继续使用 offset，不切换到 cursor。
+- [ ] 帖子非 latest 排序继续使用 `page`；评论按 BC-018 改用游标，不再使用 offset。
 
 ### BC-014 / 公共配置：移除恒真的 `is_active`
 
@@ -358,6 +358,40 @@ Python v1/旧库与 Go v2/新库并行隔离。
       `moderation_record_ids` 数组。
 - [ ] 作者详情可以读取新增的 `moderation.status` 与 `moderation.issues[]`；该对象不会返回给
       非作者，客户端不得据此推断其他用户内容的审核原因。
+
+### BC-018 / 评论改用游标分页并移除删除占位
+
+**动机**：公开瀑布流和评论区不能出现审核中或已删除内容。旧 offset 分页依赖删除占位来
+避免前页删除后后续行整体前移；直接过滤占位会造成连续翻页跳过未读评论。本次先把评论改为
+稳定复合游标，再安全移除占位，并让评论计数与公开可见性使用同一口径。
+
+| 端点或项目 | 旧契约 | 新契约 |
+|---|---|---|
+| `GET /api/v2/posts/{post_id}/comments` 请求 | `page`、`limit`、`sort_by` | `cursor`、`limit`、`sort_by`；默认 `(created_at ASC,id ASC)`，hot 使用 `(like_count DESC,created_at DESC,id DESC)` |
+| `GET /api/v2/comments/{comment_id}/replies` 请求 | `page`、`limit` | `cursor`、`limit`；按 `(created_at ASC,id ASC)` |
+| 上述响应 `pagination` | `{page,limit,total,total_pages}` | `{limit,next_cursor,has_more}` |
+| `CommentItem.is_deleted` | 始终存在；删除行返回 `true` | 字段删除，删除行不进入公开结果集 |
+| `CommentItem.moderation` | 不存在 | 新增 `pending/pass/review/block` 当前审核状态 |
+| 删除评论 | 返回正文为“该评论已删除”的占位，子回复继续显示 | 不返回该行或空内容替代项；根评论删除后整层楼隐藏 |
+
+游标沿用服务端 AES-GCM 不透明认证格式，并绑定端点与排序作用域；客户端不得解析、拼接或在
+默认排序、hot 排序和整楼回复之间复用。最后一页 `next_cursor=null` 且 `has_more=false`。
+
+公开评论只包含 `moderation=pass AND deleted_at IS NULL`。作者查看自己的评论时可以看到
+`pending/review/block` 原文和 `moderation`；非作者通过评论 id 请求未通过或已删除内容返回
+404/403，不返回正文。帖子信息流、搜索和非作者帖子详情继续只允许已通过且未删除帖子。
+
+根评论隐藏只影响展示与派生计数：回复行、正文和删除标记全部保留。`post.comment_count` 只
+统计公开楼层中的通过评论，`root.reply_count` 只统计通过且未删除的回复；待审、违规、已删除
+评论和隐藏根楼中的回复均不进入公开帖子评论数。
+
+**前端影响清单**：
+
+- [ ] 两个评论 GET 端点删除 `page/total/total_pages` 依赖，以 `next_cursor` 和 `has_more` 连续翻页。
+- [ ] 切换帖子、排序或刷新时清空 cursor；加载更多原样回传，不解析、不跨作用域复用。
+- [ ] 删除评论占位组件和 `is_deleted` 分支；服务端不再返回需要占位渲染的条目。
+- [ ] 使用 `moderation` 向作者展示审核中或违规状态；其他用户的评论卡片只会收到 `pass`。
+- [ ] 根评论从结果集消失时一并移除本地整层楼，不继续单独展示已缓存回复。
 
 ## 新增、勘误与行为变更（不计入上述破坏性变更）
 

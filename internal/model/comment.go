@@ -11,6 +11,7 @@ type Comment struct {
 	RootID                   *uint64
 	ReplyToUserID            uint64
 	Content                  string
+	Moderation               ModerationStatus
 	LikeCount                int32 `gorm:"->"`
 	ReplyCount               int32 `gorm:"->"`
 	DeletedAt                *time.Time
