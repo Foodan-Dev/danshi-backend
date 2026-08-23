@@ -4,7 +4,7 @@
 “**破坏性**”重新计数，原重写计划共 **12 项**；后续产品批次确认的破坏性变更继续编号。
 新增端点、附加字段和非破坏行为变更另列在文末。
 
-## 破坏性变更（16 项）
+## 破坏性变更（17 项）
 
 ### BC-001 / §4.3：分页参数改为严格校验
 
@@ -325,6 +325,39 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - [ ] 管理端审核类型删除 `post_history_id`、`comment_history_id`，不要按它们缓存或定位内容。
 - [ ] 复核页以队列返回的 `content` 展示当前内容；编辑后旧待办会消失，刷新后处理最新记录。
 - [ ] 不再针对“主表与最新历史不一致”的旧 409 提示用户刷新；其它 409 仍按各自 `error_code` 处理。
+
+### BC-017 / 图片上传回传真实机审结论，帖子改为联合复核
+
+**动机**：帖子正文与附图共同决定整帖能否发布。旧契约把每条机器审核记录当作独立待办，
+导致同一帖的正文和多张图片分散展示、分开裁决；上传完成响应还会丢弃同步图片机审已经得到的
+结论，并把 `status` 固定写成 `pending`。
+
+| 端点或项目 | 旧契约 | 新契约 |
+|---|---|---|
+| `POST /api/v2/uploads/{upload_id}/complete` | 无 `moderation`；`status` 固定为 `pending`；总是返回 `public_url` | 新增真实 `moderation`；`status` 来自资产；同步 `block` 省略 `public_url` |
+| `GET /api/v2/admin/moderation-records/pending` 的帖子待办 | 正文和每张图片各占一个记录条目 | 同一帖子只占一个条目，`post.text` 与 `post.images[]` 同步给出当前内容、机审结论、标签、分数和图片签名 URL |
+| 帖子队列准入 | 任一对象的 `review` 都可能独立出现 | 全部对象已有最终结论、无 `block` 且至少一个 `review` 时才出现；任意 `block` 直接驳回 |
+| `PUT /api/v2/admin/posts/{post_id}/review` | 只 supersede 一条正文机审记录，响应为 `moderation_record_id` | 一次裁决处理整帖全部当前 `review` 记录，响应改为 `moderation_record_ids[]` |
+| `PUT /api/v2/admin/moderation-records/{moderation_record_id}/review` | 可单独处理帖子正文或已绑定帖子图片 | 帖子对象必须改走整帖复核端点；评论、标签、用户和非帖子图片仍逐条处理 |
+
+帖子状态的唯一聚合优先级是：任意 `block` → `rejected`；否则任意 `review` → `pending`；
+否则全部 `pass` → `approved`。尚未返回最终图片结论的 `pending` 只表示继续等待机器审核，
+不会提前进入人工队列。编辑帖子后使用同一规则重新计算。
+
+整帖人工裁决不放宽 `uq_mr_supersedes`：服务为本次处理的每一条机器 `review` 分别追加一条
+`provider=manual` 记录，所有记录共享同一审核人、时间、结论和反馈。
+
+**前端影响清单**：
+
+- [ ] 上传完成后读取 `moderation`：`pending` 时轮询 `GET /api/v2/uploads/{upload_id}`，
+      `block` 时提示用户并禁止把该图片加入发帖 `images`。
+- [ ] 不再假设 complete 一定含 `public_url`；同步 `block` 时该字段被省略。
+- [ ] 管理端按 `target_type=post` 读取 `post.text` 与完整 `post.images[]`，不要再把同帖图片记录
+      拼成多个待办。
+- [ ] 帖子人工复核只调用 `/admin/posts/{post_id}/review`，并把响应审计字段改为
+      `moderation_record_ids` 数组。
+- [ ] 作者详情可以读取新增的 `moderation.status` 与 `moderation.issues[]`；该对象不会返回给
+      非作者，客户端不得据此推断其他用户内容的审核原因。
 
 ## 新增、勘误与行为变更（不计入上述破坏性变更）
 

@@ -83,10 +83,11 @@ type UploadPresignResult struct {
 
 // UploadCompleteResult 是确认直传后的资产信息。
 type UploadCompleteResult struct {
-	UploadID  uint64            `json:"upload_id"`
-	ObjectKey string            `json:"object_key"`
-	PublicURL string            `json:"public_url"`
-	Status    model.ImageStatus `json:"status"`
+	UploadID   uint64                 `json:"upload_id"`
+	ObjectKey  string                 `json:"object_key"`
+	PublicURL  string                 `json:"public_url,omitempty"`
+	Status     model.ImageStatus      `json:"status"`
+	Moderation model.ModerationStatus `json:"moderation"`
 }
 
 // UploadImageView 是上传者本人可见的单张图片及其短期读取地址。
@@ -262,10 +263,18 @@ func (s *UploadService) Complete(
 	} else if submission.ProviderJobID == nil || strings.TrimSpace(*submission.ProviderJobID) == "" {
 		return nil, apierr.Internal(errImmediateImageResultMissingJobID)
 	}
-	return &UploadCompleteResult{
+	moderation := model.ModerationStatusPending
+	if submission.Immediate != nil {
+		moderation = model.ModerationStatus(submission.Immediate.Verdict)
+	}
+	result := &UploadCompleteResult{
 		UploadID: asset.ID, ObjectKey: asset.ObjectKey, PublicURL: publicURL,
-		Status: model.ImageStatusPending,
-	}, nil
+		Status: asset.Status, Moderation: moderation,
+	}
+	if moderation == model.ModerationStatusBlock {
+		result.PublicURL = ""
+	}
+	return result, nil
 }
 
 // ExpirePending 回收一批过期且没有引用的上传；持锁中的 complete/引用写入会被跳过。

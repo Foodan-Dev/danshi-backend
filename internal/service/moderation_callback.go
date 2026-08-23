@@ -19,6 +19,7 @@ import (
 type ImageModerationApplyResult struct {
 	Duplicate     bool  `json:"duplicate"`
 	ApprovedPosts int64 `json:"approved_posts"`
+	RejectedPosts int64 `json:"rejected_posts"`
 }
 
 // ManualReviewInput 是管理员对一条机器 review 记录作最终裁决的输入。
@@ -29,6 +30,14 @@ type ManualReviewInput struct {
 	Labels          []string
 	Score           *decimal.Decimal
 	RawResponse     json.RawMessage
+}
+
+// ManualPostReviewInput 是管理员对一条帖子全部待处理审核对象的一次统一裁决。
+type ManualPostReviewInput struct {
+	PostID      uint64
+	ReviewerID  uint64
+	Verdict     model.ModerationVerdict
+	RawResponse json.RawMessage
 }
 
 // ModerationService 处理异步结论的幂等落库与目标状态写回。
@@ -85,6 +94,9 @@ func (s *ModerationService) ManualReview(
 	if err := validateMachineReviewRecord(snapshot); err != nil {
 		return nil, err
 	}
+	if err := s.validateSingleReviewScope(ctx, snapshot); err != nil {
+		return nil, err
+	}
 	var imagePostIDs []uint64
 	var imageAssets []model.ImageAsset
 	if snapshot.ImageAssetID != nil {
@@ -130,7 +142,7 @@ func (s *ModerationService) ManualReview(
 		if err := s.moderation.UpdateImageModeration(ctx, *original.ImageAssetID, status); err != nil {
 			return nil, apierr.Internal(err)
 		}
-		if _, err := s.moderation.ApproveEligiblePendingPosts(ctx, imagePostIDs); err != nil {
+		if _, err := s.moderation.ReconcilePendingPosts(ctx, imagePostIDs); err != nil {
 			return nil, apierr.Internal(err)
 		}
 		asset := imageAssetByID(imageAssets, *original.ImageAssetID)
@@ -142,6 +154,250 @@ func (s *ModerationService) ManualReview(
 		s.alerter.Alert(ctx, manualReviewAlert(original, input, record))
 	}
 	return record, nil
+}
+
+func (s *ModerationService) validateSingleReviewScope(
+	ctx context.Context,
+	record *model.ModerationRecord,
+) error {
+	if record.PostID != nil {
+		return apierr.Conflict(
+			apierr.BizConflict,
+			"帖子审核记录必须通过整帖复核端点一次性处理",
+		)
+	}
+	if record.ImageAssetID == nil {
+		return nil
+	}
+	postIDs, err := s.moderation.PendingPostIDsForImages(ctx, []uint64{*record.ImageAssetID})
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if len(postIDs) > 0 {
+		return apierr.Conflict(
+			apierr.BizConflict,
+			"帖子附图审核记录必须随所属帖子一次性处理",
+		)
+	}
+	return nil
+}
+
+// ManualReviewPost 对正文与全部附图的当前 review 记录逐条追加 manual 行并重算整帖状态。
+func (s *ModerationService) ManualReviewPost(
+	ctx context.Context,
+	input ManualPostReviewInput,
+) ([]model.ModerationRecord, error) {
+	if err := validateManualPostReviewInput(input); err != nil {
+		return nil, err
+	}
+	snapshot, err := s.lockPostReviewSnapshot(ctx, input.PostID)
+	if err != nil {
+		return nil, err
+	}
+	records, originals, imageIDs, err := s.createPostManualRecords(ctx, input, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.applyPostManualVerdict(ctx, input, snapshot, imageIDs); err != nil {
+		return nil, err
+	}
+	if input.Verdict == model.ModerationVerdictBlock {
+		s.alertPostManualBlock(ctx, input, originals, records)
+	}
+	return records, nil
+}
+
+type postReviewSnapshot struct {
+	assets     []model.ImageAsset
+	assetByID  map[uint64]*model.ImageAsset
+	latestText *model.ModerationRecord
+	pending    []model.ModerationRecord
+}
+
+func validateManualPostReviewInput(input ManualPostReviewInput) error {
+	if input.PostID == 0 || input.ReviewerID == 0 {
+		return apierr.InvalidField(
+			"post_id", apierr.FieldInvalidFormat, "帖子与复核人必须是正整数",
+		)
+	}
+	if input.Verdict != model.ModerationVerdictPass &&
+		input.Verdict != model.ModerationVerdictBlock {
+		return apierr.InvalidField(
+			"status", apierr.FieldInvalidEnum, "人工复核结论必须是 pass 或 block",
+		)
+	}
+	if len(input.RawResponse) > 0 && !json.Valid(input.RawResponse) {
+		return apierr.InvalidField(
+			"feedback", apierr.FieldInvalidFormat, "人工复核反馈必须是合法 JSON",
+		)
+	}
+	return nil
+}
+
+func (s *ModerationService) lockPostReviewSnapshot(
+	ctx context.Context,
+	postID uint64,
+) (*postReviewSnapshot, error) {
+	post, err := s.moderation.LockPostForReview(ctx, postID)
+	if err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+	}
+	if post.DeletedAt != nil {
+		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
+	}
+	if post.Status != model.PostStatusPending {
+		return nil, apierr.Conflict(apierr.BizModerationNotPending, "帖子当前不在待审核状态")
+	}
+	assets, err := s.moderation.LockImagesForPost(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if err := validatePostReviewAssets(assets); err != nil {
+		return nil, err
+	}
+	latestText, err := s.moderation.LatestPostModeration(ctx, postID)
+	if err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizModerationNotPending, "帖子审核记录")
+	}
+	if latestText.Verdict == model.ModerationVerdictBlock {
+		return nil, apierr.Conflict(
+			apierr.BizModerationNotPending,
+			"帖子正文已被机器禁止，不应进入人工复核",
+		)
+	}
+	pending, err := s.moderation.LockPendingReviewRecordsForPost(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	assetByID := make(map[uint64]*model.ImageAsset, len(assets))
+	for index := range assets {
+		assetByID[assets[index].ID] = &assets[index]
+	}
+	return &postReviewSnapshot{
+		assets: assets, assetByID: assetByID, latestText: latestText, pending: pending,
+	}, nil
+}
+
+func validatePostReviewAssets(assets []model.ImageAsset) error {
+	for index := range assets {
+		switch assets[index].Moderation {
+		case model.ModerationStatusPass, model.ModerationStatusReview:
+		case model.ModerationStatusPending:
+			return apierr.Conflict(
+				apierr.BizModerationNotPending,
+				"帖子仍有图片正在机审，暂不能人工复核",
+			)
+		case model.ModerationStatusBlock:
+			return apierr.Conflict(
+				apierr.BizModerationNotPending,
+				"帖子包含已被机器禁止的图片，不应进入人工复核",
+			)
+		default:
+			return apierr.Internal(errors.New("图片存在未知审核状态"))
+		}
+	}
+	return nil
+}
+
+func (s *ModerationService) createPostManualRecords(
+	ctx context.Context,
+	input ManualPostReviewInput,
+	snapshot *postReviewSnapshot,
+) ([]model.ModerationRecord, []*model.ModerationRecord, []uint64, error) {
+	records := make([]model.ModerationRecord, 0, len(snapshot.pending))
+	originals := make([]*model.ModerationRecord, 0, len(snapshot.pending))
+	imageIDs := make([]uint64, 0, len(snapshot.pending))
+	now := time.Now().UTC()
+	for index := range snapshot.pending {
+		original := &snapshot.pending[index]
+		if err := validateMachineReviewRecord(original); err != nil {
+			return nil, nil, nil, err
+		}
+		if original.PostID != nil && original.ID != snapshot.latestText.ID {
+			continue
+		}
+		if original.ImageAssetID != nil {
+			asset := snapshot.assetByID[*original.ImageAssetID]
+			if asset == nil || asset.Moderation != model.ModerationStatusReview {
+				continue
+			}
+			imageIDs = append(imageIDs, asset.ID)
+		}
+		record := postManualRecord(original, input, now)
+		if err := s.moderation.CreateManualRecord(ctx, &record); err != nil {
+			if repository.IsUniqueViolation(err, "uq_mr_supersedes") {
+				return nil, nil, nil, apierr.Conflict(
+					apierr.BizConflict, "帖子中有机器审核记录已经复核",
+				)
+			}
+			return nil, nil, nil, apierr.Internal(err)
+		}
+		records = append(records, record)
+		originals = append(originals, original)
+	}
+	if len(records) == 0 {
+		return nil, nil, nil, apierr.Conflict(
+			apierr.BizModerationNotPending,
+			"帖子没有待人工复核的当前机审记录",
+		)
+	}
+	return records, originals, uniqueIDs(imageIDs), nil
+}
+
+func postManualRecord(
+	original *model.ModerationRecord,
+	input ManualPostReviewInput,
+	now time.Time,
+) model.ModerationRecord {
+	return model.ModerationRecord{
+		PostID: original.PostID, CommentID: original.CommentID,
+		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
+		Field: original.Field, Scene: original.Scene,
+		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
+		Labels: pq.StringArray{}, RawResponse: input.RawResponse,
+		ReviewerID: &input.ReviewerID, ReviewedAt: &now,
+		SupersedesID: &original.ID, CreatedAt: now,
+	}
+}
+
+func (s *ModerationService) applyPostManualVerdict(
+	ctx context.Context,
+	input ManualPostReviewInput,
+	snapshot *postReviewSnapshot,
+	imageIDs []uint64,
+) error {
+	for _, imageID := range imageIDs {
+		if err := s.moderation.UpdateImageModeration(
+			ctx, imageID, model.ModerationStatus(input.Verdict),
+		); err != nil {
+			return apierr.Internal(err)
+		}
+	}
+	postIDs, err := s.moderation.PendingPostIDsForImages(ctx, imageIDs)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	postIDs = append(postIDs, input.PostID)
+	if _, err := s.moderation.ReconcilePendingPosts(ctx, postIDs); err != nil {
+		return apierr.Internal(err)
+	}
+	for _, imageID := range imageIDs {
+		s.applyImageAccess(ctx, snapshot.assetByID[imageID], input.Verdict)
+	}
+	return nil
+}
+
+func (s *ModerationService) alertPostManualBlock(
+	ctx context.Context,
+	input ManualPostReviewInput,
+	originals []*model.ModerationRecord,
+	records []model.ModerationRecord,
+) {
+	for index := range records {
+		s.alerter.Alert(ctx, manualReviewAlert(originals[index], ManualReviewInput{
+			ReviewerID: input.ReviewerID, Verdict: input.Verdict,
+		}, &records[index]))
+	}
 }
 
 func validateMachineReviewRecord(record *model.ModerationRecord) error {
@@ -243,7 +499,7 @@ func (s *ModerationService) applyImageResult(
 	if err := s.moderation.UpdateImageModeration(ctx, callback.ImageAssetID, status); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizImageNotFound, "图片")
 	}
-	approved, err := s.moderation.ApproveEligiblePendingPosts(ctx, postIDs)
+	transitions, err := s.moderation.ReconcilePendingPosts(ctx, postIDs)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -255,7 +511,10 @@ func (s *ModerationService) applyImageResult(
 		})
 	}
 	s.applyImageAccess(ctx, asset, callback.Verdict)
-	return &ImageModerationApplyResult{ApprovedPosts: approved}, nil
+	return &ImageModerationApplyResult{
+		ApprovedPosts: transitions.Approved,
+		RejectedPosts: transitions.Rejected,
+	}, nil
 }
 
 func validateImageCallback(callback ImageModerationCallback, requireJobID bool) error {

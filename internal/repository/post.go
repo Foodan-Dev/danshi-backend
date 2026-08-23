@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -44,6 +45,14 @@ type PostRecord struct {
 	WindowFloor     *string    `gorm:"column:window_floor"`
 	CuisineName     *string    `gorm:"column:cuisine_name"`
 	Revision        int32      `gorm:"column:revision"`
+}
+
+// PostModerationIssueRow 是作者可见的当前非 pass 审核部分。
+type PostModerationIssueRow struct {
+	Part          string
+	ImagePosition *int16
+	Moderation    model.ModerationStatus
+	Labels        pq.StringArray `gorm:"type:text[]"`
 }
 
 // Create 创建帖子主体。计数列依赖数据库默认值，调用方不得传入。
@@ -87,6 +96,58 @@ func (PostRepository) FindByID(
 		return nil, ErrNotFound
 	}
 	return &record, nil
+}
+
+// FindModerationIssues 返回正文和附图当前非 pass 结论，不暴露供应商原始响应或置信分。
+func (PostRepository) FindModerationIssues(
+	ctx context.Context,
+	postID uint64,
+) ([]PostModerationIssueRow, error) {
+	rows := make([]PostModerationIssueRow, 0)
+	err := db.FromContext(ctx).Raw(`
+		WITH latest_text AS (
+			SELECT mr.*
+			FROM moderation_records AS mr
+			WHERE mr.post_id = ?
+			ORDER BY mr.created_at DESC, mr.id DESC
+			LIMIT 1
+		)
+		SELECT
+			'text'::text AS part,
+			NULL::smallint AS image_position,
+			latest_text.verdict::text AS moderation,
+			CASE
+				WHEN latest_text.provider = ? THEN COALESCE(machine.labels, ARRAY[]::text[])
+				ELSE latest_text.labels
+			END AS labels
+		FROM latest_text
+		LEFT JOIN moderation_records AS machine ON machine.id = latest_text.supersedes_id
+		WHERE latest_text.verdict <> ?
+		UNION ALL
+		SELECT
+			'image'::text AS part,
+			pi.position AS image_position,
+			image.moderation::text AS moderation,
+			CASE
+				WHEN image_mr.provider = ? THEN COALESCE(image_machine.labels, ARRAY[]::text[])
+				ELSE COALESCE(image_mr.labels, ARRAY[]::text[])
+			END AS labels
+		FROM post_images AS pi
+		JOIN image_assets AS image ON image.id = pi.image_asset_id
+		LEFT JOIN LATERAL (
+			SELECT mr.*
+			FROM moderation_records AS mr
+			WHERE mr.image_asset_id = image.id
+			ORDER BY mr.created_at DESC, mr.id DESC
+			LIMIT 1
+		) AS image_mr ON true
+		LEFT JOIN moderation_records AS image_machine ON image_machine.id = image_mr.supersedes_id
+		WHERE pi.post_id = ? AND image.moderation <> ?
+		ORDER BY image_position NULLS FIRST
+	`, postID, model.ModerationProviderManual, model.ModerationVerdictPass,
+		model.ModerationProviderManual, postID, model.ModerationStatusPass).
+		Scan(&rows).Error
+	return rows, err
 }
 
 // FindPage 返回公开帖子列表；公开条件在仓储入口固定，调用方不能漏加。

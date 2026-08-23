@@ -125,6 +125,10 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostTextModeration(t, engine, gdb, author, other, fixture)
 	})
 
+	t.Run("edit recomputes aggregate moderation from current images", func(t *testing.T) {
+		testPostEditModerationAggregation(t, engine, gdb, author, fixture)
+	})
+
 	t.Run("image callbacks cover pass block early and duplicate delivery", func(t *testing.T) {
 		testPostImageModeration(t, h, author, fixture)
 	})
@@ -449,6 +453,8 @@ func testPostPayloadBoundaries(
 	)
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizImageNotApproved, response.ErrorCode)
+	require.Contains(t, response.Message, "第 1 张图片")
+	require.Contains(t, response.Message, fmt.Sprintf("upload_id=%d", blockedImage.ID))
 
 	purgedImage := fixtures.CreateImage(author.User.ID)
 	purgedImage.PublicURL = model.PurgedImageURL(purgedImage.ID)
@@ -998,16 +1004,45 @@ func testPostTextModeration(
 	assertPrivatePostVisibility(t, engine, review.ID, author.Token, other.Token)
 	assertPostAbsentFromList(t, engine, author.Token, "待审可见", review.ID)
 	assertPostModeration(t, gdb, review.ID, model.ModerationVerdictReview, []string{"manual_review"})
+	reviewDetail := getAuthorPostDetail(t, engine, review.ID, author.Token)
+	require.NotNil(t, reviewDetail.Moderation)
+	require.Equal(t, model.PostStatusPending, reviewDetail.Moderation.Status)
+	require.Equal(t, []service.PostModerationIssueView{{
+		Part: "text", Moderation: model.ModerationStatusReview, Labels: []string{"manual_review"},
+	}}, reviewDetail.Moderation.Issues)
 
-	blocked := createPost(t, engine, author.Token,
-		sharePostPayload(fixture, "违规拦截帖子", []string{"驳回可见"}))
+	passImageSize := int64(1536)
+	passImage := model.ImageAsset{
+		UploaderID: &author.User.ID, Purpose: model.ImagePurposePost,
+		ObjectKey:   "posts/text-block-image-pass.jpg",
+		PublicURL:   "https://img.example.test/posts/text-block-image-pass.jpg",
+		ContentType: "image/jpeg", Size: &passImageSize, Status: model.ImageStatusPending,
+		Moderation: model.ModerationStatusPass,
+	}
+	require.NoError(t, gdb.Create(&passImage).Error)
+	blockedPayload := sharePostPayload(fixture, "违规拦截帖子", []string{"驳回可见"})
+	blockedPayload["images"] = []string{passImage.PublicURL}
+	blocked := createPost(t, engine, author.Token, blockedPayload)
 	require.Equal(t, model.PostStatusRejected, blocked.Status)
+	var boundPassImage model.ImageAsset
+	require.NoError(t, gdb.First(&boundPassImage, passImage.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, boundPassImage.Moderation,
+		"正文 block 必须在图片全 pass 时仍直接驳回整帖")
 	assertPrivatePostVisibility(t, engine, blocked.ID, author.Token, other.Token)
 	assertPostAbsentFromList(t, engine, author.Token, "驳回可见", blocked.ID)
 	assertPostModeration(t, gdb, blocked.ID, model.ModerationVerdictBlock, []string{"blocked"})
+	blockedDetail := getAuthorPostDetail(t, engine, blocked.ID, author.Token)
+	require.NotNil(t, blockedDetail.Moderation)
+	require.Equal(t, []service.PostModerationIssueView{{
+		Part: "text", Moderation: model.ModerationStatusBlock, Labels: []string{"blocked"},
+	}}, blockedDetail.Moderation.Issues)
 
 	edited := createPost(t, engine, author.Token,
 		sharePostPayload(fixture, "编辑前已发布帖子", []string{"编辑送审"}))
+	status, _, recorder := performJSON(t, engine, http.MethodGet, postPath(edited.ID), nil, other.Token)
+	require.Equal(t, http.StatusOK, status)
+	require.NotContains(t, string(recorder.Result().Body()), `"moderation"`,
+		"非作者不得看到作者审核摘要")
 	payload := sharePostPayload(fixture, "编辑后违规标题", []string{"编辑送审"})
 	payload["edit_reason"] = "验证编辑重新送审"
 	status, response, _ := performJSON(
@@ -1031,6 +1066,49 @@ func testPostTextModeration(
 	require.Equal(t, model.ModerationVerdictBlock, records[1].Verdict)
 	require.Equal(t, []string{"edited_block"}, []string(records[1].Labels))
 	assertPrivatePostVisibility(t, engine, edited.ID, author.Token, other.Token)
+}
+
+func testPostEditModerationAggregation(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	author service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "编辑聚合审核原帖", []string{"编辑聚合"}))
+	size := int64(1024)
+	image := model.ImageAsset{
+		UploaderID: &author.User.ID, Purpose: model.ImagePurposePost,
+		ObjectKey:   "posts/edit-aggregate-review.jpg",
+		PublicURL:   "https://img.example.test/posts/edit-aggregate-review.jpg",
+		ContentType: "image/jpeg", Size: &size, Status: model.ImageStatusPending,
+		Moderation: model.ModerationStatusReview,
+	}
+	require.NoError(t, gdb.Create(&image).Error)
+	payload := sharePostPayload(fixture, "编辑聚合审核新帖", []string{"编辑聚合"})
+	payload["images"] = []string{image.PublicURL}
+	status, response, _ := performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), payload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var pending service.PostCreateResult
+	decodeData(t, response, &pending)
+	require.Equal(t, model.PostStatusPending, pending.Status,
+		"编辑后的 review 图片必须参与整帖聚合")
+
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", image.ID).
+		UpdateColumn("moderation", model.ModerationStatusPass).Error)
+	payload["title"] = "编辑聚合审核再次通过"
+	status, response, _ = performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), payload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var approved service.PostCreateResult
+	decodeData(t, response, &approved)
+	require.Equal(t, model.PostStatusApproved, approved.Status,
+		"编辑后正文与全部图片均 pass 时必须重新发布")
 }
 
 func testPostImageModeration(
@@ -1066,7 +1144,8 @@ func testPostImageModeration(
 	)
 	require.False(t, blockResult.Duplicate)
 	require.Zero(t, blockResult.ApprovedPosts)
-	assertStoredPostStatus(t, h.Database.GORM, blockPost.ID, model.PostStatusPending)
+	require.EqualValues(t, 1, blockResult.RejectedPosts)
+	assertStoredPostStatus(t, h.Database.GORM, blockPost.ID, model.PostStatusRejected)
 	var storedImage model.ImageAsset
 	require.NoError(t, h.Database.GORM.First(&storedImage, blockImage.UploadID).Error)
 	require.Equal(t, model.ModerationStatusBlock, storedImage.Moderation)
@@ -1370,9 +1449,24 @@ func assertPrivatePostVisibility(
 	var detail service.PostDetail
 	decodeData(t, response, &detail)
 	require.Equal(t, postID, detail.ID)
+	require.NotNil(t, detail.Moderation, "作者查看自己的非公开帖子时必须获得审核摘要")
 	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(postID), nil, otherToken)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostNotPublished, response.ErrorCode)
+}
+
+func getAuthorPostDetail(
+	t *testing.T,
+	engine *server.Hertz,
+	postID uint64,
+	token string,
+) service.PostDetail {
+	t.Helper()
+	status, response, _ := performJSON(t, engine, http.MethodGet, postPath(postID), nil, token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var detail service.PostDetail
+	decodeData(t, response, &detail)
+	return detail
 }
 
 func assertPostAbsentFromList(

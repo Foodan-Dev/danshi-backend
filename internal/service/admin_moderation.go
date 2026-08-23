@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -28,26 +27,8 @@ func (s *AdminService) ReviewPost(
 	if err != nil {
 		return nil, err
 	}
-	post, err := s.posts.FindByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
-	if err != nil {
-		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
-	}
-	if post.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
-	}
-	if post.Status != model.PostStatusPending {
-		return nil, apierr.Conflict(apierr.BizModerationNotPending, "帖子当前不在待审核状态")
-	}
-	machine, err := s.admin.FindPendingPostReview(ctx, postID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, apierr.Conflict(apierr.BizModerationNotPending, "帖子没有待人工复核的机审记录")
-		}
-		return nil, apierr.Internal(err)
-	}
-	manual, err := s.moderation.ManualReview(ctx, ManualReviewInput{
-		MachineRecordID: machine.ID, ReviewerID: reviewerID, Verdict: verdict,
-		Labels: []string{}, RawResponse: raw,
+	manuals, err := s.moderation.ManualReviewPost(ctx, ManualPostReviewInput{
+		PostID: postID, ReviewerID: reviewerID, Verdict: verdict, RawResponse: raw,
 	})
 	if err != nil {
 		return nil, err
@@ -56,9 +37,13 @@ func (s *AdminService) ReviewPost(
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
+	recordIDs := make([]uint64, 0, len(manuals))
+	for index := range manuals {
+		recordIDs = append(recordIDs, manuals[index].ID)
+	}
 	return &AdminPostReviewResult{
-		PostID: postID, Status: current.Status, ReviewedAt: ptime.Time(*manual.ReviewedAt),
-		ModerationRecordID: manual.ID,
+		PostID: postID, Status: current.Status, ReviewedAt: ptime.Time(*manuals[0].ReviewedAt),
+		ModerationRecordIDs: recordIDs,
 	}, nil
 }
 

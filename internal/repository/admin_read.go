@@ -2,8 +2,11 @@ package repository
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"github.com/lib/pq"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
@@ -62,6 +65,35 @@ type PendingModerationRecord struct {
 	TargetID       uint64  `gorm:"column:target_id"`
 	Content        *string `gorm:"column:content"`
 	ImageObjectKey *string `gorm:"column:image_object_key"`
+	GroupPostID    *uint64 `gorm:"column:group_post_id"`
+}
+
+// PostModerationBundleRow 是帖子联合审核内容的一行；无图片帖子也会返回一行。
+type PostModerationBundleRow struct {
+	PostID     uint64
+	Title      string
+	Content    string
+	PostStatus model.PostStatus
+
+	TextRecordID      *uint64
+	TextProvider      *model.ModerationProvider
+	TextProviderJobID *string
+	TextVerdict       *model.ModerationVerdict
+	TextLabels        pq.StringArray `gorm:"type:text[]"`
+	TextScore         *decimal.Decimal
+	TextCreatedAt     *time.Time
+
+	ImageAssetID       *uint64
+	ImagePosition      *int16
+	ImageObjectKey     *string
+	ImageModeration    *model.ModerationStatus
+	ImageRecordID      *uint64
+	ImageProvider      *model.ModerationProvider
+	ImageProviderJobID *string
+	ImageVerdict       *model.ModerationVerdict
+	ImageLabels        pq.StringArray `gorm:"type:text[]"`
+	ImageScore         *decimal.Decimal
+	ImageCreatedAt     *time.Time
 }
 
 // FindPostPage 返回管理端帖子页；调用方必须显式决定是否包含软删除行。
@@ -216,27 +248,191 @@ func (AdminRepository) FindPendingModerationPage(
 	label *string,
 	params pagination.Params,
 ) ([]PendingModerationRecord, pagination.Meta, error) {
-	query := pendingModerationQuery(ctx)
-	if label != nil {
-		query = query.Where("? = ANY(mr.labels)", *label)
-	}
 	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	cte, args := pendingModerationItemsCTE(label)
+	if err := db.FromContext(ctx).Raw(cte+`SELECT count(*) FROM queue_items`, args...).
+		Scan(&total).Error; err != nil {
 		return nil, pagination.Meta{}, err
 	}
 	records := make([]PendingModerationRecord, 0, params.Limit)
-	err := query.Select(pendingModerationColumns).
-		Joins("LEFT JOIN posts AS p ON p.id = mr.post_id").
-		Joins("LEFT JOIN comments AS c ON c.id = mr.comment_id").
-		Joins("LEFT JOIN image_assets AS image ON image.id = mr.image_asset_id").
-		Joins("LEFT JOIN tags AS tag ON tag.id = mr.tag_id").
-		Joins("LEFT JOIN users AS target_user ON target_user.id = mr.user_id").
-		Order("mr.created_at, mr.id").Offset(params.Offset()).Limit(params.Limit).
-		Scan(&records).Error
+	pageSQL := cte + `
+		SELECT
+			mr.*,
+			queue_items.target_type,
+			queue_items.target_id,
+			queue_items.group_post_id,
+			CASE WHEN queue_items.group_post_id IS NULL THEN image.object_key END AS image_object_key,
+			CASE
+				WHEN queue_items.group_post_id IS NOT NULL THEN concat(p.title, E'\n', p.content)
+				WHEN mr.comment_id IS NOT NULL THEN c.content
+				WHEN mr.image_asset_id IS NOT NULL THEN image.public_url
+				WHEN mr.tag_id IS NOT NULL THEN tag.name
+				WHEN mr.field = 'name' THEN target_user.name
+				WHEN mr.field = 'bio' THEN target_user.bio
+			END AS content
+		FROM queue_items
+		JOIN moderation_records AS mr ON mr.id = queue_items.record_id
+		LEFT JOIN posts AS p ON p.id = queue_items.group_post_id
+		LEFT JOIN comments AS c ON c.id = mr.comment_id
+		LEFT JOIN image_assets AS image ON image.id = mr.image_asset_id
+		LEFT JOIN tags AS tag ON tag.id = mr.tag_id
+		LEFT JOIN users AS target_user ON target_user.id = mr.user_id
+		ORDER BY queue_items.created_at, queue_items.record_id
+		OFFSET ? LIMIT ?`
+	pageArgs := append(append([]any{}, args...), params.Offset(), params.Limit)
+	err := db.FromContext(ctx).Raw(pageSQL, pageArgs...).Scan(&records).Error
 	if err != nil {
 		return nil, pagination.Meta{}, err
 	}
 	return records, pagination.NewMeta(params, total), nil
+}
+
+// FindPostModerationBundleRows 批量加载队列页内帖子的当前正文、全部图片和各自最新机审。
+func (AdminRepository) FindPostModerationBundleRows(
+	ctx context.Context,
+	postIDs []uint64,
+) ([]PostModerationBundleRow, error) {
+	if len(postIDs) == 0 {
+		postIDs = []uint64{0}
+	}
+	rows := make([]PostModerationBundleRow, 0)
+	err := db.FromContext(ctx).Raw(`
+		SELECT
+			p.id AS post_id,
+			p.title,
+			p.content,
+			p.status AS post_status,
+			text_mr.id AS text_record_id,
+			text_mr.provider AS text_provider,
+			text_mr.provider_job_id AS text_provider_job_id,
+			text_mr.verdict AS text_verdict,
+			text_mr.labels AS text_labels,
+			text_mr.score AS text_score,
+			text_mr.created_at AS text_created_at,
+			image.id AS image_asset_id,
+			pi.position AS image_position,
+			image.object_key AS image_object_key,
+			image.moderation AS image_moderation,
+			image_mr.id AS image_record_id,
+			image_mr.provider AS image_provider,
+			image_mr.provider_job_id AS image_provider_job_id,
+			image_mr.verdict AS image_verdict,
+			image_mr.labels AS image_labels,
+			image_mr.score AS image_score,
+			image_mr.created_at AS image_created_at
+		FROM posts AS p
+		LEFT JOIN LATERAL (
+			SELECT mr.*
+			FROM moderation_records AS mr
+			WHERE mr.post_id = p.id AND mr.provider <> ?
+			ORDER BY mr.created_at DESC, mr.id DESC
+			LIMIT 1
+		) AS text_mr ON true
+		LEFT JOIN post_images AS pi ON pi.post_id = p.id
+		LEFT JOIN image_assets AS image ON image.id = pi.image_asset_id
+		LEFT JOIN LATERAL (
+			SELECT mr.*
+			FROM moderation_records AS mr
+			WHERE mr.image_asset_id = image.id AND mr.provider <> ?
+			ORDER BY mr.created_at DESC, mr.id DESC
+			LIMIT 1
+		) AS image_mr ON true
+		WHERE p.id IN ?
+		ORDER BY p.id, pi.position
+	`, model.ModerationProviderManual, model.ModerationProviderManual, postIDs).Scan(&rows).Error
+	return rows, err
+}
+
+func pendingModerationItemsCTE(label *string) (string, []any) {
+	labelClause := ""
+	args := []any{
+		model.ModerationVerdictReview,
+		model.ModerationProviderManual,
+		model.ModerationProviderManual,
+	}
+	if label != nil {
+		labelClause = " AND ? = ANY(mr.labels)"
+		args = append(args, *label)
+	}
+	args = append(args,
+		model.PostStatusPending,
+		model.ModerationStatusPending,
+		model.ModerationStatusBlock,
+		model.ImagePurposePost,
+	)
+	return strings.ReplaceAll(`
+		WITH pending AS (
+			SELECT mr.*
+			FROM moderation_records AS mr
+			WHERE mr.verdict = ?
+			  AND mr.provider <> ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM moderation_records AS manual
+				WHERE manual.supersedes_id = mr.id
+			  )
+			  AND (
+				(mr.post_id IS NULL AND mr.comment_id IS NULL AND mr.image_asset_id IS NULL)
+				OR NOT EXISTS (
+					SELECT 1 FROM moderation_records AS newer
+					WHERE newer.provider <> ?
+					  AND newer.scene = mr.scene
+					  AND newer.field IS NOT DISTINCT FROM mr.field
+					  AND (
+						(newer.post_id = mr.post_id AND mr.post_id IS NOT NULL)
+						OR (newer.comment_id = mr.comment_id AND mr.comment_id IS NOT NULL)
+						OR (newer.image_asset_id = mr.image_asset_id AND mr.image_asset_id IS NOT NULL)
+					  )
+					  AND (newer.created_at, newer.id) > (mr.created_at, mr.id)
+				)
+			  )
+			  __LABEL_CLAUSE__
+		),
+		post_items AS (
+			SELECT
+				p.id AS target_id,
+				(array_agg(pending.id ORDER BY pending.created_at, pending.id))[1] AS record_id,
+				min(pending.created_at) AS created_at,
+				p.id AS group_post_id
+			FROM posts AS p
+			JOIN pending ON pending.post_id = p.id OR EXISTS (
+				SELECT 1 FROM post_images AS pending_pi
+				WHERE pending_pi.post_id = p.id
+				  AND pending_pi.image_asset_id = pending.image_asset_id
+			)
+			WHERE p.status = ? AND p.deleted_at IS NULL
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM post_images AS pi
+				JOIN image_assets AS image ON image.id = pi.image_asset_id
+				WHERE pi.post_id = p.id AND image.moderation IN (?, ?)
+			  )
+			GROUP BY p.id
+		),
+		generic_items AS (
+			SELECT
+				CASE
+					WHEN pending.comment_id IS NOT NULL THEN 'comment'
+					WHEN pending.image_asset_id IS NOT NULL THEN 'image_asset'
+					WHEN pending.tag_id IS NOT NULL THEN 'tag'
+					ELSE 'user'
+				END AS target_type,
+				COALESCE(pending.comment_id, pending.image_asset_id, pending.tag_id, pending.user_id) AS target_id,
+				pending.id AS record_id,
+				pending.created_at,
+				NULL::bigint AS group_post_id
+			FROM pending
+			LEFT JOIN image_assets AS image ON image.id = pending.image_asset_id
+			WHERE pending.post_id IS NULL
+			  AND (pending.image_asset_id IS NULL OR image.purpose <> ?)
+		),
+		queue_items AS (
+			SELECT 'post'::text AS target_type, target_id, record_id, created_at, group_post_id
+			FROM post_items
+			UNION ALL
+			SELECT target_type, target_id, record_id, created_at, group_post_id
+			FROM generic_items
+		)
+	`, "__LABEL_CLAUSE__", labelClause), args
 }
 
 // FindPendingPostReview 返回指定帖子的最新一条未处理机器 review 记录。
@@ -261,7 +457,7 @@ func pendingModerationQuery(ctx context.Context) *gorm.DB {
 				WHERE manual.supersedes_id = mr.id
 			)
 			AND (
-				(mr.post_id IS NULL AND mr.comment_id IS NULL)
+				(mr.post_id IS NULL AND mr.comment_id IS NULL AND mr.image_asset_id IS NULL)
 				OR NOT EXISTS (
 					SELECT 1 FROM moderation_records AS newer
 					WHERE newer.provider <> ?
@@ -270,6 +466,7 @@ func pendingModerationQuery(ctx context.Context) *gorm.DB {
 					  AND (
 						(newer.post_id = mr.post_id AND mr.post_id IS NOT NULL)
 						OR (newer.comment_id = mr.comment_id AND mr.comment_id IS NOT NULL)
+						OR (newer.image_asset_id = mr.image_asset_id AND mr.image_asset_id IS NOT NULL)
 					  )
 					  AND (newer.created_at, newer.id) > (mr.created_at, mr.id)
 				)
@@ -319,23 +516,3 @@ const adminUserColumns = `
 	 WHERE p.author_id = u.id AND p.deleted_at IS NULL) AS favorite_count,
 	(SELECT count(*) FROM follows AS f WHERE f.following_id = u.id) AS follower_count,
 	(SELECT count(*) FROM follows AS f WHERE f.follower_id = u.id) AS following_count`
-
-const pendingModerationColumns = `
-	mr.*,
-	image.object_key AS image_object_key,
-	CASE
-		WHEN mr.post_id IS NOT NULL THEN 'post'
-		WHEN mr.comment_id IS NOT NULL THEN 'comment'
-		WHEN mr.image_asset_id IS NOT NULL THEN 'image_asset'
-		WHEN mr.tag_id IS NOT NULL THEN 'tag'
-		ELSE 'user'
-	END AS target_type,
-	COALESCE(mr.post_id, mr.comment_id, mr.image_asset_id, mr.tag_id, mr.user_id) AS target_id,
-	CASE
-		WHEN mr.post_id IS NOT NULL THEN concat(p.title, E'\n', p.content)
-		WHEN mr.comment_id IS NOT NULL THEN c.content
-		WHEN mr.image_asset_id IS NOT NULL THEN image.public_url
-		WHEN mr.tag_id IS NOT NULL THEN tag.name
-		WHEN mr.field = 'name' THEN target_user.name
-		WHEN mr.field = 'bio' THEN target_user.bio
-	END AS content`

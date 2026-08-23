@@ -187,6 +187,43 @@
         },
         "type": "object"
       },
+      "AdminMachineModerationView": {
+        "properties": {
+          "created_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "moderation_record_id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_job_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "score": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AdminModerationList": {
         "properties": {
           "pagination": {
@@ -230,6 +267,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "post": {
+            "$ref": "#/components/schemas/AdminPostModerationView"
           },
           "provider": {
             "type": "string"
@@ -277,6 +317,36 @@
         },
         "type": "object"
       },
+      "AdminPostImageModerationView": {
+        "properties": {
+          "image_url": {
+            "type": "string"
+          },
+          "machine": {
+            "$ref": "#/components/schemas/AdminMachineModerationView"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "position": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "type": "integer"
+          },
+          "upload_id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "AdminPostList": {
         "properties": {
           "pagination": {
@@ -287,6 +357,34 @@
               "$ref": "#/components/schemas/AdminPostView"
             },
             "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "AdminPostModerationView": {
+        "properties": {
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/AdminPostImageModerationView"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "$ref": "#/components/schemas/AdminPostTextModerationView"
           }
         },
         "type": "object"
@@ -308,10 +406,13 @@
       },
       "AdminPostReviewResult": {
         "properties": {
-          "moderation_record_id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "type": "integer"
+          "moderation_record_ids": {
+            "items": {
+              "maximum": 18446744073709552000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           },
           "post_id": {
             "maximum": 18446744073709552000,
@@ -328,6 +429,29 @@
               "approved",
               "rejected"
             ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdminPostTextModerationView": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "machine": {
+            "$ref": "#/components/schemas/AdminMachineModerationView"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "title": {
             "type": "string"
           }
         },
@@ -1400,6 +1524,10 @@
           },
           "duplicate": {
             "type": "boolean"
+          },
+          "rejected_posts": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -1658,6 +1786,9 @@
           "is_liked": {
             "type": "boolean"
           },
+          "moderation": {
+            "$ref": "#/components/schemas/PostModerationView"
+          },
           "post_type": {
             "enum": [
               "share",
@@ -1903,6 +2034,55 @@
           },
           "updated_at": {
             "$ref": "#/components/schemas/Time"
+          }
+        },
+        "type": "object"
+      },
+      "PostModerationIssueView": {
+        "properties": {
+          "image_position": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "nullable": true,
+            "type": "integer"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PostModerationView": {
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PostModerationIssueView"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "type": "string"
           }
         },
         "type": "object"
@@ -2385,6 +2565,15 @@
       },
       "UploadCompleteResult": {
         "properties": {
+          "moderation": {
+            "enum": [
+              "pending",
+              "pass",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
           "object_key": {
             "type": "string"
           },

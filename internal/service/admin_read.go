@@ -6,6 +6,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
@@ -203,6 +205,20 @@ func (s *AdminService) PendingModeration(
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
+	postIDs := make([]uint64, 0, len(rows))
+	for index := range rows {
+		if rows[index].GroupPostID != nil {
+			postIDs = append(postIDs, *rows[index].GroupPostID)
+		}
+	}
+	bundleRows, err := s.admin.FindPostModerationBundleRows(ctx, postIDs)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	bundles, err := s.buildPostModerationBundles(ctx, bundleRows)
+	if err != nil {
+		return nil, err
+	}
 	records := make([]AdminModerationView, 0, len(rows))
 	for _, row := range rows {
 		content := row.Content
@@ -213,15 +229,84 @@ func (s *AdminService) PendingModeration(
 			}
 			content = &imageURL
 		}
-		records = append(records, AdminModerationView{
+		view := AdminModerationView{
 			ID: row.ID, TargetType: row.TargetType, TargetID: row.TargetID,
 			Field: row.Field, Scene: row.Scene,
 			Provider: row.Provider, ProviderJobID: row.ProviderJobID, Verdict: row.Verdict,
 			Labels: append([]string{}, row.Labels...), Score: row.Score,
 			Content: content, CreatedAt: ptime.Time(row.CreatedAt),
-		})
+		}
+		if row.GroupPostID != nil {
+			view.Post = bundles[*row.GroupPostID]
+		}
+		records = append(records, view)
 	}
 	return &AdminModerationList{Records: records, Pagination: meta}, nil
+}
+
+func (s *AdminService) buildPostModerationBundles(
+	ctx context.Context,
+	rows []repository.PostModerationBundleRow,
+) (map[uint64]*AdminPostModerationView, error) {
+	bundles := make(map[uint64]*AdminPostModerationView)
+	for index := range rows {
+		row := &rows[index]
+		bundle := bundles[row.PostID]
+		if bundle == nil {
+			textModeration := model.ModerationStatusPending
+			if row.TextVerdict != nil {
+				textModeration = model.ModerationStatus(*row.TextVerdict)
+			}
+			bundle = &AdminPostModerationView{
+				ID: row.PostID, Status: row.PostStatus,
+				Text: AdminPostTextModerationView{
+					Title: row.Title, Content: row.Content, Moderation: textModeration,
+					Machine: adminMachineModeration(
+						row.TextRecordID, row.TextProvider, row.TextProviderJobID,
+						row.TextVerdict, row.TextLabels, row.TextScore, row.TextCreatedAt,
+					),
+				},
+				Images: []AdminPostImageModerationView{},
+			}
+			bundles[row.PostID] = bundle
+		}
+		if row.ImageAssetID == nil || row.ImagePosition == nil ||
+			row.ImageObjectKey == nil || row.ImageModeration == nil {
+			continue
+		}
+		imageURL, err := s.presignImage(ctx, *row.ImageObjectKey)
+		if err != nil {
+			return nil, err
+		}
+		bundle.Images = append(bundle.Images, AdminPostImageModerationView{
+			UploadID: *row.ImageAssetID, Position: *row.ImagePosition,
+			ImageURL: imageURL, Moderation: *row.ImageModeration,
+			Machine: adminMachineModeration(
+				row.ImageRecordID, row.ImageProvider, row.ImageProviderJobID,
+				row.ImageVerdict, row.ImageLabels, row.ImageScore, row.ImageCreatedAt,
+			),
+		})
+	}
+	return bundles, nil
+}
+
+func adminMachineModeration(
+	recordID *uint64,
+	provider *model.ModerationProvider,
+	providerJobID *string,
+	verdict *model.ModerationVerdict,
+	labels []string,
+	score *decimal.Decimal,
+	createdAt *time.Time,
+) *AdminMachineModerationView {
+	if recordID == nil || provider == nil || verdict == nil || createdAt == nil {
+		return nil
+	}
+	return &AdminMachineModerationView{
+		ModerationRecordID: *recordID, Provider: *provider, ProviderJobID: providerJobID,
+		Verdict: *verdict, Labels: append([]string{}, labels...), Score: score,
+		CreatedAt: ptime.Time(*createdAt),
+	}
 }
 
 func (s *AdminService) presignImage(ctx context.Context, objectKey string) (string, error) {

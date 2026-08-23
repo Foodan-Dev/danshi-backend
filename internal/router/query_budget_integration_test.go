@@ -42,7 +42,7 @@ var hotPathSelectBudgets = map[string]int64{
 	"GET /api/v2/admin/comments":                   3,
 	"GET /api/v2/admin/tags":                       3,
 	"GET /api/v2/admin/tags/hot":                   3,
-	"GET /api/v2/admin/moderation-records/pending": 3,
+	"GET /api/v2/admin/moderation-records/pending": 4,
 }
 
 var queryBudgetExemptGETRoutes = map[string]string{

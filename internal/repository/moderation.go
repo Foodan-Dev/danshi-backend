@@ -15,6 +15,82 @@ import (
 // ModerationRepository 是审核回调与人工复核使用的持久化边界。
 type ModerationRepository struct{}
 
+// LockPostForReview 锁定整帖人工复核的帖子主体。
+func (ModerationRepository) LockPostForReview(
+	ctx context.Context,
+	postID uint64,
+) (*model.Post, error) {
+	var post model.Post
+	err := db.FromContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", postID).First(&post).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &post, nil
+}
+
+// LockImagesForPost 按资产 id 升序锁定一条帖子的全部当前附图。
+func (ModerationRepository) LockImagesForPost(
+	ctx context.Context,
+	postID uint64,
+) ([]model.ImageAsset, error) {
+	assets := make([]model.ImageAsset, 0)
+	err := db.FromContext(ctx).Table("image_assets AS image").Select("image.*").
+		Joins("JOIN post_images AS pi ON pi.image_asset_id = image.id").
+		Where("pi.post_id = ?", postID).Order("image.id").
+		Clauses(clause.Locking{Strength: "UPDATE", Table: clause.Table{Name: "image"}}).
+		Scan(&assets).Error
+	return assets, err
+}
+
+// LatestPostModeration 返回帖子正文当前生效的最新审核结论。
+func (ModerationRepository) LatestPostModeration(
+	ctx context.Context,
+	postID uint64,
+) (*model.ModerationRecord, error) {
+	var record model.ModerationRecord
+	err := db.FromContext(ctx).Where("post_id = ?", postID).
+		Order("created_at DESC, id DESC").First(&record).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &record, nil
+}
+
+// LockPendingReviewRecordsForPost 锁定正文及当前全部附图尚未处理的机器 review 记录。
+func (ModerationRepository) LockPendingReviewRecordsForPost(
+	ctx context.Context,
+	postID uint64,
+) ([]model.ModerationRecord, error) {
+	records := make([]model.ModerationRecord, 0)
+	err := pendingModerationQuery(ctx).
+		Where(`mr.post_id = ? OR EXISTS (
+			SELECT 1 FROM post_images AS pi
+			WHERE pi.post_id = ? AND pi.image_asset_id = mr.image_asset_id
+		)`, postID, postID).
+		Order("mr.id").
+		Clauses(clause.Locking{Strength: "UPDATE", Table: clause.Table{Name: "mr"}}).
+		Find(&records).Error
+	return records, err
+}
+
+// PendingPostIDsForImages 返回仍待审且引用任一目标图片的帖子 id。
+func (ModerationRepository) PendingPostIDsForImages(
+	ctx context.Context,
+	imageAssetIDs []uint64,
+) ([]uint64, error) {
+	if len(imageAssetIDs) == 0 {
+		return []uint64{}, nil
+	}
+	var postIDs []uint64
+	err := db.FromContext(ctx).Table("posts AS p").Distinct("p.id").
+		Joins("JOIN post_images AS pi ON pi.post_id = p.id").
+		Where("pi.image_asset_id IN ? AND p.status = ? AND p.deleted_at IS NULL",
+			imageAssetIDs, model.PostStatusPending).
+		Order("p.id").Pluck("p.id", &postIDs).Error
+	return postIDs, err
+}
+
 // FindRecordForReview 读取不可变机器记录，用于确定统一锁序中的目标对象。
 func (ModerationRepository) FindRecordForReview(
 	ctx context.Context,
@@ -180,15 +256,48 @@ func (ModerationRepository) ApplyManualTextVerdict(
 	}
 }
 
-// ApproveEligiblePendingPosts 补发布文本最新结论与全部图片均为 pass 的待审帖子。
-func (ModerationRepository) ApproveEligiblePendingPosts(
+// PostModerationTransitions 汇总一次聚合重算造成的帖子状态流转。
+type PostModerationTransitions struct {
+	Approved int64
+	Rejected int64
+}
+
+// ReconcilePendingPosts 按“block 优先、review 次之、全 pass 发布”重算待审帖子。
+func (ModerationRepository) ReconcilePendingPosts(
 	ctx context.Context,
 	postIDs []uint64,
-) (int64, error) {
+) (PostModerationTransitions, error) {
 	if len(postIDs) == 0 {
-		return 0, nil
+		return PostModerationTransitions{}, nil
 	}
-	result := db.FromContext(ctx).Exec(`
+	postIDs = uniqueModerationIDs(postIDs)
+	rejected := db.FromContext(ctx).Exec(`
+		UPDATE posts AS p
+		SET status = ?
+		WHERE p.id IN ?
+		  AND p.status = ?
+		  AND p.deleted_at IS NULL
+		  AND (
+		    EXISTS (
+		      SELECT 1
+		      FROM post_images AS pi
+		      JOIN image_assets AS ia ON ia.id = pi.image_asset_id
+		      WHERE pi.post_id = p.id AND ia.moderation = ?
+		    )
+		    OR (
+		      SELECT mr.verdict
+		      FROM moderation_records AS mr
+		      WHERE mr.post_id = p.id
+		      ORDER BY mr.created_at DESC, mr.id DESC
+		      LIMIT 1
+		    ) = ?
+		  )
+	`, model.PostStatusRejected, postIDs, model.PostStatusPending,
+		model.ModerationStatusBlock, model.ModerationVerdictBlock)
+	if rejected.Error != nil {
+		return PostModerationTransitions{}, rejected.Error
+	}
+	approved := db.FromContext(ctx).Exec(`
 		UPDATE posts AS p
 		SET status = ?
 		WHERE p.id IN ?
@@ -209,7 +318,13 @@ func (ModerationRepository) ApproveEligiblePendingPosts(
 		  ) = ?
 	`, model.PostStatusApproved, postIDs, model.PostStatusPending,
 		model.ModerationStatusPass, model.ModerationVerdictPass)
-	return result.RowsAffected, result.Error
+	if approved.Error != nil {
+		return PostModerationTransitions{}, approved.Error
+	}
+	return PostModerationTransitions{
+		Approved: approved.RowsAffected,
+		Rejected: rejected.RowsAffected,
+	}, nil
 }
 
 func uniqueModerationIDs(values []uint64) []uint64 {

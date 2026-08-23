@@ -120,6 +120,42 @@ type AdminImageView struct {
 	CreatedAt  ptime.Time             `json:"created_at"`
 }
 
+// AdminMachineModerationView 是管理端联合审核中单个对象的机审明细。
+type AdminMachineModerationView struct {
+	ModerationRecordID uint64                   `json:"moderation_record_id"`
+	Provider           model.ModerationProvider `json:"provider"`
+	ProviderJobID      *string                  `json:"provider_job_id"`
+	Verdict            model.ModerationVerdict  `json:"verdict"`
+	Labels             []string                 `json:"labels"`
+	Score              *decimal.Decimal         `json:"score"`
+	CreatedAt          ptime.Time               `json:"created_at"`
+}
+
+// AdminPostTextModerationView 把当前标题、正文与对应机审结论放在一起。
+type AdminPostTextModerationView struct {
+	Title      string                      `json:"title"`
+	Content    string                      `json:"content"`
+	Moderation model.ModerationStatus      `json:"moderation"`
+	Machine    *AdminMachineModerationView `json:"machine"`
+}
+
+// AdminPostImageModerationView 是联合审核中的一张当前附图。
+type AdminPostImageModerationView struct {
+	UploadID   uint64                      `json:"upload_id"`
+	Position   int16                       `json:"position"`
+	ImageURL   string                      `json:"image_url"`
+	Moderation model.ModerationStatus      `json:"moderation"`
+	Machine    *AdminMachineModerationView `json:"machine"`
+}
+
+// AdminPostModerationView 是一条帖子一次性人工复核所需的全部内容和机器判断。
+type AdminPostModerationView struct {
+	ID     uint64                         `json:"id"`
+	Status model.PostStatus               `json:"status"`
+	Text   AdminPostTextModerationView    `json:"text"`
+	Images []AdminPostImageModerationView `json:"images"`
+}
+
 // AdminModerationView 是通用待人工复核队列的一项。
 type AdminModerationView struct {
 	ID            uint64                   `json:"id"`
@@ -134,6 +170,7 @@ type AdminModerationView struct {
 	Score         *decimal.Decimal         `json:"score"`
 	Content       *string                  `json:"content"`
 	CreatedAt     ptime.Time               `json:"created_at"`
+	Post          *AdminPostModerationView `json:"post,omitempty"`
 }
 
 // AdminModerationList 是待人工复核页。
@@ -194,12 +231,12 @@ type AdminReviewResult struct {
 	ReviewedAt         ptime.Time              `json:"reviewed_at"`
 }
 
-// AdminPostReviewResult 保留基线帖子审核响应字段并附带审计行 id。
+// AdminPostReviewResult 返回整帖裁决结果及本次逐对象追加的全部审计行 id。
 type AdminPostReviewResult struct {
-	PostID             uint64           `json:"post_id"`
-	Status             model.PostStatus `json:"status"`
-	ReviewedAt         ptime.Time       `json:"reviewed_at"`
-	ModerationRecordID uint64           `json:"moderation_record_id"`
+	PostID              uint64           `json:"post_id"`
+	Status              model.PostStatus `json:"status"`
+	ReviewedAt          ptime.Time       `json:"reviewed_at"`
+	ModerationRecordIDs []uint64         `json:"moderation_record_ids"`
 }
 
 // AdminPostDeleteResult 是管理员删帖响应。

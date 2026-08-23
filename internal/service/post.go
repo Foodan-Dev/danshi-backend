@@ -117,6 +117,20 @@ type PreferencesView struct {
 	PreferFlavors []string `json:"prefer_flavors"`
 }
 
+// PostModerationIssueView 告诉作者当前是哪一部分尚未通过审核。
+type PostModerationIssueView struct {
+	Part          string                 `json:"part"`
+	ImagePosition *int16                 `json:"image_position,omitempty"`
+	Moderation    model.ModerationStatus `json:"moderation"`
+	Labels        []string               `json:"labels"`
+}
+
+// PostModerationView 是仅作者可见的整帖审核摘要。
+type PostModerationView struct {
+	Status model.PostStatus          `json:"status"`
+	Issues []PostModerationIssueView `json:"issues"`
+}
+
 // PostListItem 是列表与详情共享的帖子响应。
 type PostListItem struct {
 	ID            uint64             `json:"id"`
@@ -147,8 +161,9 @@ type PostListItem struct {
 // PostDetail 是帖子详情响应。
 type PostDetail struct {
 	PostListItem
-	BudgetRange *BudgetRangeView `json:"budget_range"`
-	Preferences *PreferencesView `json:"preferences"`
+	BudgetRange *BudgetRangeView    `json:"budget_range"`
+	Preferences *PreferencesView    `json:"preferences"`
+	Moderation  *PostModerationView `json:"moderation,omitempty"`
 }
 
 // PostList 是帖子列表与分页信息。
@@ -347,6 +362,21 @@ func (s *PostService) Get(
 		detail.BudgetRange = &BudgetRangeView{Min: *record.BudgetMin, Max: *record.BudgetMax}
 	}
 	detail.Preferences = buildPreferences(relations.Flavors[postID])
+	if record.AuthorID == currentUserID {
+		issues, issueErr := s.posts.FindModerationIssues(ctx, postID)
+		if issueErr != nil {
+			return nil, apierr.Internal(issueErr)
+		}
+		views := make([]PostModerationIssueView, 0, len(issues))
+		for index := range issues {
+			views = append(views, PostModerationIssueView{
+				Part: issues[index].Part, ImagePosition: issues[index].ImagePosition,
+				Moderation: issues[index].Moderation,
+				Labels:     append([]string{}, issues[index].Labels...),
+			})
+		}
+		detail.Moderation = &PostModerationView{Status: record.Status, Issues: views}
+	}
 	return detail, nil
 }
 

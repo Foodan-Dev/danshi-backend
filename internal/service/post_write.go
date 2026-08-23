@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -240,19 +241,7 @@ func (s *PostService) finishModeration(
 			Labels: append([]string{}, result.Labels...),
 		})
 	}
-	switch result.Verdict {
-	case model.ModerationVerdictBlock:
-		return model.PostStatusRejected, nil
-	case model.ModerationVerdictReview:
-		return model.PostStatusPending, nil
-	case model.ModerationVerdictPass:
-		if imagesApproved(resolved.ImageAssets) {
-			return model.PostStatusApproved, nil
-		}
-		return model.PostStatusPending, nil
-	default:
-		return "", apierr.Internal(errors.New("未知的审核结论"))
-	}
+	return aggregatePostModeration(result.Verdict, resolved.ImageAssets)
 }
 
 func (s *PostService) replaceTags(ctx context.Context, names []string) ([]uint64, []string, error) {
@@ -405,7 +394,10 @@ func validateAndOrderImages(
 			return nil, nil, apierr.Conflict(apierr.BizImagePurposeWrong, "图片用途不是帖子配图")
 		}
 		if asset.Moderation == model.ModerationStatusBlock {
-			return nil, nil, apierr.Conflict(apierr.BizImageNotApproved, "图片未通过审核")
+			return nil, nil, apierr.Conflict(
+				apierr.BizImageNotApproved,
+				fmt.Sprintf("第 %d 张图片（upload_id=%d）未通过审核", len(ordered)+1, asset.ID),
+			)
 		}
 		ordered = append(ordered, asset)
 		ids = append(ids, asset.ID)
@@ -527,13 +519,33 @@ func validateModerationResult(result ModerationResult) error {
 	return nil
 }
 
-func imagesApproved(images []model.ImageAsset) bool {
+func aggregatePostModeration(
+	textVerdict model.ModerationVerdict,
+	images []model.ImageAsset,
+) (model.PostStatus, error) {
+	if textVerdict == model.ModerationVerdictBlock || imagesContainModeration(
+		images, model.ModerationStatusBlock,
+	) {
+		return model.PostStatusRejected, nil
+	}
+	if textVerdict == model.ModerationVerdictReview ||
+		imagesContainModeration(images, model.ModerationStatusReview) ||
+		imagesContainModeration(images, model.ModerationStatusPending) {
+		return model.PostStatusPending, nil
+	}
+	if textVerdict != model.ModerationVerdictPass {
+		return "", apierr.Internal(errors.New("未知的审核结论"))
+	}
+	return model.PostStatusApproved, nil
+}
+
+func imagesContainModeration(images []model.ImageAsset, status model.ModerationStatus) bool {
 	for _, image := range images {
-		if image.Moderation != model.ModerationStatusPass {
-			return false
+		if image.Moderation == status {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func dictionaryError(err error, resource string) error {

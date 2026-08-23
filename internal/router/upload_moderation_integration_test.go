@@ -100,6 +100,14 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 		)
 	})
 
+	t.Run("post-level queue groups all objects and applies one decision", func(t *testing.T) {
+		testPostLevelUnifiedModeration(t, engine, gdb, database, sender, storage, author)
+	})
+
+	t.Run("complete returns synchronous verdict and omits blocked public URL", func(t *testing.T) {
+		testUploadCompleteReturnsModeration(t, engine, storage, imageModerator, author)
+	})
+
 	t.Run("upload validation ownership duplicate and expiry", func(t *testing.T) {
 		testUploadBoundaries(t, engine, gdb, database, cfg, storage, imageModerator, author)
 	})
@@ -131,6 +139,316 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	t.Run("manual review appends and supersedes machine record", func(t *testing.T) {
 		testManualReviewIsAppendOnly(t, gdb, database, author.User.ID)
 	})
+}
+
+func testPostLevelUnifiedModeration(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	database *dbinfra.DB,
+	sender *captureEmailSender,
+	storage *fakeImageStorage,
+	author service.AuthResult,
+) {
+	t.Helper()
+	reviewer := registerPostTestUser(
+		t, engine, sender, "post-level-reviewer@fdueat.com", "整帖复核管理员",
+	)
+	require.NoError(t, gdb.Create(&model.UserRoleBinding{
+		UserID: reviewer.User.ID, Role: model.UserRoleModerator, GrantedAt: time.Now().UTC(),
+	}).Error)
+
+	type unifiedFixture struct {
+		post           model.Post
+		text           model.ModerationRecord
+		images         []model.ImageAsset
+		imageRecords   []model.ModerationRecord
+		pendingRecords []model.ModerationRecord
+	}
+	createFixture := func(
+		title string,
+		textVerdict model.ModerationVerdict,
+		imageVerdicts ...model.ModerationVerdict,
+	) unifiedFixture {
+		shareType := model.ShareTypeRecommend
+		postStatus := model.PostStatusApproved
+		switch textVerdict {
+		case model.ModerationVerdictBlock:
+			postStatus = model.PostStatusRejected
+		case model.ModerationVerdictReview:
+			postStatus = model.PostStatusPending
+		}
+		for _, verdict := range imageVerdicts {
+			if verdict == model.ModerationVerdictBlock {
+				postStatus = model.PostStatusRejected
+				break
+			}
+			if verdict == model.ModerationVerdictReview && postStatus != model.PostStatusRejected {
+				postStatus = model.PostStatusPending
+			}
+		}
+		fixture := unifiedFixture{post: model.Post{
+			AuthorID: author.User.ID, PostType: model.PostTypeShare, ShareType: &shareType,
+			Status: postStatus, Category: model.PostCategoryFood,
+			Title: title, Content: title + " 的正文",
+		}}
+		require.NoError(t, gdb.Create(&fixture.post).Error)
+		textScore := decimal.NewFromInt(62)
+		fixture.text = model.ModerationRecord{
+			PostID: &fixture.post.ID, Scene: model.ModerationSceneText,
+			Provider: "batch38_text", Verdict: textVerdict,
+			Labels: pq.StringArray{"text_" + string(textVerdict)}, Score: &textScore,
+			CreatedAt: time.Now().UTC(),
+		}
+		require.NoError(t, gdb.Create(&fixture.text).Error)
+		if textVerdict == model.ModerationVerdictReview {
+			fixture.pendingRecords = append(fixture.pendingRecords, fixture.text)
+		}
+		postImages := make([]model.PostImage, 0, len(imageVerdicts))
+		for position, verdict := range imageVerdicts {
+			size := int64(2048 + position)
+			objectKey := fmt.Sprintf("posts/batch38/%s-%d.jpg", title, position)
+			publicURL := "https://img.example.test/" + objectKey
+			asset := model.ImageAsset{
+				UploaderID: &author.User.ID, Purpose: model.ImagePurposePost,
+				ObjectKey: objectKey, PublicURL: publicURL, ContentType: "image/jpeg",
+				Size: &size, Status: model.ImageStatusPending,
+				Moderation: model.ModerationStatus(verdict),
+			}
+			require.NoError(t, gdb.Create(&asset).Error)
+			storage.PutObject(objectKey, testutil.StoredObject{ContentLength: size})
+			storage.SetPublicURL(objectKey, publicURL)
+			if verdict != model.ModerationVerdictPass {
+				require.NoError(t, storage.SetObjectPublicAccess(context.Background(), objectKey, false))
+			}
+			score := decimal.NewFromInt(int64(90 - position*10))
+			jobID := fmt.Sprintf("batch38-%s-%d", title, position)
+			record := model.ModerationRecord{
+				ImageAssetID: &asset.ID, Scene: model.ModerationSceneImage,
+				Provider: "batch38_image", ProviderJobID: &jobID, Verdict: verdict,
+				Labels: pq.StringArray{"image_" + string(verdict)}, Score: &score,
+				CreatedAt: time.Now().UTC().Add(time.Duration(position+1) * time.Microsecond),
+			}
+			require.NoError(t, gdb.Create(&record).Error)
+			fixture.images = append(fixture.images, asset)
+			fixture.imageRecords = append(fixture.imageRecords, record)
+			if verdict == model.ModerationVerdictReview {
+				fixture.pendingRecords = append(fixture.pendingRecords, record)
+			}
+			postImages = append(postImages, model.PostImage{
+				PostID: fixture.post.ID, Position: int16(position), ImageAssetID: asset.ID,
+			})
+		}
+		if len(postImages) > 0 {
+			require.NoError(t, gdb.Create(&postImages).Error)
+		}
+		return fixture
+	}
+
+	approved := createFixture(
+		"batch38-approve", model.ModerationVerdictPass,
+		model.ModerationVerdictPass,
+		model.ModerationVerdictReview,
+		model.ModerationVerdictReview,
+	)
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending?limit=100", nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var queue service.AdminModerationList
+	decodeData(t, response, &queue)
+	items := moderationItemsForPost(queue.Records, approved.post.ID)
+	require.Len(t, items, 1, "同帖正文和多图只能形成一个队列条目")
+	require.NotNil(t, items[0].Post)
+	require.Equal(t, approved.post.Title, items[0].Post.Text.Title)
+	require.Equal(t, model.ModerationStatusPass, items[0].Post.Text.Moderation)
+	require.Equal(t, approved.text.ID, items[0].Post.Text.Machine.ModerationRecordID)
+	require.Len(t, items[0].Post.Images, 3)
+	require.Equal(t, model.ModerationStatusPass, items[0].Post.Images[0].Moderation)
+	require.Equal(t, model.ModerationStatusReview, items[0].Post.Images[1].Moderation)
+	require.Equal(t, model.ModerationStatusReview, items[0].Post.Images[2].Moderation)
+	for index := range items[0].Post.Images {
+		_, readErr := storage.ReadPresignedURL(items[0].Post.Images[index].ImageURL)
+		require.NoError(t, readErr, "联合队列中的每张图都必须使用可读短期签名地址")
+		require.NotNil(t, items[0].Post.Images[index].Machine)
+	}
+
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/review", approved.post.ID),
+		map[string]any{"status": model.PostStatusApproved, "feedback": "整帖确认通过"}, reviewer.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var approvedResult service.AdminPostReviewResult
+	decodeData(t, response, &approvedResult)
+	require.Equal(t, model.PostStatusApproved, approvedResult.Status)
+	require.Len(t, approvedResult.ModerationRecordIDs, len(approved.pendingRecords))
+	requireUnifiedManualRecords(
+		t, gdb, approved.pendingRecords, model.ModerationVerdictPass, reviewer.User.ID,
+	)
+
+	rejected := createFixture(
+		"batch38-reject", model.ModerationVerdictReview,
+		model.ModerationVerdictReview, model.ModerationVerdictReview,
+	)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/review", rejected.post.ID),
+		map[string]any{"status": model.PostStatusRejected, "feedback": "整帖驳回"}, reviewer.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var rejectedResult service.AdminPostReviewResult
+	decodeData(t, response, &rejectedResult)
+	require.Equal(t, model.PostStatusRejected, rejectedResult.Status)
+	require.Len(t, rejectedResult.ModerationRecordIDs, len(rejected.pendingRecords))
+	requireUnifiedManualRecords(
+		t, gdb, rejected.pendingRecords, model.ModerationVerdictBlock, reviewer.User.ID,
+	)
+	for index := range rejected.images {
+		var image model.ImageAsset
+		require.NoError(t, gdb.First(&image, rejected.images[index].ID).Error)
+		require.Equal(t, model.ModerationStatusBlock, image.Moderation)
+	}
+
+	blocked := createFixture("batch38-block-priority", model.ModerationVerdictReview)
+	size := int64(4096)
+	blockedImage := model.ImageAsset{
+		UploaderID: &author.User.ID, Purpose: model.ImagePurposePost,
+		ObjectKey:   "posts/batch38/block-priority.jpg",
+		PublicURL:   "https://img.example.test/posts/batch38/block-priority.jpg",
+		ContentType: "image/jpeg", Size: &size, Status: model.ImageStatusPending,
+		Moderation: model.ModerationStatusPending,
+	}
+	require.NoError(t, gdb.Create(&blockedImage).Error)
+	require.NoError(t, gdb.Create(&model.PostImage{
+		PostID: blocked.post.ID, Position: 0, ImageAssetID: blockedImage.ID,
+	}).Error)
+	moderation := service.NewModerationService(
+		service.DiscardModerationAlerter{}, service.DiscardImageAccessController{},
+	)
+	var applied *service.ImageModerationApplyResult
+	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
+		var applyErr error
+		applied, applyErr = moderation.ApplyImageResult(ctx, service.ImageModerationCallback{
+			ImageAssetID: blockedImage.ID, ObjectKey: blockedImage.ObjectKey,
+			Provider: "batch38_image", Verdict: model.ModerationVerdictBlock,
+			Labels: []string{"image_block"},
+		})
+		return applyErr
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, applied.RejectedPosts)
+	var blockedPost model.Post
+	require.NoError(t, gdb.First(&blockedPost, blocked.post.ID).Error)
+	require.Equal(t, model.PostStatusRejected, blockedPost.Status,
+		"block 图片必须压过 review 正文直接驳回")
+	blockedDetail := getAuthorPostDetail(t, engine, blocked.post.ID, author.Token)
+	require.NotNil(t, blockedDetail.Moderation)
+	foundBlockedImage := false
+	for index := range blockedDetail.Moderation.Issues {
+		issue := blockedDetail.Moderation.Issues[index]
+		if issue.Part == "image" && issue.ImagePosition != nil && *issue.ImagePosition == 0 {
+			foundBlockedImage = true
+			require.Equal(t, model.ModerationStatusBlock, issue.Moderation)
+			require.Equal(t, []string{"image_block"}, issue.Labels)
+		}
+	}
+	require.True(t, foundBlockedImage, "作者审核摘要必须定位到第 1 张 block 图片")
+	textBlocked := createFixture(
+		"batch38-text-block", model.ModerationVerdictBlock,
+		model.ModerationVerdictPass, model.ModerationVerdictPass,
+	)
+	require.Equal(t, model.PostStatusRejected, textBlocked.post.Status,
+		"正文 block 且图片全 pass 时仍必须直接驳回")
+	allPassed := createFixture(
+		"batch38-all-pass", model.ModerationVerdictPass,
+		model.ModerationVerdictPass, model.ModerationVerdictPass,
+	)
+	require.Equal(t, model.PostStatusApproved, allPassed.post.Status,
+		"正文与图片全 pass 时必须直接发布")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending?limit=100", nil, reviewer.Token)
+	require.Equal(t, http.StatusOK, status)
+	decodeData(t, response, &queue)
+	require.Empty(t, moderationItemsForPost(queue.Records, blocked.post.ID),
+		"存在 block 的帖子不得进入人工队列")
+	require.Empty(t, moderationItemsForPost(queue.Records, textBlocked.post.ID),
+		"正文 block 的帖子不得进入人工队列")
+	require.Empty(t, moderationItemsForPost(queue.Records, allPassed.post.ID),
+		"全部 pass 的帖子不得进入人工队列")
+}
+
+func testUploadCompleteReturnsModeration(
+	t *testing.T,
+	engine *server.Hertz,
+	storage *fakeImageStorage,
+	imageModerator *testutil.MockModeration,
+	author service.AuthResult,
+) {
+	t.Helper()
+	nextCall := len(imageModerator.ImageCalls()) + 1
+	imageModerator.ProgramImage(
+		testutil.ImageModerationRule{
+			Call: nextCall, Outcome: testutil.ImageImmediate(model.ModerationVerdictReview),
+		},
+		testutil.ImageModerationRule{
+			Call: nextCall + 1, Outcome: testutil.ImageImmediate(model.ModerationVerdictBlock),
+		},
+	)
+	reviewPresign := presignImage(t, engine, author.Token, 2304)
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", reviewPresign.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var reviewed service.UploadCompleteResult
+	decodeData(t, response, &reviewed)
+	require.Equal(t, model.ImageStatusPending, reviewed.Status)
+	require.Equal(t, model.ModerationStatusReview, reviewed.Moderation)
+	require.NotEmpty(t, reviewed.PublicURL, "review 图片仍需把稳定资产身份交给发帖请求")
+
+	blockPresign := presignImage(t, engine, author.Token, 2560)
+	status, response, raw := performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", blockPresign.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var blocked service.UploadCompleteResult
+	decodeData(t, response, &blocked)
+	require.Equal(t, model.ModerationStatusBlock, blocked.Moderation)
+	require.Empty(t, blocked.PublicURL)
+	require.NotContains(t, string(raw.Result().Body()), `"public_url"`,
+		"block 响应不得返回已经转私有且必然 403 的公开地址")
+	require.NotEmpty(t, storage.AccessCalls())
+}
+
+func moderationItemsForPost(
+	records []service.AdminModerationView,
+	postID uint64,
+) []service.AdminModerationView {
+	items := make([]service.AdminModerationView, 0, 1)
+	for index := range records {
+		if records[index].TargetType == "post" && records[index].TargetID == postID {
+			items = append(items, records[index])
+		}
+	}
+	return items
+}
+
+func requireUnifiedManualRecords(
+	t *testing.T,
+	gdb *gorm.DB,
+	machines []model.ModerationRecord,
+	verdict model.ModerationVerdict,
+	reviewerID uint64,
+) {
+	t.Helper()
+	var sharedReviewedAt *time.Time
+	for index := range machines {
+		var manual model.ModerationRecord
+		require.NoError(t, gdb.Where("supersedes_id = ?", machines[index].ID).First(&manual).Error)
+		require.Equal(t, model.ModerationProviderManual, manual.Provider)
+		require.Equal(t, verdict, manual.Verdict)
+		require.Equal(t, reviewerID, *manual.ReviewerID)
+		require.NotNil(t, manual.ReviewedAt)
+		if sharedReviewedAt == nil {
+			sharedReviewedAt = manual.ReviewedAt
+		} else {
+			require.True(t, sharedReviewedAt.Equal(*manual.ReviewedAt),
+				"同一次整帖决策产生的 manual 行必须共享 reviewed_at")
+		}
+	}
 }
 
 func uploadModerationTestConfig() appconfig.Config {
@@ -185,6 +503,8 @@ func testImageCallbackBeforePostCreation(
 	var completed service.UploadCompleteResult
 	decodeData(t, response, &completed)
 	require.Equal(t, model.ImageStatusPending, completed.Status)
+	require.Equal(t, model.ModerationStatusPending, completed.Moderation,
+		"异步送审的 complete 响应必须明确表示仍在审核中")
 
 	callbackBody := map[string]any{
 		"EventName": "ReviewImage",
@@ -210,6 +530,13 @@ func testImageCallbackBeforePostCreation(
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
 	require.Equal(t, model.ImageStatusPending, asset.Status)
 	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/uploads/%d", completed.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var uploadView service.UploadImageView
+	decodeData(t, response, &uploadView)
+	require.Equal(t, model.ModerationStatusPass, uploadView.Moderation,
+		"异步审核完成后上传者必须能通过查询端点取得最终结论")
 	payload := sharePostPayload(fixture, "图片先审完再建帖", []string{"早回调"})
 	payload["images"] = []string{completed.PublicURL}
 	post := createPost(t, engine, author.Token, payload)
@@ -280,6 +607,14 @@ func testSignedModerationQueueAndAdminUser(
 	))
 	require.NoError(t, gdb.Model(&model.User{}).Where("id = ?", uploader.User.ID).
 		UpdateColumn("avatar_image_asset_id", avatarAsset.ID).Error)
+	avatarJobID := "signed-review-avatar-job"
+	avatarRecord := model.ModerationRecord{
+		ImageAssetID: &avatarAsset.ID, Scene: model.ModerationSceneImage,
+		Provider: model.ModerationProviderTencentCI, ProviderJobID: &avatarJobID,
+		Verdict: model.ModerationVerdictReview, Labels: pq.StringArray{"avatar_review"},
+		CreatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, gdb.Create(&avatarRecord).Error)
 
 	signedCallsBefore := len(storage.PresignGetCalls())
 	status, response, _ = performJSON(t, engine, http.MethodGet,
@@ -291,9 +626,11 @@ func testSignedModerationQueueAndAdminUser(
 	require.Equal(t, http.StatusOK, status)
 	var queue service.AdminModerationList
 	decodeData(t, response, &queue)
+	require.False(t, moderationRecordPresent(queue.Records, record.ID),
+		"尚未绑定帖子的 post 图片不能作为单图待办进入人工队列")
 	var signedQueueURL string
 	for _, item := range queue.Records {
-		if item.ID == record.ID && item.Content != nil {
+		if item.ID == avatarRecord.ID && item.Content != nil {
 			signedQueueURL = *item.Content
 		}
 	}
