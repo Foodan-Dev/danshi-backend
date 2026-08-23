@@ -358,3 +358,59 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - **前后对比**：v1 已注册邮箱提前返回且不计限流；v2 与未注册邮箱走相同的挑战行、冷却、
   窗口计数与 200/429 时机，但不向已注册邮箱投递邮件，并写入随机不可用 digest。
 - **前端影响**：继续按既有逻辑处理 429 与 `Retry-After`，不需要新增响应分支。
+
+### §3.x：新增登录会话管理端点
+
+- **类别**：新增端点，非破坏。
+- **动机**：Python v1 只有单设备 `logout`，无法查看或撤销其它设备的登录态。
+- **新增端点**：
+  - `GET /api/v2/auth/sessions`：只返回本人未撤销且未过期的会话，并标记当前设备；
+  - `DELETE /api/v2/auth/sessions/{id}`：踢掉本人指定会话，不能操作他人会话；
+  - `POST /api/v2/auth/logout-all`：撤销本人全部未撤销会话。
+- **撤销语义**：一律只写 `revoked_at`，不物理删除审计记录；撤销后旧 access/refresh 立即返回脱敏 401。
+- **前端影响**：设置页可新增设备管理列表；退出登录仍走既有 `logout`。
+
+### §5.2.8：新增编辑历史端点
+
+- **类别**：新增端点，非破坏。
+- **动机**：v2 新增帖子与评论的编辑能力，PRD §5.2.8 要求全量版本留痕并可查看编辑历史；
+  Python v1 没有编辑能力，因此基线清单里不存在对应端点。
+- **新增端点**：
+  - `GET /api/v2/posts/{post_id}/history`
+  - `GET /api/v2/comments/{comment_id}/history`
+- **可见性**：仅未删除内容的作者本人可读，按 revision 倒序返回不可变版本。
+- **前端影响**：编辑入口旁可提供“查看历史版本”；非作者不应展示该入口。
+
+### §5.2.8：新增评论编辑端点
+
+- **类别**：新增端点，非破坏。
+- **动机**：与帖子编辑对齐，PRD 已登记“评论可编辑、全量版本留痕、被编辑标识”。
+- **新增端点**：`PUT /api/v2/comments/{comment_id}`，仅作者本人可编辑。
+- **并发语义**：编辑先对主体行加锁并严格追加 `latest+1` 版本；主表正文与最新版本不一致时
+  返回 409，不追加新历史。
+- **前端影响**：评论需渲染“已编辑”标识；409 时提示刷新后重试。
+
+### §6.9：新增人工复核队列与误杀恢复端点
+
+- **类别**：新增端点，非破坏。
+- **动机**：机器审核会产生 `review` 待定与 `block` 误杀，PRD §6.9 要求人工复核闭环，
+  Python v1 没有对应入口。
+- **新增端点**：
+  - `GET /api/v2/admin/moderation-records/pending`：待人工复核队列；
+  - `PUT /api/v2/admin/moderation-records/{moderation_record_id}/review`：写入人工结论；
+  - `PUT /api/v2/admin/posts/{post_id}/restore`
+  - `PUT /api/v2/admin/comments/{comment_id}/restore`
+- **审计语义**：恢复操作追加不可变 `moderation_records` 行，`provider='admin_restore'`、
+  `verdict='pass'`，锚定内容最新 history；不伪造 `manual` 行，以免破坏人工复核状态机与
+  `uq_mr_supersedes` 语义。图片 `moderation != pass` 的内容拒绝恢复，返回 409 `image_not_approved`。
+- **权限**：复用内容审核能力，不新增角色。
+- **前端影响**：管理端新增复核队列页；恢复为幂等的显式动作。
+
+### §6.9：新增图片审核供应商回调入口
+
+- **类别**：新增端点，非破坏。
+- **动机**：异步图片审核必需的供应商 ingress，不是业务管理端点。
+- **新增端点**：`POST /api/v2/moderation/tencent-ci/callback`。
+- **鉴权**：以 SHA-256 等长摘要做常量时间令牌比较；未配置返回 503，令牌错误返回 403，
+  非法载荷返回 `moderation_callback_invalid`。
+- **前端影响**：无，该端点不面向客户端。

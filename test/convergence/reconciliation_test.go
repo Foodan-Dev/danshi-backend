@@ -30,10 +30,7 @@ var operationPattern = regexp.MustCompile(
 	`\b(GET|POST|PUT|PATCH|DELETE)[ \t]+(/[A-Za-z0-9_{}:./-]+)`,
 )
 
-var (
-	placeholderPattern  = regexp.MustCompile(`\{([^}/]+)\}`)
-	domainReportPattern = regexp.MustCompile(`^(0[2-9]|10)-.*\.md$`)
-)
+var placeholderPattern = regexp.MustCompile(`\{([^}/]+)\}`)
 
 type openAPIDocument struct {
 	Paths map[string]map[string]json.RawMessage `json:"paths"`
@@ -67,7 +64,7 @@ func TestEndpointReconciliation(t *testing.T) {
 		missingPython = append(missingPython, operation+" -> "+mapped)
 	}
 
-	documented := documentedGoOperations(t, root, breaking)
+	documented := documentedGoOperations(t, breaking)
 	undocumentedGo := make([]string, 0)
 	additions := make([]string, 0)
 	for operation := range goRoutes {
@@ -159,7 +156,11 @@ func registeredBaselineExceptions(breaking string) map[string]struct{} {
 	return exceptions
 }
 
-func documentedGoOperations(t *testing.T, root string, breaking string) map[string][]string {
+// documentedGoOperations 只承认仓库内可追溯的依据。证据来源刻意限制为
+// api/BREAKING-CHANGES.md：`.codex/` 是 AI 过程记录，不进版本控制，把它当作依据会让
+// 门禁在干净检出里因证据消失而误报，或反过来被迫在文件缺失时跳过——那等于在最需要
+// 它的地方变弱。新增端点的理由必须写进公开契约文档。
+func documentedGoOperations(t *testing.T, breaking string) map[string][]string {
 	t.Helper()
 	documented := make(map[string][]string)
 	additionHeading := "## 新增、勘误与行为变更"
@@ -167,14 +168,6 @@ func documentedGoOperations(t *testing.T, root string, breaking string) map[stri
 	require.NotEqual(t, -1, additionIndex, "BREAKING-CHANGES 缺少新增登记章节")
 	collectDocumentedOperations(documented, breaking[additionIndex:], "api/BREAKING-CHANGES.md")
 
-	reports, err := filepath.Glob(filepath.Join(root, ".codex/reports/*.md"))
-	require.NoError(t, err)
-	for _, report := range reports {
-		if !domainReportPattern.MatchString(filepath.Base(report)) {
-			continue
-		}
-		collectDocumentedOperations(documented, readText(t, report), filepath.Base(report))
-	}
 	return documented
 }
 
