@@ -187,6 +187,11 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	require.JSONEq(t, `{"request_id":"model-test"}`, string(gotModeration.RawResponse))
 	require.True(t, gotModeration.Score.Equal(score))
 
+	alertState := &model.ModerationAlertState{
+		AlertKey: "review_backlog", LastObservedCount: 3, UpdatedAt: now,
+	}
+	insertAndSelect(t, gdb, alertState)
+
 	suggestion := &model.DictionarySuggestion{
 		Kind: model.SuggestionKindCuisine, ProposedName: "模型测试新菜系",
 		ProposerID: actor.ID, PostID: &post.ID, Status: model.SuggestionStatusPending,
@@ -287,7 +292,7 @@ func tableName(t *testing.T, gdb *gorm.DB, value any) string {
 func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	catalog := modelCatalog()
-	require.Len(t, catalog, 27)
+	require.Len(t, catalog, 28)
 
 	var actualTables []string
 	require.NoError(t, gdb.Raw(`
@@ -336,7 +341,7 @@ func modelCatalog() []any {
 		&model.CommentMention{}, &model.Follow{}, &model.Favorite{}, &model.PostLike{},
 		&model.CommentLike{}, &model.Notification{}, &model.EmailVerificationCode{},
 		&model.UserSession{}, &model.PostHistory{}, &model.CommentHistory{},
-		&model.ModerationRecord{}, &model.DictionarySuggestion{},
+		&model.ModerationRecord{}, &model.ModerationAlertState{}, &model.DictionarySuggestion{},
 	}
 }
 

@@ -92,17 +92,21 @@ type Harness struct {
 // DefaultConfig 返回统一且不含外部凭证的测试配置。
 func DefaultConfig() appconfig.Config {
 	return appconfig.Config{
-		Profile:                   appconfig.ProfileDev,
-		JWTSecretKey:              testingSecret,
-		JWTExpireMinutes:          60,
-		JWTRefreshExpireDay:       30,
-		EmailVerificationRequired: true,
-		EmailVerificationSecret:   testingSecret,
-		AllowedEmailDomains:       "fdueat.com,m.fudan.edu.cn,fudan.edu.cn",
-		COSMaxImageBytes:          10 * 1024 * 1024,
-		COSPresignTTLS:            600,
-		COSPresignGetTTLS:         3600,
-		ModerationCallbackToken:   "testing-callback-token",
+		Profile:                                appconfig.ProfileDev,
+		JWTSecretKey:                           testingSecret,
+		JWTExpireMinutes:                       60,
+		JWTRefreshExpireDay:                    30,
+		EmailVerificationRequired:              true,
+		EmailVerificationSecret:                testingSecret,
+		AllowedEmailDomains:                    "fdueat.com,m.fudan.edu.cn,fudan.edu.cn",
+		COSMaxImageBytes:                       10 * 1024 * 1024,
+		COSPresignTTLS:                         600,
+		COSPresignGetTTLS:                      3600,
+		ModerationCallbackToken:                "testing-callback-token",
+		ModerationCallbackAuthFailureThreshold: 5,
+		ModerationCallbackAuthFailureWindowS:   60,
+		ModerationReviewBacklogThreshold:       100,
+		ModerationReviewBacklogCooldownS:       3600,
 	}
 }
 

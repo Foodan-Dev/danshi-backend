@@ -57,6 +57,9 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 
 		if err := tx.Commit().Error; err != nil {
 			log.ErrorContext(ctx, "事务提交失败", slog.Any("err", err))
+			// handler 已经写入成功响应；提交失败时必须清空旧 body，避免错误中间件
+			// 把 500 JSON 追加在 2xx JSON 后形成无法解析且语义矛盾的响应。
+			c.Response.ResetBody()
 			httpx.Fail(ctx, c, err)
 			committed = true
 			return

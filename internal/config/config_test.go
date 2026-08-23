@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
@@ -18,7 +19,11 @@ func base() config.Config {
 		EmailVerificationRequired: true, EmailVerificationSecret: goodSecret,
 		AllowedEmailDomains: "fdueat.com,m.fudan.edu.cn",
 		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600, COSPresignGetTTLS: 3600,
-		LogLevel: "info",
+		ModerationCallbackAuthFailureThreshold: 5,
+		ModerationCallbackAuthFailureWindowS:   60,
+		ModerationReviewBacklogThreshold:       100,
+		ModerationReviewBacklogCooldownS:       3600,
+		LogLevel:                               "info",
 	}
 }
 
@@ -61,6 +66,18 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"读取签名时效非正", func(c *config.Config) { c.COSPresignGetTTLS = 0 }, "COS_PRESIGN_GET_TTL_SECONDS"},
 		{"图片域名不是 HTTPS", func(c *config.Config) { c.COSImageDomain = "http://img.example.com" }, "COS_IMG_DOMAIN"},
 		{"回调令牌太短", func(c *config.Config) { c.ModerationCallbackToken = "short" }, "MODERATION_CALLBACK_TOKEN"},
+		{"回调鉴权失败阈值不能为单次", func(c *config.Config) {
+			c.ModerationCallbackAuthFailureThreshold = 1
+		}, "MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD"},
+		{"回调鉴权失败窗口非正", func(c *config.Config) {
+			c.ModerationCallbackAuthFailureWindowS = 0
+		}, "MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS"},
+		{"复核积压阈值非正", func(c *config.Config) {
+			c.ModerationReviewBacklogThreshold = 0
+		}, "MODERATION_REVIEW_BACKLOG_THRESHOLD"},
+		{"复核积压冷却非正", func(c *config.Config) {
+			c.ModerationReviewBacklogCooldownS = 0
+		}, "MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,6 +150,10 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("TENCENT_SES_FROM_EMAIL", "sender@example.com")
 	t.Setenv("TENCENT_SES_FROM_NAME", "测试发件人")
 	t.Setenv("TENCENT_SES_TEMPLATE_ID", "456")
+	t.Setenv("MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD", "7")
+	t.Setenv("MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS", "90")
+	t.Setenv("MODERATION_REVIEW_BACKLOG_THRESHOLD", "250")
+	t.Setenv("MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS", "7200")
 	t.Setenv("PORT", "9001")
 	cfg, err := config.Load()
 	if err != nil {
@@ -150,5 +171,11 @@ func TestLoadFromEnv(t *testing.T) {
 		cfg.TencentRegion != "ap-hongkong" || cfg.TencentSESFromEmail != "sender@example.com" ||
 		cfg.TencentSESFromName != "测试发件人" || cfg.TencentSESTemplateID != 456 {
 		t.Fatalf("腾讯云 SES 环境变量未完整加载: %+v", cfg)
+	}
+	if cfg.ModerationCallbackAuthFailureThreshold != 7 ||
+		cfg.ModerationCallbackAuthFailureWindow() != 90*time.Second ||
+		cfg.ModerationReviewBacklogThreshold != 250 ||
+		cfg.ModerationReviewBacklogCooldown() != 2*time.Hour {
+		t.Fatalf("审核告警环境变量未完整加载: %+v", cfg)
 	}
 }

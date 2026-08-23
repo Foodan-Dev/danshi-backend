@@ -73,6 +73,7 @@ func Register(h *server.Hertz, d Deps) {
 	h.Use(middleware.Recovery(d.Log))
 	h.Use(middleware.RequestID())
 	h.Use(middleware.ErrorHandler(d.Log))
+	h.Use(moderationFailureAlerting(d.DB, d.ModerationAlerter, d.Log))
 	h.Use(middleware.LimitInFlight(
 		http.MethodPost,
 		APIPrefix+"/auth/email-verification-codes",

@@ -14,6 +14,7 @@ import (
 
 // ModerationAlert 是交给告警渠道的供应商无关载荷。
 type ModerationAlert struct {
+	Kind          ModerationAlertKind
 	Target        ModerationTarget
 	TargetID      uint64
 	Field         *model.ModerationField
@@ -21,6 +22,33 @@ type ModerationAlert struct {
 	ProviderJobID *string
 	Verdict       model.ModerationVerdict
 	Labels        []string
+	FailureCode   apierr.BizCode
+	ErrorID       string
+	Occurrences   int
+	WindowSeconds int
+	QueueDepth    int64
+	Threshold     int64
+}
+
+// ModerationAlertKind 区分审核结论与需要人工介入的运行异常。
+type ModerationAlertKind string
+
+// 审核告警的供应商无关类型。
+const (
+	ModerationAlertKindVerdict                  ModerationAlertKind = "verdict"
+	ModerationAlertKindCallbackAuthFailures     ModerationAlertKind = "callback_auth_failures"
+	ModerationAlertKindCallbackPayloadInvalid   ModerationAlertKind = "callback_payload_invalid"
+	ModerationAlertKindCallbackTargetInvalid    ModerationAlertKind = "callback_target_invalid"
+	ModerationAlertKindCallbackProcessingFailed ModerationAlertKind = "callback_processing_failed"
+	ModerationAlertKindReviewBacklog            ModerationAlertKind = "review_backlog"
+)
+
+// EffectiveKind 把旧调用点的零值解释为既有审核结论告警。
+func (a ModerationAlert) EffectiveKind() ModerationAlertKind {
+	if a.Kind == "" {
+		return ModerationAlertKindVerdict
+	}
+	return a.Kind
 }
 
 // ModerationAlerter 是飞书、邮件等管理员告警渠道的替换边界。
@@ -41,12 +69,19 @@ func (a *LogModerationAlerter) Alert(ctx context.Context, alert ModerationAlert)
 	if a == nil || a.log == nil {
 		return
 	}
-	a.log.WarnContext(ctx, "内容审核需要管理员关注",
+	a.log.WarnContext(ctx, "审核事件需要管理员关注",
+		slog.String("alert_kind", string(alert.EffectiveKind())),
 		slog.String("target", string(alert.Target)),
 		slog.Uint64("target_id", alert.TargetID),
 		slog.String("provider", string(alert.Provider)),
 		slog.String("verdict", string(alert.Verdict)),
-		slog.Any("labels", alert.Labels))
+		slog.Any("labels", alert.Labels),
+		slog.String("failure_code", string(alert.FailureCode)),
+		slog.String("error_id", alert.ErrorID),
+		slog.Int("occurrences", alert.Occurrences),
+		slog.Int("window_seconds", alert.WindowSeconds),
+		slog.Int64("queue_depth", alert.QueueDepth),
+		slog.Int64("threshold", alert.Threshold))
 }
 
 // DiscardModerationAlerter 是测试可显式使用的空告警器。
@@ -64,6 +99,7 @@ func (a GenericUserModerationAlerter) AlertUserContent(ctx context.Context, aler
 		return
 	}
 	a.Alerter.Alert(ctx, ModerationAlert{
+		Kind:   ModerationAlertKindVerdict,
 		Target: ModerationTargetUser, TargetID: alert.UserID, Field: &alert.Field,
 		Verdict: alert.Verdict, Labels: append([]string{}, alert.Labels...),
 	})

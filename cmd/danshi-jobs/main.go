@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/infra/alerting"
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
@@ -23,7 +24,10 @@ import (
 // 本地 go build 不注入时保持 dev。
 var version = "dev"
 
-const expirePendingCommand = "expire-pending"
+const (
+	expirePendingCommand          = "expire-pending"
+	checkModerationBacklogCommand = "check-moderation-backlog"
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -33,14 +37,29 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 || args[0] != expirePendingCommand {
-		return fmt.Errorf("必须指定任务 %q", expirePendingCommand)
+	if len(args) == 0 {
+		return fmt.Errorf("必须指定任务 %q 或 %q", expirePendingCommand, checkModerationBacklogCommand)
 	}
+	switch args[0] {
+	case expirePendingCommand:
+		return runExpirePending(args[1:])
+	case checkModerationBacklogCommand:
+		if len(args) != 1 {
+			return fmt.Errorf("任务 %q 不接受额外参数", checkModerationBacklogCommand)
+		}
+		return checkModerationBacklog()
+	default:
+		return fmt.Errorf("未知任务 %q；可用任务为 %q、%q",
+			args[0], expirePendingCommand, checkModerationBacklogCommand)
+	}
+}
+
+func runExpirePending(args []string) error {
 	flags := flag.NewFlagSet(expirePendingCommand, flag.ContinueOnError)
 	olderThan := flags.Duration("older-than", 0, "必填：只回收创建时间早于该时长的无引用上传")
 	batchSize := flags.Int("batch-size", 100, "单次领取的最大资产数")
 	dryRun := flags.Bool("dry-run", false, "只统计本批候选，不删除对象或修改数据库")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -53,6 +72,62 @@ func run(args []string) error {
 		return errors.New("-batch-size 必须为正数")
 	}
 	return expirePending(*olderThan, *batchSize, *dryRun)
+}
+
+func checkModerationBacklog() (runErr error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := obs.NewServiceLogger(cfg, "danshi-jobs")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	database, err := db.Open(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		runErr = errors.Join(runErr, database.Close())
+	}()
+	if err := assertSchemaVersion(ctx, database); err != nil {
+		return err
+	}
+
+	var channel service.ModerationAlerter
+	if cfg.FeishuModerationWebhook != "" {
+		channel = alerting.NewFeishuWebhook(cfg.FeishuModerationWebhook, nil, log)
+	} else {
+		channel = service.NewLogModerationAlerter(log)
+	}
+	alerter := alerting.AfterCommit(channel)
+	monitor := service.NewModerationAlertService(alerter)
+	callbackCtx, afterCommit := db.WithAfterCommitQueue(ctx)
+	result := service.ReviewBacklogCheckResult{}
+	startedAt := time.Now()
+	err = database.RunInTx(callbackCtx, func(txCtx context.Context) error {
+		var checkErr error
+		result, checkErr = monitor.CheckReviewBacklog(txCtx, service.ReviewBacklogCheckOptions{
+			Threshold: cfg.ModerationReviewBacklogThreshold,
+			Cooldown:  cfg.ModerationReviewBacklogCooldown(),
+			Now:       time.Now().UTC(),
+		})
+		return checkErr
+	})
+	if err != nil {
+		return fmt.Errorf("检查审核复核积压: %w", err)
+	}
+	for _, recovered := range afterCommit.Run(context.WithoutCancel(ctx)) {
+		log.ErrorContext(ctx, "审核积压告警提交后回调发生 panic", slog.Any("panic", recovered))
+	}
+	log.InfoContext(ctx, "审核复核积压检查完成",
+		slog.String("build", version),
+		slog.Int64("queue_depth", result.QueueDepth),
+		slog.Int64("threshold", result.Threshold),
+		slog.Bool("alert_scheduled", result.AlertScheduled),
+		slog.Duration("duration", time.Since(startedAt)),
+	)
+	return nil
 }
 
 func expirePending(olderThan time.Duration, batchSize int, dryRun bool) (runErr error) {

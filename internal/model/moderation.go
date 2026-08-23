@@ -32,3 +32,15 @@ type ModerationRecord struct {
 
 // TableName 返回内容审核流水表名。
 func (ModerationRecord) TableName() string { return "moderation_records" }
+
+// ModerationAlertState 保存跨周期任务的审核告警抑制状态。
+type ModerationAlertState struct {
+	AlertKey          string `gorm:"primaryKey"`
+	Active            bool
+	LastObservedCount int64
+	LastAlertedAt     *time.Time
+	UpdatedAt         time.Time
+}
+
+// TableName 返回审核告警状态表名。
+func (ModerationAlertState) TableName() string { return "moderation_alert_states" }

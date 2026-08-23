@@ -113,6 +113,7 @@ func (c Config) Validate() error {
 			add("%v", err)
 		}
 	}
+	validateModerationAlerting(c, add)
 
 	// --- 生产环境的额外硬约束 ---
 	if c.IsProd() {
@@ -123,6 +124,21 @@ func (c Config) Validate() error {
 		return fmt.Errorf("配置校验失败：\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+func validateModerationAlerting(c Config, add func(string, ...any)) {
+	if c.ModerationCallbackAuthFailureThreshold < 2 {
+		add("MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD 必须至少为 2")
+	}
+	if c.ModerationCallbackAuthFailureWindowS <= 0 {
+		add("MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS 必须为正数")
+	}
+	if c.ModerationReviewBacklogThreshold <= 0 {
+		add("MODERATION_REVIEW_BACKLOG_THRESHOLD 必须为正数")
+	}
+	if c.ModerationReviewBacklogCooldownS <= 0 {
+		add("MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS 必须为正数")
+	}
 }
 
 func validateProd(c Config, origins []string, add func(string, ...any)) {

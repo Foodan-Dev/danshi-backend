@@ -75,10 +75,13 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 	require.ErrorContains(t, err, "mr_manual_shape_check",
 		"机器记录仍必须拒绝 reviewer_id 与 reviewed_at")
 
-	err = dbinfra.DownOne(ctx, database.SQL)
-	require.NoError(t, err, "v9 对仅含非评论对象的审核流水必须可无损回滚")
-	err = dbinfra.DownOne(ctx, database.SQL)
-	require.NoError(t, err, "v8 对仅含非内容对象的审核流水必须可无损回滚")
+	version, err = dbinfra.Version(ctx, database.SQL)
+	require.NoError(t, err)
+	for version > 7 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,
 		"cannot restore mr_manual_shape_check: non-manual moderation records carry reviewer metadata",

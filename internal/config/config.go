@@ -60,10 +60,14 @@ type Config struct {
 	COSPresignTTLS       int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
 	COSPresignGetTTLS    int    `mapstructure:"COS_PRESIGN_GET_TTL_SECONDS"`
 
-	TencentCIBizType        string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
-	TencentCICallbackURL    string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
-	ModerationCallbackToken string `mapstructure:"MODERATION_CALLBACK_TOKEN"`
-	FeishuModerationWebhook string `mapstructure:"FEISHU_MODERATION_WEBHOOK_URL"`
+	TencentCIBizType                       string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
+	TencentCICallbackURL                   string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
+	ModerationCallbackToken                string `mapstructure:"MODERATION_CALLBACK_TOKEN"`
+	FeishuModerationWebhook                string `mapstructure:"FEISHU_MODERATION_WEBHOOK_URL"`
+	ModerationCallbackAuthFailureThreshold int    `mapstructure:"MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD"`
+	ModerationCallbackAuthFailureWindowS   int    `mapstructure:"MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS"`
+	ModerationReviewBacklogThreshold       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_THRESHOLD"`
+	ModerationReviewBacklogCooldownS       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS"`
 
 	OTLPEndpoint string `mapstructure:"OTLP_ENDPOINT"`
 	LogLevel     string `mapstructure:"LOG_LEVEL"`
@@ -95,6 +99,16 @@ func (c Config) COSPresignTTL() time.Duration {
 // COSPresignGetTTL 返回私有图片读取凭证有效期。
 func (c Config) COSPresignGetTTL() time.Duration {
 	return time.Duration(c.COSPresignGetTTLS) * time.Second
+}
+
+// ModerationCallbackAuthFailureWindow 返回错误回调令牌的聚合窗口。
+func (c Config) ModerationCallbackAuthFailureWindow() time.Duration {
+	return time.Duration(c.ModerationCallbackAuthFailureWindowS) * time.Second
+}
+
+// ModerationReviewBacklogCooldown 返回待复核积压告警的最短重复间隔。
+func (c Config) ModerationReviewBacklogCooldown() time.Duration {
+	return time.Duration(c.ModerationReviewBacklogCooldownS) * time.Second
 }
 
 // COSConfigured 报告对象存储是否具备完整的运行配置。
@@ -167,10 +181,14 @@ var bindings = map[string]any{
 	"COS_PRESIGN_TTL_SECONDS":     600,
 	"COS_PRESIGN_GET_TTL_SECONDS": 3600,
 
-	"TENCENT_CI_BIZ_TYPE":           "",
-	"TENCENT_CI_CALLBACK_URL":       "",
-	"MODERATION_CALLBACK_TOKEN":     "",
-	"FEISHU_MODERATION_WEBHOOK_URL": "",
+	"TENCENT_CI_BIZ_TYPE":                             "",
+	"TENCENT_CI_CALLBACK_URL":                         "",
+	"MODERATION_CALLBACK_TOKEN":                       "",
+	"FEISHU_MODERATION_WEBHOOK_URL":                   "",
+	"MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD":      5,
+	"MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS": 60,
+	"MODERATION_REVIEW_BACKLOG_THRESHOLD":             100,
+	"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS":      3600,
 
 	"OTLP_ENDPOINT": "",
 	"LOG_LEVEL":     "info",

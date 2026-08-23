@@ -158,6 +158,10 @@ make schema-test
 | `TENCENT_CI_CALLBACK_URL` | 无 | 数据万象回调 HTTPS URL；生产环境必填 |
 | `MODERATION_CALLBACK_TOKEN` | 无 | 回调鉴权密钥；生产环境必填且至少 32 字节 |
 | `FEISHU_MODERATION_WEBHOOK_URL` | 无 | 可选的审核告警 HTTPS webhook |
+| `MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD` | `5` | 单进程短窗口内错误回调令牌达到此次数才告警；至少为 2，单次错误不告警 |
+| `MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS` | `60` | 错误回调令牌聚合窗口，单位秒，必须为正数 |
+| `MODERATION_REVIEW_BACKLOG_THRESHOLD` | `100` | 帖子粒度待复核队列达到此条目数时告警，必须为正数 |
+| `MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS` | `3600` | 持续积压的重复告警冷却时间，单位秒，必须为正数 |
 
 ### 日志与遥测
 
@@ -169,6 +173,17 @@ make schema-test
 Prometheus 直接拉取 `GET /metrics`，不经过 Collector。该端点不鉴权且不进入请求级数据库事务；生产环境应在网关或网络策略层限制抓取来源。HTTP 指标和 server span 的路由维度使用 `/api/v2/posts/:post_id` 这类模板，不记录实际资源 ID。启用 tracing 后，请求日志会同时包含 `request_id`、`trace_id` 和 `span_id`；数据库 span 不记录 SQL 文本及变量值。
 
 生产部署应通过密钥管理系统注入敏感值，不要提交 `.env`、token 或云访问密钥。
+
+待复核积压由外部 cron 或 Kubernetes CronJob 周期执行一次性命令检查：
+
+```bash
+danshi-jobs check-moderation-backlog
+```
+
+命令使用管理端真实待复核队列的条目语义计数：同一帖子即使正文和多张图片各有一条
+`review` 流水，也只计一个帖子待办；评论、标签、用户和非帖子图片仍各计一个通用待办。
+冷却状态保存在数据库中，因此不同 CronJob 进程和并发实例共享抑制结果；积压回落后会重置，
+下一次再次达到阈值会立即重新告警。
 
 ## API 文档
 

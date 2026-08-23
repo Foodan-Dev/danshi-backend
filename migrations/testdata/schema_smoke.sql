@@ -673,6 +673,34 @@ END $$;
 UPDATE tags SET moderation='pass', deleted_at=NULL WHERE id=301;
 
 \echo ''
+\echo '########## 1d-7. 审核积压告警抑制状态 ##########'
+INSERT INTO moderation_alert_states
+  (alert_key,active,last_observed_count,last_alerted_at,updated_at)
+VALUES ('review_backlog',true,12,now(),now());
+DO $$ BEGIN
+  PERFORM _assert((SELECT last_observed_count FROM moderation_alert_states
+                    WHERE alert_key='review_backlog')=12,
+                  '审核积压告警状态可跨周期任务保存');
+  PERFORM _assert_rejects($q$INSERT INTO moderation_alert_states
+    (alert_key,last_observed_count) VALUES ('future_alert',0)$q$,
+    ARRAY['23514'], '告警状态键不预留未决定的类型');
+  PERFORM _assert_rejects($q$UPDATE moderation_alert_states
+    SET last_observed_count=-1 WHERE alert_key='review_backlog'$q$,
+    ARRAY['23514'], '审核积压计数不得为负');
+  PERFORM _assert_rejects($q$UPDATE moderation_alert_states
+    SET active=true,last_alerted_at=NULL WHERE alert_key='review_backlog'$q$,
+    ARRAY['23514'], '活跃告警状态必须记录最近告警时间');
+END $$;
+UPDATE moderation_alert_states
+SET active=false,last_observed_count=0,updated_at=now()
+WHERE alert_key='review_backlog';
+DO $$ BEGIN
+  PERFORM _assert((SELECT NOT active AND last_observed_count=0
+                    FROM moderation_alert_states WHERE alert_key='review_backlog'),
+                  '积压回落后状态可重置且保留历史告警时间');
+END $$;
+
+\echo ''
 \echo '########## 1e. notifications：type 与关联目标必须匹配 ##########'
 DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO notifications (recipient_id,sender_id,type,related_post_id,related_comment_id) VALUES (1,2,'comment',1001,2001)$q$,
@@ -1116,7 +1144,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 27, '业务表共 27 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 28, '业务表共 28 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 
