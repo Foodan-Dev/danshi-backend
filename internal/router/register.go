@@ -49,8 +49,6 @@ type Deps struct {
 	ContentModerator service.ContentModerator
 	// ImageStorage 是上传域使用的对象存储边界。
 	ImageStorage service.ImageStorage
-	// ImageCachePurger 是审核图片切换访问权限后的 CDN 缓存刷新边界。
-	ImageCachePurger service.ImageCachePurger
 	// ImageModerator 提交异步图片审核；dev 默认同步放行，prod 未配置时 fail-closed。
 	ImageModerator service.ImageModerator
 	// ImageCallbackDecoder 解码外部审核供应商回调。

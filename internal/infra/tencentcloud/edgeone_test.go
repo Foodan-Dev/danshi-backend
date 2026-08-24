@@ -2,7 +2,6 @@ package tencentcloud
 
 import (
 	"context"
-	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	teo "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo/v20220901"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 type edgeOneFakeResult struct {
@@ -21,11 +21,52 @@ type edgeOneFakeResult struct {
 	err      error
 }
 
+type edgeOneDescribeResult struct {
+	response *teo.DescribePurgeTasksResponse
+	err      error
+}
+
 type fakeEdgeOnePurgeClient struct {
-	mu       sync.Mutex
-	results  []edgeOneFakeResult
-	requests []*teo.CreatePurgeTaskRequest
-	calledAt []time.Time
+	mu               sync.Mutex
+	results          []edgeOneFakeResult
+	requests         []*teo.CreatePurgeTaskRequest
+	calledAt         []time.Time
+	describeResults  []edgeOneDescribeResult
+	describeRequests []*teo.DescribePurgeTasksRequest
+}
+
+func (c *fakeEdgeOnePurgeClient) DescribePurgeTasksWithContext(
+	_ context.Context,
+	request *teo.DescribePurgeTasksRequest,
+) (*teo.DescribePurgeTasksResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.describeRequests = append(c.describeRequests, request)
+	if len(c.describeResults) > 0 {
+		result := c.describeResults[0]
+		c.describeResults = c.describeResults[1:]
+		return result.response, result.err
+	}
+	response := teo.NewDescribePurgeTasksResponse()
+	response.Response = &teo.DescribePurgeTasksResponseParams{
+		TotalCount: common.Uint64Ptr(0), Tasks: []*teo.Task{},
+	}
+	return response, nil
+}
+
+func purgeTasksResponse(tasks ...*teo.Task) *teo.DescribePurgeTasksResponse {
+	response := teo.NewDescribePurgeTasksResponse()
+	response.Response = &teo.DescribePurgeTasksResponseParams{
+		TotalCount: common.Uint64Ptr(uint64(len(tasks))), Tasks: tasks,
+	}
+	return response
+}
+
+func purgeTask(jobID string, target string, status string) *teo.Task {
+	return &teo.Task{
+		JobId: common.StringPtr(jobID), Target: common.StringPtr(target),
+		Type: common.StringPtr("purge_url"), Status: common.StringPtr(status),
+	}
 }
 
 func (c *fakeEdgeOnePurgeClient) CreatePurgeTaskWithContext(
@@ -62,7 +103,9 @@ func TestEdgeOnePurgerSubmitsOneExactURL(t *testing.T) {
 	purger := testEdgeOnePurger(client, 0)
 	target := "https://img.test.fdueat.com/users/42/2026/08/image.png"
 
-	require.NoError(t, purger.PurgeURL(context.Background(), target))
+	submission, err := purger.Submit(context.Background(), target)
+	require.NoError(t, err)
+	require.Equal(t, "job-default", submission.JobID)
 	require.Len(t, client.requests, 1)
 	request := client.requests[0]
 	require.Equal(t, "zone-test123", *request.ZoneId)
@@ -89,15 +132,17 @@ func TestEdgeOnePurgerRejectsExpandedOrForeignTargets(t *testing.T) {
 		"https://user@img.test.fdueat.com/a.png",
 	} {
 		t.Run(target, func(t *testing.T) {
-			err := purger.PurgeURL(context.Background(), target)
-			require.ErrorIs(t, err, errEdgeOnePurgeInvalidTarget)
+			_, err := purger.Submit(context.Background(), target)
+			require.Error(t, err)
+			require.Equal(t, service.ImageCachePurgeErrorPermanent,
+				service.ClassifyImageCachePurgeError(err))
 		})
 	}
 	require.Empty(t, client.requests)
 }
 
-func TestEdgeOnePurgerRetriesOnlyTransientFailure(t *testing.T) {
-	t.Run("transient then success", func(t *testing.T) {
+func TestEdgeOnePurgerClassifiesCreateFailureWithoutReplay(t *testing.T) {
+	t.Run("transient is delegated to durable worker", func(t *testing.T) {
 		client := &fakeEdgeOnePurgeClient{results: []edgeOneFakeResult{
 			{err: tencenterrors.NewTencentCloudSDKError(
 				"InternalError.BackendError", "provider detail", "request-sensitive",
@@ -105,11 +150,13 @@ func TestEdgeOnePurgerRetriesOnlyTransientFailure(t *testing.T) {
 			{response: successfulPurgeResponse("job-ok")},
 		}}
 		purger := testEdgeOnePurger(client, 0)
-		purger.retryDelay = 0
-		require.NoError(t, purger.PurgeURL(
+		_, err := purger.Submit(
 			context.Background(), "https://img.test.fdueat.com/a.png",
-		))
-		require.Len(t, client.requests, 2)
+		)
+		require.Error(t, err)
+		require.Equal(t, service.ImageCachePurgeErrorRetryable,
+			service.ClassifyImageCachePurgeError(err))
+		require.Len(t, client.requests, 1)
 	})
 
 	t.Run("permanent failure is sanitized and not retried", func(t *testing.T) {
@@ -121,10 +168,11 @@ func TestEdgeOnePurgerRetriesOnlyTransientFailure(t *testing.T) {
 			),
 		}}}
 		purger := testEdgeOnePurger(client, 0)
-		err := purger.PurgeURL(
+		_, err := purger.Submit(
 			context.Background(), "https://img.test.fdueat.com/private.png",
 		)
-		require.ErrorIs(t, err, errEdgeOnePurgeRequest)
+		require.Equal(t, service.ImageCachePurgeErrorPermanent,
+			service.ClassifyImageCachePurgeError(err))
 		require.NotContains(t, err.Error(), "provider detail")
 		require.NotContains(t, err.Error(), "private.png")
 		require.NotContains(t, err.Error(), "request-sensitive")
@@ -134,10 +182,11 @@ func TestEdgeOnePurgerRetriesOnlyTransientFailure(t *testing.T) {
 	t.Run("ambiguous network failure is not replayed", func(t *testing.T) {
 		client := &fakeEdgeOnePurgeClient{results: []edgeOneFakeResult{{err: io.EOF}}}
 		purger := testEdgeOnePurger(client, 0)
-		err := purger.PurgeURL(
+		_, err := purger.Submit(
 			context.Background(), "https://img.test.fdueat.com/network.png",
 		)
-		require.ErrorIs(t, err, errEdgeOnePurgeRequest)
+		require.Equal(t, service.ImageCachePurgeErrorUnknown,
+			service.ClassifyImageCachePurgeError(err))
 		require.Len(t, client.requests, 1)
 	})
 }
@@ -148,28 +197,159 @@ func TestEdgeOnePurgerRejectsIncompleteOrFailedResponse(t *testing.T) {
 		Reason:  common.StringPtr("sensitive failure"),
 		Targets: common.StringPtrs([]string{"https://img.test.fdueat.com/private.png"}),
 	}}
-	for _, response := range []*teo.CreatePurgeTaskResponse{nil, teo.NewCreatePurgeTaskResponse(), failed} {
+	for _, response := range []*teo.CreatePurgeTaskResponse{nil, teo.NewCreatePurgeTaskResponse()} {
 		client := &fakeEdgeOnePurgeClient{results: []edgeOneFakeResult{{response: response}}}
 		purger := testEdgeOnePurger(client, 0)
-		err := purger.PurgeURL(
+		_, err := purger.Submit(
 			context.Background(), "https://img.test.fdueat.com/private.png",
 		)
-		require.ErrorIs(t, err, errEdgeOnePurgeResponse)
+		require.Equal(t, service.ImageCachePurgeErrorUnknown,
+			service.ClassifyImageCachePurgeError(err))
 		require.NotContains(t, err.Error(), "private.png")
-		require.NotContains(t, err.Error(), "sensitive failure")
 	}
+	client := &fakeEdgeOnePurgeClient{results: []edgeOneFakeResult{{response: failed}}}
+	purger := testEdgeOnePurger(client, 0)
+	submission, err := purger.Submit(
+		context.Background(), "https://img.test.fdueat.com/private.png",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "job-failed", submission.JobID)
+	require.True(t, submission.Partial, "即时 FailedList 不得导致已受理 JobId 丢失")
 }
 
 func TestEdgeOnePurgerAppliesOwnDeadlineWhileRateLimited(t *testing.T) {
 	client := &fakeEdgeOnePurgeClient{}
 	purger := testEdgeOnePurger(client, time.Second)
-	require.NoError(t, purger.PurgeURL(
-		context.Background(), "https://img.test.fdueat.com/first.png",
-	))
+	_, err := purger.Submit(context.Background(), "https://img.test.fdueat.com/first.png")
+	require.NoError(t, err)
 	purger.overallTTL = 10 * time.Millisecond
-	err := purger.PurgeURL(context.Background(), "https://img.test.fdueat.com/second.png")
-	require.True(t, errors.Is(err, context.DeadlineExceeded), "实际错误: %v", err)
+	_, err = purger.Submit(context.Background(), "https://img.test.fdueat.com/second.png")
+	require.Equal(t, service.ImageCachePurgeErrorUnknown,
+		service.ClassifyImageCachePurgeError(err))
 	require.Len(t, client.requests, 1)
+}
+
+func TestEdgeOnePurgerDescribeAggregatesEveryExactTarget(t *testing.T) {
+	base := "https://img.test.fdueat.com/a.png"
+	targets := service.ImageCacheURLs(base)
+	client := &fakeEdgeOnePurgeClient{describeResults: []edgeOneDescribeResult{{
+		response: purgeTasksResponse(
+			purgeTask("job-1", targets[2], "success"),
+			purgeTask("job-1", targets[0], "success"),
+			purgeTask("job-1", targets[1], "success"),
+		),
+	}}}
+	purger := testEdgeOnePurger(client, 0)
+	state, err := purger.Describe(context.Background(), base, "job-1")
+	require.NoError(t, err)
+	require.Equal(t, service.ImageCachePurgeSuccess, state)
+	require.Len(t, client.describeRequests, 1)
+	request := client.describeRequests[0]
+	require.Equal(t, "zone-test123", *request.ZoneId)
+	require.Nil(t, request.StartTime)
+	require.Equal(t, "job-id", *request.Filters[0].Name)
+	require.Equal(t, []string{"job-1"}, dereferenceStrings(request.Filters[0].Values))
+	require.False(t, *request.Filters[0].Fuzzy)
+
+	client = &fakeEdgeOnePurgeClient{describeResults: []edgeOneDescribeResult{{
+		response: purgeTasksResponse(
+			purgeTask("job-2", targets[0], "success"),
+			purgeTask("job-2", targets[1], "failed"),
+			purgeTask("job-2", targets[2], "processing"),
+		),
+	}}}
+	state, err = testEdgeOnePurger(client, 0).Describe(context.Background(), base, "job-2")
+	require.NoError(t, err)
+	require.Equal(t, service.ImageCachePurgeFailed, state)
+}
+
+func TestEdgeOnePurgerRecoverSearchesExactWindowAndEffect(t *testing.T) {
+	base := "https://img.test.fdueat.com/recover.png"
+	targets := service.ImageCacheURLs(base)
+	started := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	windowTask := purgeTask("job-recovered", targets[0], "success")
+	windowTask.CreateTime = common.StringPtr(started.Add(10 * time.Second).Format(time.RFC3339))
+	client := &fakeEdgeOnePurgeClient{describeResults: []edgeOneDescribeResult{
+		{response: purgeTasksResponse(windowTask)},
+		{response: purgeTasksResponse(
+			purgeTask("job-recovered", targets[0], "success"),
+			purgeTask("job-recovered", targets[1], "success"),
+			purgeTask("job-recovered", targets[2], "success"),
+		)},
+	}}
+	purger := testEdgeOnePurger(client, 0)
+	recovery, err := purger.Recover(context.Background(), base, started, started.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, recovery.EffectSucceeded)
+	require.True(t, recovery.Found)
+	require.Equal(t, "job-recovered", recovery.JobID)
+	require.Equal(t, service.ImageCachePurgeSuccess, recovery.State)
+	require.False(t, recovery.Ambiguous)
+	require.Len(t, client.describeRequests, 2)
+	require.Empty(t, client.requests)
+	window := client.describeRequests[0]
+	require.Equal(t, started.Format(time.RFC3339), *window.StartTime)
+	require.Equal(t, started.Add(time.Minute).Format(time.RFC3339), *window.EndTime)
+	require.Equal(t, "target", *window.Filters[0].Name)
+	require.Equal(t, []string{targets[0]}, dereferenceStrings(window.Filters[0].Values))
+	require.Equal(t, "job-id", *client.describeRequests[1].Filters[0].Name)
+}
+
+func TestEdgeOnePurgerRecoverConfirmsEffectWithoutGuessingAmongCandidates(t *testing.T) {
+	base := "https://img.test.fdueat.com/ambiguous.png"
+	targets := service.ImageCacheURLs(base)
+	started := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
+	processingTask := purgeTask("job-a-processing", targets[0], "processing")
+	processingTask.CreateTime = common.StringPtr(started.Add(10 * time.Second).Format(time.RFC3339))
+	successTask := purgeTask("job-b-success", targets[0], "success")
+	successTask.CreateTime = common.StringPtr(started.Add(20 * time.Second).Format(time.RFC3339))
+	client := &fakeEdgeOnePurgeClient{describeResults: []edgeOneDescribeResult{
+		{response: purgeTasksResponse(processingTask, successTask)},
+		{response: purgeTasksResponse(
+			purgeTask("job-a-processing", targets[0], "processing"),
+			purgeTask("job-a-processing", targets[1], "success"),
+			purgeTask("job-a-processing", targets[2], "success"),
+		)},
+		{response: purgeTasksResponse(
+			purgeTask("job-b-success", targets[0], "success"),
+			purgeTask("job-b-success", targets[1], "success"),
+			purgeTask("job-b-success", targets[2], "success"),
+		)},
+	}}
+
+	recovery, err := testEdgeOnePurger(client, 0).Recover(
+		context.Background(), base, started, started.Add(time.Minute),
+	)
+
+	require.NoError(t, err)
+	require.True(t, recovery.EffectSucceeded)
+	require.True(t, recovery.Ambiguous)
+	require.False(t, recovery.Found)
+	require.Empty(t, recovery.JobID)
+	require.Empty(t, recovery.State)
+	require.Len(t, client.describeRequests, 3)
+	require.Empty(t, client.requests)
+}
+
+func TestEdgeOnePurgerDescribeFollowsPagination(t *testing.T) {
+	base := "https://img.test.fdueat.com/pages.png"
+	targets := service.ImageCacheURLs(base)
+	first := purgeTasksResponse(purgeTask("job-pages", targets[0], "success"))
+	*first.Response.TotalCount = 3
+	second := purgeTasksResponse(
+		purgeTask("job-pages", targets[1], "success"),
+		purgeTask("job-pages", targets[2], "success"),
+	)
+	*second.Response.TotalCount = 3
+	client := &fakeEdgeOnePurgeClient{describeResults: []edgeOneDescribeResult{
+		{response: first}, {response: second},
+	}}
+	state, err := testEdgeOnePurger(client, 0).Describe(context.Background(), base, "job-pages")
+	require.NoError(t, err)
+	require.Equal(t, service.ImageCachePurgeSuccess, state)
+	require.Len(t, client.describeRequests, 2)
+	require.EqualValues(t, 0, *client.describeRequests[0].Offset)
+	require.EqualValues(t, 1, *client.describeRequests[1].Offset)
 }
 
 func dereferenceStrings(values []*string) []string {

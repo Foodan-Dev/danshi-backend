@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -142,37 +143,102 @@ type ImageCallbackDecoder interface {
 
 // ImageAccessChange 描述审核结论要求的对象可见性与 CDN 缓存状态。
 type ImageAccessChange struct {
-	ImageAssetID uint64
-	ObjectKey    string
-	PublicURL    string
-	Public       bool
+	ImageAssetID             uint64
+	SourceModerationRecordID uint64
+	Public                   bool
+	PurgeRequired            bool
 }
 
-// ImageAccessController 在事务提交后应用对象 ACL 并刷新公开 URL 的缓存。
-// 该端口不返回错误，确保外部存储故障不会回滚已经落库的审核结论。
+// ImageAccessController 在审核事务内持久化访问状态意图；失败必须回滚审核结论。
 type ImageAccessController interface {
-	Apply(ctx context.Context, change ImageAccessChange)
+	Apply(ctx context.Context, change ImageAccessChange) error
 }
 
 // DiscardImageAccessController 供不涉及对象访问控制的独立服务测试显式使用。
 type DiscardImageAccessController struct{}
 
 // Apply 明确丢弃对象访问控制副作用。
-func (DiscardImageAccessController) Apply(context.Context, ImageAccessChange) {}
+func (DiscardImageAccessController) Apply(context.Context, ImageAccessChange) error { return nil }
 
-// ImageCachePurger 隔离 CDN 缓存刷新供应商；实现必须覆盖该原图对外暴露的全部固定派生档位。
-type ImageCachePurger interface {
-	PurgeURL(ctx context.Context, publicURL string) error
+// ImageCachePurgeTaskState 是 EdgeOne 三个精确 Target 聚合后的有限状态集合。
+type ImageCachePurgeTaskState string
+
+const (
+	// ImageCachePurgeProcessing 表示至少一个精确 Target 仍在处理。
+	ImageCachePurgeProcessing ImageCachePurgeTaskState = "processing"
+	// ImageCachePurgeSuccess 表示全部精确 Target 成功。
+	ImageCachePurgeSuccess ImageCachePurgeTaskState = "success"
+	// ImageCachePurgeFailed 表示至少一个 Target 失败。
+	ImageCachePurgeFailed ImageCachePurgeTaskState = "failed"
+	// ImageCachePurgeTimeout 表示至少一个 Target 超时。
+	ImageCachePurgeTimeout ImageCachePurgeTaskState = "timeout"
+	// ImageCachePurgeCanceled 表示至少一个 Target 被取消。
+	ImageCachePurgeCanceled ImageCachePurgeTaskState = "canceled"
+	// ImageCachePurgeProtocolUnknown 表示返回集合不满足精确协议。
+	ImageCachePurgeProtocolUnknown ImageCachePurgeTaskState = "protocol_unknown"
+)
+
+// ImageCachePurgeSubmission 保留已受理 JobId；Partial 表示 Create 即时报告了部分 Target 失败。
+type ImageCachePurgeSubmission struct {
+	JobID   string
+	Partial bool
 }
 
-var errImageCachePurgerUnconfigured = errors.New("image cache purger is not configured")
+// ImageCachePurgeRecovery 是 response-unknown 窗口的只读对账结果。
+// EffectSucceeded 只表示三个精确 Target 的刷新效果已确认，不表示能将效果因果归属到某次提交。
+// Ambiguous 表示无法唯一归属提交；它可与 EffectSucceeded 同时为 true。
+type ImageCachePurgeRecovery struct {
+	Found           bool
+	EffectSucceeded bool
+	Ambiguous       bool
+	JobID           string
+	State           ImageCachePurgeTaskState
+}
 
-// UnavailableImageCachePurger 让未装配 CDN 刷新能力显式失败并由调用端记录。
-type UnavailableImageCachePurger struct{}
+// ImageCachePurgeTaskProvider 暴露 durable worker 所需的提交、终态查询与未知响应对账。
+type ImageCachePurgeTaskProvider interface {
+	Submit(ctx context.Context, publicURL string) (ImageCachePurgeSubmission, error)
+	Describe(
+		ctx context.Context,
+		publicURL string,
+		jobID string,
+	) (ImageCachePurgeTaskState, error)
+	Recover(
+		ctx context.Context,
+		publicURL string,
+		startedAt time.Time,
+		endedAt time.Time,
+	) (ImageCachePurgeRecovery, error)
+}
 
-// PurgeURL 拒绝伪装缓存已经刷新。
-func (UnavailableImageCachePurger) PurgeURL(context.Context, string) error {
-	return errImageCachePurgerUnconfigured
+// ImageCachePurgeErrorKind 控制 Create 的“是否可能已受理”与 worker 的确定性重试边界。
+type ImageCachePurgeErrorKind string
+
+const (
+	// ImageCachePurgeErrorUnknown 表示 Create 可能已被受理，禁止直接重放。
+	ImageCachePurgeErrorUnknown ImageCachePurgeErrorKind = "unknown"
+	// ImageCachePurgeErrorRetryable 表示结构化瞬态拒绝，对账后可按预算重试。
+	ImageCachePurgeErrorRetryable ImageCachePurgeErrorKind = "retryable"
+	// ImageCachePurgeErrorPermanent 表示参数、权限或协议错误，应立即 dead-letter。
+	ImageCachePurgeErrorPermanent ImageCachePurgeErrorKind = "permanent"
+)
+
+type imageCachePurgeError struct{ kind ImageCachePurgeErrorKind }
+
+func (e imageCachePurgeError) Error() string { return "image cache purge provider call failed" }
+
+// NewImageCachePurgeError 创建不携带供应商正文的分类错误。
+func NewImageCachePurgeError(kind ImageCachePurgeErrorKind) error {
+	return imageCachePurgeError{kind: kind}
+}
+
+// ClassifyImageCachePurgeError 将任意未分类错误收敛为 permanent，避免无界重试。
+func ClassifyImageCachePurgeError(err error) ImageCachePurgeErrorKind {
+	var classified imageCachePurgeError
+	if errors.As(err, &classified) {
+		return classified.kind
+	}
+	return ImageCachePurgeErrorPermanent
 }
 
 // DirectPassImageModerator 是 dev/test 使用的同步图片放行实现。

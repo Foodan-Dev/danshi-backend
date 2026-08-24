@@ -182,7 +182,6 @@ func moderationAlertingEngine(
 		Config: cfg, DB: database, Log: log,
 		ContentModerator: service.DirectPassContentModerator{},
 		ImageStorage:     newFakeImageStorage(), ImageModerator: service.DirectPassImageModerator{},
-		ImageCachePurger:  testutil.NewMockImageCachePurger(),
 		ModerationAlerter: alerter,
 	})
 	return engine

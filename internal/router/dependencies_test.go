@@ -28,7 +28,6 @@ func TestDefaultModerationAndStorageDependencies(t *testing.T) {
 		require.IsType(t, service.UnavailableContentModerator{}, deps.ContentModerator)
 		require.IsType(t, service.UnavailableImageStorage{}, deps.ImageStorage)
 		require.IsType(t, service.UnavailableImageModerator{}, deps.ImageModerator)
-		require.IsType(t, service.UnavailableImageCachePurger{}, deps.ImageCachePurger)
 		require.NotNil(t, deps.ImageCallbackDecoder)
 	})
 
@@ -37,18 +36,7 @@ func TestDefaultModerationAndStorageDependencies(t *testing.T) {
 		require.IsType(t, service.DirectPassContentModerator{}, deps.ContentModerator)
 		require.IsType(t, &localstorage.Memory{}, deps.ImageStorage)
 		require.IsType(t, service.DirectPassImageModerator{}, deps.ImageModerator)
-		require.IsType(t, service.UnavailableImageCachePurger{}, deps.ImageCachePurger)
 		require.NotNil(t, deps.ModerationAlerter)
-	})
-
-	t.Run("complete EdgeOne config uses exact URL purger", func(t *testing.T) {
-		deps := withDefaultDomainDeps(Deps{Config: config.Config{
-			Profile:         config.ProfileProd,
-			TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
-			COSImageDomain: "https://img.test.fdueat.com",
-			EdgeOneZoneID:  "zone-test123",
-		}})
-		require.IsType(t, &tencentcloud.EdgeOnePurger{}, deps.ImageCachePurger)
 	})
 }
 

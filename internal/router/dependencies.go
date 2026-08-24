@@ -37,13 +37,6 @@ func withDefaultDomainDeps(deps Deps) Deps {
 			deps.ImageStorage = localstorage.NewMemory()
 		}
 	}
-	if deps.ImageCachePurger == nil {
-		if purger := configuredEdgeOnePurger(deps); purger != nil {
-			deps.ImageCachePurger = purger
-		} else {
-			deps.ImageCachePurger = service.UnavailableImageCachePurger{}
-		}
-	}
 	if deps.ImageModerator == nil {
 		switch {
 		case provider != nil && deps.Config.TencentCIConfigured():
@@ -70,20 +63,6 @@ func withDefaultDomainDeps(deps Deps) Deps {
 	deps.ContentModerator = observeContentModerator(deps.ContentModerator, deps.BusinessMetrics)
 	deps.ImageModerator = observeImageModerator(deps.ImageModerator, deps.BusinessMetrics)
 	return deps
-}
-
-func configuredEdgeOnePurger(deps Deps) *tencentcloud.EdgeOnePurger {
-	if !deps.Config.EdgeOneConfigured() {
-		return nil
-	}
-	purger, err := tencentcloud.NewEdgeOnePurger(deps.Config)
-	if err != nil {
-		if deps.Log != nil {
-			deps.Log.Error("腾讯云 EdgeOne 缓存刷新适配器初始化失败", "err", err)
-		}
-		return nil
-	}
-	return purger
 }
 
 func configuredTencentProvider(deps Deps) *tencentcloud.Provider {

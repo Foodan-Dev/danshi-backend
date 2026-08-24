@@ -23,7 +23,6 @@ type harnessOptions struct {
 	email                 *MockEmailSender
 	moderation            *MockModeration
 	storage               *MockImageStorage
-	cachePurger           *MockImageCachePurger
 	callbackDecoder       service.ImageCallbackDecoder
 	moderationAlerter     service.ModerationAlerter
 	userModerationAlerter service.UserModerationAlerter
@@ -50,11 +49,6 @@ func WithStorageMock(storage *MockImageStorage) HarnessOption {
 	return func(options *harnessOptions) { options.storage = storage }
 }
 
-// WithImageCachePurger 注入调用方预先编程的 CDN 刷新 Mock。
-func WithImageCachePurger(purger *MockImageCachePurger) HarnessOption {
-	return func(options *harnessOptions) { options.cachePurger = purger }
-}
-
 // WithImageCallbackDecoder 注入图片回调解码器。
 func WithImageCallbackDecoder(decoder service.ImageCallbackDecoder) HarnessOption {
 	return func(options *harnessOptions) { options.callbackDecoder = decoder }
@@ -79,14 +73,13 @@ func WithPostgresOptions(options ...PostgresOption) HarnessOption {
 
 // Harness 是后续域测试使用的数据库、engine、Mock 和夹具集合。
 type Harness struct {
-	Database    *TestDatabase
-	Engine      *server.Hertz
-	Config      appconfig.Config
-	Email       *MockEmailSender
-	Moderation  *MockModeration
-	Storage     *MockImageStorage
-	CachePurger *MockImageCachePurger
-	Fixtures    *Fixtures
+	Database   *TestDatabase
+	Engine     *server.Hertz
+	Config     appconfig.Config
+	Email      *MockEmailSender
+	Moderation *MockModeration
+	Storage    *MockImageStorage
+	Fixtures   *Fixtures
 }
 
 // DefaultConfig 返回统一且不含外部凭证的测试配置。
@@ -127,9 +120,6 @@ func NewHarness(t testing.TB, options ...HarnessOption) *Harness {
 		settings.storage = NewMockImageStorage()
 		settings.storage.SetAutoMaterialize(true)
 	}
-	if settings.cachePurger == nil {
-		settings.cachePurger = NewMockImageCachePurger()
-	}
 	database := OpenPostgres(t, settings.postgresOptions...)
 	engine := NewEngine(t, router.Deps{
 		Config:                settings.config,
@@ -137,21 +127,19 @@ func NewHarness(t testing.TB, options ...HarnessOption) *Harness {
 		EmailSender:           settings.email,
 		ContentModerator:      settings.moderation,
 		ImageStorage:          settings.storage,
-		ImageCachePurger:      settings.cachePurger,
 		ImageModerator:        settings.moderation,
 		ImageCallbackDecoder:  settings.callbackDecoder,
 		ModerationAlerter:     settings.moderationAlerter,
 		UserModerationAlerter: settings.userModerationAlerter,
 	})
 	return &Harness{
-		Database:    database,
-		Engine:      engine,
-		Config:      settings.config,
-		Email:       settings.email,
-		Moderation:  settings.moderation,
-		Storage:     settings.storage,
-		CachePurger: settings.cachePurger,
-		Fixtures:    NewFixtures(t, database.GORM),
+		Database:   database,
+		Engine:     engine,
+		Config:     settings.config,
+		Email:      settings.email,
+		Moderation: settings.moderation,
+		Storage:    settings.storage,
+		Fixtures:   NewFixtures(t, database.GORM),
 	}
 }
 

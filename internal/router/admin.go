@@ -12,9 +12,7 @@ import (
 func registerAdmin(api *route.RouterGroup, deps Deps) {
 	adminService := service.NewAdminService(
 		deps.ModerationAlerter,
-		afterCommitImageAccessController{
-			storage: deps.ImageStorage, purger: deps.ImageCachePurger, log: deps.Log,
-		},
+		transactionalImageAccessController{},
 		deps.ImageStorage,
 		signedImageTTL(deps),
 	).WithTagCursorSecret(deps.Config.JWTSecretKey)

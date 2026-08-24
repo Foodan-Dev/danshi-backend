@@ -138,15 +138,11 @@ func (s *ModerationService) ManualReview(
 		return nil, apierr.Internal(err)
 	}
 	if original.ImageAssetID != nil {
-		status := model.ModerationStatus(input.Verdict)
-		if err := s.moderation.UpdateImageModeration(ctx, *original.ImageAssetID, status); err != nil {
+		if err := s.applyManualImageVerdict(
+			ctx, *original.ImageAssetID, imagePostIDs, imageAssets, record.ID, input.Verdict,
+		); err != nil {
 			return nil, apierr.Internal(err)
 		}
-		if _, err := s.moderation.ReconcilePendingPosts(ctx, imagePostIDs); err != nil {
-			return nil, apierr.Internal(err)
-		}
-		asset := imageAssetByID(imageAssets, *original.ImageAssetID)
-		s.applyImageAccess(ctx, asset, input.Verdict)
 	} else if err := s.moderation.ApplyManualTextVerdict(ctx, original, input.Verdict); err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -154,6 +150,27 @@ func (s *ModerationService) ManualReview(
 		s.alerter.Alert(ctx, manualReviewAlert(original, input, record))
 	}
 	return record, nil
+}
+
+func (s *ModerationService) applyManualImageVerdict(
+	ctx context.Context,
+	imageAssetID uint64,
+	imagePostIDs []uint64,
+	imageAssets []model.ImageAsset,
+	sourceModerationRecordID uint64,
+	verdict model.ModerationVerdict,
+) error {
+	if err := s.moderation.UpdateImageModeration(
+		ctx, imageAssetID, model.ModerationStatus(verdict),
+	); err != nil {
+		return err
+	}
+	if _, err := s.moderation.ReconcilePendingPosts(ctx, imagePostIDs); err != nil {
+		return err
+	}
+	return s.applyImageAccess(
+		ctx, imageAssetByID(imageAssets, imageAssetID), sourceModerationRecordID, verdict,
+	)
 }
 
 func (s *ModerationService) validateSingleReviewScope(
@@ -198,7 +215,7 @@ func (s *ModerationService) ManualReviewPost(
 	if err != nil {
 		return nil, err
 	}
-	if err := s.applyPostManualVerdict(ctx, input, snapshot, imageIDs); err != nil {
+	if err := s.applyPostManualVerdict(ctx, input, snapshot, imageIDs, records); err != nil {
 		return nil, err
 	}
 	if input.Verdict == model.ModerationVerdictBlock {
@@ -365,6 +382,7 @@ func (s *ModerationService) applyPostManualVerdict(
 	input ManualPostReviewInput,
 	snapshot *postReviewSnapshot,
 	imageIDs []uint64,
+	records []model.ModerationRecord,
 ) error {
 	for _, imageID := range imageIDs {
 		if err := s.moderation.UpdateImageModeration(
@@ -381,8 +399,15 @@ func (s *ModerationService) applyPostManualVerdict(
 	if _, err := s.moderation.ReconcilePendingPosts(ctx, postIDs); err != nil {
 		return apierr.Internal(err)
 	}
-	for _, imageID := range imageIDs {
-		s.applyImageAccess(ctx, snapshot.assetByID[imageID], input.Verdict)
+	for index := range records {
+		if records[index].ImageAssetID == nil {
+			continue
+		}
+		if err := s.applyImageAccess(
+			ctx, snapshot.assetByID[*records[index].ImageAssetID], records[index].ID, input.Verdict,
+		); err != nil {
+			return apierr.Internal(err)
+		}
 	}
 	return nil
 }
@@ -492,7 +517,9 @@ func (s *ModerationService) applyImageResult(
 				"审核回调任务号与图片不一致",
 			)
 		}
-		s.reconcileImageAccess(ctx, asset)
+		if err := s.reconcileImageAccess(ctx, asset, existing.ID); err != nil {
+			return nil, apierr.Internal(err)
+		}
 		return &ImageModerationApplyResult{Duplicate: true}, nil
 	}
 	status := model.ModerationStatus(callback.Verdict)
@@ -510,7 +537,9 @@ func (s *ModerationService) applyImageResult(
 			Verdict: callback.Verdict, Labels: append([]string{}, callback.Labels...),
 		})
 	}
-	s.applyImageAccess(ctx, asset, callback.Verdict)
+	if err := s.applyImageAccess(ctx, asset, record.ID, callback.Verdict); err != nil {
+		return nil, apierr.Internal(err)
+	}
 	return &ImageModerationApplyResult{
 		ApprovedPosts: transitions.Approved,
 		RejectedPosts: transitions.Rejected,
@@ -563,34 +592,37 @@ func imageAssetByID(assets []model.ImageAsset, imageAssetID uint64) *model.Image
 func (s *ModerationService) applyImageAccess(
 	ctx context.Context,
 	asset *model.ImageAsset,
+	sourceModerationRecordID uint64,
 	verdict model.ModerationVerdict,
-) {
+) error {
 	if asset == nil {
-		return
+		return nil
 	}
 	public := verdict == model.ModerationVerdictPass
-	if public && asset.Moderation != model.ModerationStatusBlock &&
-		asset.Moderation != model.ModerationStatusReview {
-		return
-	}
-	s.imageAccess.Apply(ctx, ImageAccessChange{
-		ImageAssetID: asset.ID,
-		ObjectKey:    asset.ObjectKey,
-		PublicURL:    asset.PublicURL,
-		Public:       public,
+	return s.imageAccess.Apply(ctx, ImageAccessChange{
+		ImageAssetID: asset.ID, SourceModerationRecordID: sourceModerationRecordID,
+		Public: public, PurgeRequired: imageAccessPurgeRequired(public, asset.Moderation),
 	})
 }
 
-func (s *ModerationService) reconcileImageAccess(ctx context.Context, asset *model.ImageAsset) {
+func (s *ModerationService) reconcileImageAccess(
+	ctx context.Context,
+	asset *model.ImageAsset,
+	sourceModerationRecordID uint64,
+) error {
 	if asset == nil {
-		return
+		return nil
 	}
-	s.imageAccess.Apply(ctx, ImageAccessChange{
-		ImageAssetID: asset.ID,
-		ObjectKey:    asset.ObjectKey,
-		PublicURL:    asset.PublicURL,
-		Public:       asset.Moderation == model.ModerationStatusPass,
+	public := asset.Moderation == model.ModerationStatusPass
+	return s.imageAccess.Apply(ctx, ImageAccessChange{
+		ImageAssetID: asset.ID, SourceModerationRecordID: sourceModerationRecordID,
+		Public: public, PurgeRequired: imageAccessPurgeRequired(public, asset.Moderation),
 	})
+}
+
+func imageAccessPurgeRequired(public bool, previous model.ModerationStatus) bool {
+	return !public || previous == model.ModerationStatusBlock ||
+		previous == model.ModerationStatusReview
 }
 
 func imageModerationRecord(callback ImageModerationCallback) *model.ModerationRecord {

@@ -27,6 +27,7 @@ var version = "dev"
 const (
 	expirePendingCommand          = "expire-pending"
 	checkModerationBacklogCommand = "check-moderation-backlog"
+	reconcileImageAccessCommand   = "reconcile-image-access"
 )
 
 func main() {
@@ -38,7 +39,8 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("必须指定任务 %q 或 %q", expirePendingCommand, checkModerationBacklogCommand)
+		return fmt.Errorf("必须指定任务 %q、%q 或 %q",
+			expirePendingCommand, checkModerationBacklogCommand, reconcileImageAccessCommand)
 	}
 	switch args[0] {
 	case expirePendingCommand:
@@ -48,10 +50,75 @@ func run(args []string) error {
 			return fmt.Errorf("任务 %q 不接受额外参数", checkModerationBacklogCommand)
 		}
 		return checkModerationBacklog()
+	case reconcileImageAccessCommand:
+		return runReconcileImageAccess(args[1:])
 	default:
-		return fmt.Errorf("未知任务 %q；可用任务为 %q、%q",
-			args[0], expirePendingCommand, checkModerationBacklogCommand)
+		return fmt.Errorf("未知任务 %q；可用任务为 %q、%q、%q",
+			args[0], expirePendingCommand, checkModerationBacklogCommand,
+			reconcileImageAccessCommand)
 	}
+}
+
+func runReconcileImageAccess(args []string) error {
+	flags := flag.NewFlagSet(reconcileImageAccessCommand, flag.ContinueOnError)
+	batchSize := flags.Int("batch-size", 4, "单次 SKIP LOCKED 领取并发数；范围 1..4")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("无法识别的额外参数：%v", flags.Args())
+	}
+	if *batchSize < 1 || *batchSize > 4 {
+		return errors.New("-batch-size 必须在 1..4 之间")
+	}
+	return reconcileImageAccess(*batchSize)
+}
+
+func reconcileImageAccess(batchSize int) (runErr error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if !cfg.COSConfigured() || !cfg.EdgeOneConfigured() {
+		return errors.New("图片访问状态 worker 必须完整配置 COS 与 EdgeOne")
+	}
+	log := obs.NewServiceLogger(cfg, "danshi-jobs")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	database, err := db.Open(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, database.Close()) }()
+	if err := assertSchemaVersion(ctx, database); err != nil {
+		return err
+	}
+	storage, err := tencentcloud.NewProvider(cfg, nil)
+	if err != nil {
+		return fmt.Errorf("初始化腾讯云 COS: %w", err)
+	}
+	purger, err := tencentcloud.NewEdgeOnePurger(cfg)
+	if err != nil {
+		return fmt.Errorf("初始化腾讯云 EdgeOne: %w", err)
+	}
+	worker := service.NewImageAccessWorker(database, storage, purger, service.ImageAccessWorkerOptions{
+		BatchSize: batchSize,
+	})
+	startedAt := time.Now()
+	result, err := worker.RunBatch(ctx)
+	if err != nil {
+		return fmt.Errorf("收敛审核图片访问状态: %w", err)
+	}
+	log.InfoContext(ctx, "审核图片访问状态批次完成",
+		slog.String("build", version),
+		slog.Int("claimed", result.Claimed),
+		slog.Int("succeeded", result.Succeeded),
+		slog.Int("rescheduled", result.Rescheduled),
+		slog.Int("dead_lettered", result.DeadLettered),
+		slog.Int("superseded", result.Superseded),
+		slog.Duration("duration", time.Since(startedAt)),
+	)
+	return nil
 }
 
 func runExpirePending(args []string) error {
