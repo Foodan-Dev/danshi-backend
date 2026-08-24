@@ -30,6 +30,11 @@
 7. 计数器从动作表和关联表重建，不复制来源冗余值。
 8. 迁入完成后，先验证数据与运行契约，再允许目标服务写入。
 
+其中 `view_count` 不是动作表可重建的派生计数：它表示旧系统已经发生但没有明细流水的
+浏览事实。ETL 应先以 0 插入帖子，再单独把来源 `view_count` 写回；该更新不得修改
+`updated_at`，也不需要开启 `danshi.allow_counter_write`。点赞、收藏、评论和回复计数仍然
+只能从关系表重建，不能照搬来源值。
+
 ## 3. 切换时序
 
 ### 3.1 前置条件
@@ -238,6 +243,11 @@ SELECT setval(
 | 注销时间 | `deleted_at` | 来源没有软删除概念时为 NULL |
 | 已废弃展示字段 | 无 | 不迁 |
 
+来源 `role=admin` 只映射成 `user_roles.role=moderator`，不能自动获得词表维护权限；
+来源 `role=super_admin` 映射成 `super_admin`。每条生效绑定同时追加一条
+`user_role_records(action=grant)`，来源无法证明授予人时 actor 留空。来源停用账号除写入
+当前封禁字段外，还要追加一条 `user_ban_records(action=ban)`，保留可追溯起点。
+
 历史停用账号的封禁形态：
 
 ```text
@@ -313,6 +323,9 @@ banned_by        = NULL
 5. 断言所有 `fixed_rows` 为 0。
 
 禁止先写来源计数，再装载动作行；这会产生“来源计数 + 触发器累加”的双计数。
+唯一例外是无法从动作表重建的 `view_count`：帖子先以 0 插入，再用不触碰
+`updated_at` 的单列 UPDATE 保存来源值。`view_count` 的 UPDATE 不受派生计数写保护触发器
+限制，因此不得为此开启 `danshi.allow_counter_write`。
 
 ### 7.7 时间戳
 
@@ -369,14 +382,16 @@ md5(
 
 回填后验证正文确由通知发送者创建，且时间在通知产生时刻附近。
 
-## 9. 历史图片与标签审核
+## 9. 历史图片、标签与评论审核
 
-目标图片和开放标签都有审核状态。历史数据没有完整审核流水，如果只把状态设为 `pass` 而不留记录，审核可追溯从迁入第一天就不成立。
+目标图片、开放标签和评论都有审核状态。历史数据没有完整审核流水，如果只把状态设为
+`pass` 而不留记录，审核可追溯从迁入第一天就不成立。
 
 已批准策略是 grandfather：
 
 - 迁入的历史图片设 `moderation=pass`；
 - 迁入的历史标签设 `moderation=pass`；
+- 迁入的历史评论设 `moderation=pass`；
 - 每个对象插入一条审核记录；
 - `provider=legacy_migration`；
 - `verdict=pass`；
@@ -386,6 +401,31 @@ md5(
 这是机器形态的来源声明，不伪装成人工复核。
 
 接受的代价：历史内容不会在迁入时重新审核。执行审批应明确记录这一风险；如果风险口径变化，应改为全量重审或人工审核，不能静默改变。
+
+### 9.1 第一阶段只读工具
+
+仓库提供 `cmd/danshi-legacy-migrate` 的第一阶段安全骨架，目前只支持：
+
+```bash
+SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
+  go run ./cmd/danshi-legacy-migrate inspect
+
+SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
+  go run ./cmd/danshi-legacy-migrate plan
+```
+
+- 连接只能从上述两个环境变量读取，没有 DSN 命令行参数；
+- 来源事务固定为 `REPEATABLE READ READ ONLY DEFERRABLE`；
+- PostgreSQL 只在 `SERIALIZABLE READ ONLY` 下让 `DEFERRABLE` 产生冲突安全快照效果；
+  这里保留该 GUC 是为了严格记录执行事务形态，一致性保证来自 `REPEATABLE READ`，
+  不能把它宣称为 serializable safe snapshot；
+- 目标必须是 PostgreSQL 18、goose v11，且只含固定词表种子；
+- `plan` 获取固定 transaction-level advisory lock，但目标事务仍为只读；
+- 输出只包含固定枚举与聚合计数，不包含数据库名、DSN、邮箱、正文、UUID 或 URL；
+- 报告的 `inspection_level=foundation_preflight`；基础 blocker 清零不代表显式清洗 manifest、
+  词表映射与逐项人工审批已经完成；
+- `apply_enabled=false`、计划 `executable=false` 且 `full_source_review_complete=false`；
+  当前二进制没有任何业务数据写入实现。
 
 ## 10. 两个事务局部开关
 
@@ -449,10 +489,11 @@ COMMIT
 - [ ] 检查所有 tag 长度和首尾空白。
 - [ ] 检查全部字典文本的首尾空白与 Unicode 归一化结果冲突。
 - [ ] 验证每个迁入头像和帖子图片都命中图片资产。
-- [ ] 确认历史图片/标签 grandfather 决策仍有效。
+- [ ] 确认历史图片/标签/评论 grandfather 决策仍有效。
 - [ ] 确认旧停用用户迁入后仍被封禁。
 - [ ] 确认未给当前帖子/评论合成 `revision=1`；若迁入真实旧版本，逐行核对来源证据与顺序。
-- [ ] 确认脚本不写来源计数，也不设置 `allow_counter_write`。
+- [ ] 确认脚本不复制来源点赞/收藏/评论/回复计数，也不设置 `allow_counter_write`；
+      `view_count` 仅按 §7.6 的单列 UPDATE 例外保存。
 - [ ] 确认每张 identity 表都推进 sequence，包括空表分支。
 - [ ] 在来源恢复副本上连续三次完整演练并零差异。
 - [ ] 演练停写流程、同权限写探针和连接池排空。
