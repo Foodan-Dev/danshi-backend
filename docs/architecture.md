@@ -724,14 +724,16 @@ GitHub Actions 当前包含：
 - lint：gofmt、OpenAPI 漂移与 golangci-lint；
 - test：全包 race 测试；
 - schema：两条独立 schema 回归链路；
-- build：三个二进制、体积门禁和三个镜像构建；
+- build：四个二进制、体积门禁和三个镜像构建；
 - runtime：Compose 启动、探针和统一 404 响应验证。
 
-二进制门禁当前为 server 不超过 32 MiB、migrate 不超过 15 MiB、jobs 不超过 30 MiB。
-server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链接成本；jobs
-包含数据库与腾讯云 COS 适配器，首次静态构建实测约 27 MiB；migrate 不依赖观测栈，
-因此保持原阈值。阈值基于实际静态构建；超过阈值时应分析依赖或明确调整文档和门禁，
-不应静默删除检查。
+二进制门禁当前为 server 不超过 32 MiB、migrate 不超过 15 MiB、jobs 不超过 40 MiB、
+legacy-import 不超过 15 MiB。server 阈值包含 Prometheus client、OTel SDK 与 OTLP
+exporter 的静态链接成本；jobs 包含数据库与腾讯云 COS 适配器，早期静态构建实测约
+27 MiB，接入图片访问收敛 worker 后又静态链接了腾讯云 EdgeOne（`teo/v20220901`）
+SDK，实测升到 33 MiB，因此阈值按实测重新基线到 40 MiB；migrate 与 legacy-import
+都不依赖观测栈和云 SDK，实测约 10 MiB。阈值基于实际静态构建；超过阈值时应分析依赖
+或明确调整文档和门禁，不应静默删除检查。
 
 ## 20. 可观测性现状
 

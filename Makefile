@@ -70,7 +70,7 @@ bench-db: ## 运行需要 PostgreSQL testcontainer 的端到端基准
 	go test -run '^$$' -bench '^BenchmarkPostListEndToEnd$$' -benchmem ./internal/router
 
 .PHONY: build
-build: build-server build-migrate build-jobs ## 构建三个二进制
+build: build-server build-migrate build-jobs build-legacy-import ## 构建四个二进制
 
 .PHONY: build-server
 build-server:
@@ -83,6 +83,10 @@ build-migrate:
 .PHONY: build-jobs
 build-jobs:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN)/danshi-jobs ./cmd/danshi-jobs
+
+.PHONY: build-legacy-import
+build-legacy-import:
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN)/danshi-legacy-import ./cmd/danshi-legacy-import
 
 .PHONY: docker
 docker: ## 构建三个镜像
