@@ -17,6 +17,7 @@
 |---|---|
 | [测试指南](testing.md) | 本地门禁、testcontainers、schema 和运行时验证 |
 | [图片上传与资产生命周期](image-hosting.md) | COS 预签名直传、Content-MD5、锁序与退役 |
+| [旧库一次性迁入 Runbook](operations/legacy-data-import.md) | 隔离演练、逐行对账、幂等重跑与失败回退 |
 | [根目录 README](../README.md) | 快速开始、完整配置表、Make 目标、项目结构和许可证状态 |
 | [OpenAPI](../api/openapi.json) | 由运行时路由与 Go 类型生成的接口规范 |
 
