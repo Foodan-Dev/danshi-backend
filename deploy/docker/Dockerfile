@@ -49,3 +49,8 @@ FROM gcr.io/distroless/static-debian12:nonroot AS jobs
 COPY --from=build /out/danshi-jobs /danshi-jobs
 USER nonroot:nonroot
 ENTRYPOINT ["/danshi-jobs"]
+
+# ---------- 默认镜像 ----------
+# Docker 在未指定 --target 时会导出最后一个 stage。显式把默认值指回
+# HTTP server，避免普通 `docker build` 意外生成一次性 jobs 镜像。
+FROM server AS default
