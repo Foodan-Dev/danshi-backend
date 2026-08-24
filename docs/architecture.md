@@ -123,7 +123,7 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 
 公开配置、探针和外部审核回调是否经过 UoW 由路由定义决定；`/health` 与 `/ready` 不进入业务事务。
 
-### 5.2 提交后副作用
+### 5.2 提交后副作用与 durable outbox
 
 数据库提交之前不应向不可回滚的外部系统宣告成功。需要在事务成功后执行的动作通过 after-commit 机制登记；事务回滚时不执行。
 
@@ -132,6 +132,8 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 - 数据库状态是业务事实；
 - 外部调用可能超时、失败或重试；
 - 回调和重试入口必须幂等。
+
+安全相关且要求最终收敛的副作用不能只依赖进程内 after-commit。图片审核终态会在同一事务追加 `image_access_intents`，并投影到每图片单例的 `image_access_deliveries`；后台 jobs 用 generation/lease fencing 始终执行 COS ACL，并只对可能已缓存过公开或私有响应的 URL 执行 EdgeOne purge。外部调用不持有数据库事务，进程崩溃由 lease 到期恢复，Create 响应未知先查询对账而不盲目重放。
 
 ## 6. HTTP 契约
 
@@ -599,7 +601,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
   `review` 进入人工队列且仅作者可见，`block` 软删除并标记审核来源；
 - 标签：block 下架，保留帖子关联；
 - 用户字段：违规时通知管理员，由管理员重置或封禁；
-- 图片：block 后不支持帖子进入公开状态，并在事务提交后把 COS 对象 ACL 切为私有；人工改判可恢复公开 ACL。
+- 图片：block 后不支持帖子进入公开状态；同事务写 durable 访问意图，后台 worker 把 COS ACL 收敛为私有并确认 EdgeOne 精确刷新终态，人工改判可恢复公开 ACL。
 
 系统不根据单条机器 verdict 自动封禁用户。
 

@@ -139,15 +139,19 @@ URL，公开列表与详情仍返回 `PublicURL`，不改变既有内容可见�
 
 允许帖子在图片审核进行中建立引用，以免异步审核阻断表单提交；但帖子进入 `approved` 前必须在同一事务确认所有引用图片审核通过。
 
-图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。`review` 或 `block` 结论提交后，对象 ACL 会幂等切换为 `private`；人工复核改判为 `pass` 时再切回 `public-read`。对象不删除，`image_assets.moderation` 仍是唯一审核真源，没有额外的可见性状态列。
+图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。审核终态和一条 `image_access_intents` 在同一个 UoW 事务中提交；outbox 写入失败会让审核事务整体回滚，不会出现“数据库已经 block、访问状态意图却丢失”。`image_assets.moderation` 仍是审核真源，`image_access_deliveries` 只投影最新期望并保存交付进度。
 
-ACL 切换与 EdgeOne 缓存刷新都在数据库事务提交后执行。它们失败时审核结论仍然保留、回调仍返回成功，并记录资产 ID、目标公开状态和脱敏错误类别；同一供应商任务号的重复回调会按数据库中的当前审核状态再次校准 ACL 与缓存。
+每条 intent 以 `source_moderation_record_id` 幂等，每张图片只有一条 delivery。新的审核事实即使目标状态相同也会提升 generation、从 ACL 重新校准；同一供应商任务的重复回调不提升 generation，避免重放攻击不断重置 worker。反向状态通过 generation fencing 覆盖旧意图，旧 worker 的 finalize 会影响 0 行并释放旧 lease，随后新代际收敛。delivery 的 `purge_required` 由审核前状态决定：转私有以及从 `review`/`block` 恢复公开时为 true，首次 `pending`→`pass` 为 false；intent 无论是否需要刷新都必须写入。
 
 运行时通过腾讯云官方 Go SDK 调用 `CreatePurgeTask`，类型固定为 `purge_url`。适配器只接受 `COS_IMG_DOMAIN` 下不带查询参数的单个 HTTPS 原图 URL，再把 API 实际暴露的 `raw`、`display`、`thumb` 三个**精确 URL**作为同一任务的 Targets；它不提供目录、Hostname、全站、Cache-Tag 或跨站点刷新能力。这样既清除原图缓存，也覆盖 EdgeOne 完整 URL Cache Key 下彼此独立的两档数据万象派生图。
 
-单进程采用 burst=1、最多 10 请求/秒的间隔限制；一次调用最多尝试 2 次，只有腾讯云明确返回的后端/代理/配额系统瞬态错误和 API 限频会在 200ms 后重试，参数、权限、日配额、响应内 FailedList 与“服务端可能已受理”的模糊网络错误不重放。腾讯云单请求超时为 5 秒，整个适配器调用另有 12 秒硬上限，SDK 自身重试关闭，避免两层重试相乘。官方 API 限制是每个 `API + 接入地域 + 子账号` 20 次/秒，多副本部署必须保证所有副本的理论总速率不超过该上限。
+外部调用只由一次性命令 `danshi-jobs reconcile-image-access -batch-size 4` 执行。领取使用一个短事务内的 `FOR UPDATE SKIP LOCKED` 与 60 秒 lease；COS/EdgeOne 网络调用从不占用数据库事务。所有 finalize 都以 `image_asset_id + generation + lease_token` fencing。默认并发 batch 为 4、硬上限 4，保证单项 15 秒 ACL 与 12 秒 EdgeOne 硬超时不会因批内排队跨过 lease；调用方应由 cron/CronJob 高频触发，直到 backlog 收敛。
 
-`CreatePurgeTask` 返回成功只表示异步任务已受理，不代表边缘节点已经完成清除。当前事务后回调仍是进程内 best-effort：进程在提交后崩溃或异步任务随后失败时，不具备 durable 收敛保证。把 ACL/purge 意图与审核结论同事务写入 outbox、由有界 worker 查询任务终态并重试，是生产切流前必须关闭的可靠性门禁；本适配器本身不得被当作该门禁已经完成。
+worker 先幂等设置 COS ACL；若 `purge_required=false`，ACL 成功后直接收敛为 `succeeded`，不进入 `pending_submit`。需要刷新时，worker 才在单独事务中把状态持久化为 `submitting`，之后调用 `CreatePurgeTask`。Create 没有 ClientToken，SDK 三种自动重试全部关闭；EOF、超时、连接中断、空响应或进程在写回 JobId 前崩溃时，租约恢复只通过 `DescribePurgeTasks` 的窄时间窗与精确 Target 集合对账，绝不直接重放 Create。找不到唯一因果任务时在 90 秒观察窗后进入 dead-letter；只有已知 JobId 明确返回 `failed/timeout/canceled`，或腾讯结构化拒绝经对账确认未受理，才按最多 3 个 submission 的预算重试。
+
+取得 JobId 后，worker 必须使用 `AdvancedFilter{Name:"job-id", Fuzzy:false}` 分页查询。一个 Job 会为 raw/display/thumb 各返回一条 Task；三个精确 Target 全部 `success` 才算完成，任一 `failed/timeout/canceled` 是失败终态，`processing` 或缺行继续有界轮询，超过 10 分钟按失败处理。单进程 Create/Describe 共用 burst=1、10 QPS gate，低于两个官方接口各 20 QPS 的默认限额；多副本仍需按账号总量控制。
+
+运营状态为 `pending_acl`、`pending_submit`、`submitting`、`submitted`、`succeeded`、`dead_letter`。ACL 最多 8 次；查询失败最多 8 次；退避是确定性的指数增长并有上限。`last_error_code` 只允许 migration 白名单中的低基数内部枚举，不保存供应商正文、RequestId、URL、对象键或 JobId；日志与 Prometheus label 同样不包含这些载荷。dead-letter 不靠重复 callback 偶然复活，应先人工确认 EdgeOne 实际任务与对象状态，再用受审计的显式新审核事实或后续专用 requeue 工具处理。
 
 ## 4. 生命周期
 
@@ -240,8 +244,10 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 | COS 中没有对象 | 409 |
 | 实际大小不匹配 | 删除对象并返回 409 |
 | 审核供应商失败 | 不宣告完整完成，保留可追踪错误原因 |
-| `review/block` 后 COS ACL 更新失败 | 审核事实提交、回调成功、记录错误；重复回调幂等重试 |
-| CDN 缓存刷新失败或未装配 | ACL 结果不回滚、记录错误；重复回调幂等重试 |
+| `review/block` 后 COS ACL 更新失败 | 审核事实与 intent 已提交；worker 有界退避，耗尽后 dead-letter |
+| Create 响应未知或进程崩溃 | 保持 `submitting`，只读对账；不盲目重放 |
+| EdgeOne 长期 processing/失败终态 | 有界轮询；明确失败按 submission 预算重试，耗尽后 dead-letter |
+| EdgeOne 未配置或权限不足 | jobs 命令 fail closed；delivery 保留或进入可观测 dead-letter |
 
 客户端不能根据中文文案分支，应使用 HTTP 状态和稳定 `error_code`。
 
@@ -258,7 +264,26 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 - `review/block` 图片对象使用可逆的私有 ACL，改判 `pass` 时重新公开；
 - 私有图片读取签名默认 1 小时有效，完整签名 URL 不进入日志、trace 或持久缓存；
 - 运行身份除上传、HEAD 和清理权限外，还必须具有目标对象的 ACL 修改权限；
-- EdgeOne 只授予目标站点的 `teo:CreatePurgeTask`，资源限定为
+- EdgeOne 只授予目标站点的 `teo:CreatePurgeTask` 与 `teo:DescribePurgeTasks`，资源限定为
   `qcs::teo::uin/<主账号 UIN>:zone/<EDGEONE_ZONE_ID>`，不得授予 `teo:*` 或全站点资源；
 - 用户只能引用本人、用途匹配的资产；
 - trace 与日志不得记录云密钥、完整预签名 URL 或 callback token。
+
+EdgeOne jobs 运行身份的最小 CAM 语句为（替换主账号 UIN 与真实 Zone ID；测试、生产分别授权）：
+
+```json
+{
+  "effect": "allow",
+  "action": [
+    "name/teo:CreatePurgeTask",
+    "name/teo:DescribePurgeTasks"
+  ],
+  "resource": [
+    "qcs::teo::uin/<主账号 UIN>:zone/<EDGEONE_ZONE_ID>"
+  ]
+}
+```
+
+Server 进程只写数据库 outbox，不需要调用这两个 TEO action；若 server 与 jobs 复用同一
+CAM 子账号，这是部署简化而不是应用最小权限要求。`DescribePurgeTasks` 是终态确认和
+response-unknown 对账的必需权限，不能只授予 Create。

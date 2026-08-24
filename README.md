@@ -188,6 +188,20 @@ danshi-jobs check-moderation-backlog
 冷却状态保存在数据库中，因此不同 CronJob 进程和并发实例共享抑制结果；积压回落后会重置，
 下一次再次达到阈值会立即重新告警。
 
+图片审核访问状态由 durable outbox 与一次性 worker 收敛；由 cron/CronJob 周期执行：
+
+```bash
+danshi-jobs reconcile-image-access -batch-size 4
+```
+
+worker 用 `FOR UPDATE SKIP LOCKED` 有界领取并始终设置 COS ACL；只有 delivery 标记为
+`purge_required` 时，才提交 EdgeOne raw/display/thumb 三条精确 URL 刷新并通过
+`DescribePurgeTasks` 等待三个 Target 全部成功。首次 pending→pass 不消耗 URL 刷新配额，
+而转私有以及 review/block→pass 仍会刷新。Create 响应未知或
+进程在写回 JobId 前崩溃时只做时间窗对账，不自动重放；重试预算耗尽进入可观测
+`dead_letter`。`/metrics` 每 15 秒最多用一条只读分组查询刷新六个固定状态的缓存计数，
+不把图片 ID、URL、对象键、JobId 或供应商错误正文写入 label。
+
 ## API 文档
 
 提交到仓库的 [api/openapi.json](api/openapi.json) 是 OpenAPI 3.0.3 文档。它由真实 Hertz 路由、请求/响应 Go 类型和错误码清单生成，不是手写接口副本。
