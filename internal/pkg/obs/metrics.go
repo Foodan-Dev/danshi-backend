@@ -31,6 +31,7 @@ type Metrics struct {
 	responseSize    *prometheus.HistogramVec
 	moderation      moderationMetrics
 	verification    verificationMetrics
+	reviewQueue     *reviewQueueCollector
 }
 
 type metricsOptions struct {
@@ -95,7 +96,8 @@ func NewMetrics(pool *sql.DB, opts ...MetricsOption) (*Metrics, error) {
 		metricCollectors = append(metricCollectors, newDBStatsCollector(pool))
 	}
 	if options.reviewQueueCounter != nil {
-		metricCollectors = append(metricCollectors, newReviewQueueCollector(options.reviewQueueCounter))
+		m.reviewQueue = newReviewQueueCollector(options.reviewQueueCounter)
+		metricCollectors = append(metricCollectors, m.reviewQueue)
 	}
 	for _, collector := range metricCollectors {
 		if err := m.registry.Register(collector); err != nil {
@@ -128,7 +130,10 @@ func (m *Metrics) Register(h *server.Hertz) {
 	h.GET(metricsPath, m.handle)
 }
 
-func (m *Metrics) handle(_ context.Context, c *app.RequestContext) {
+func (m *Metrics) handle(ctx context.Context, c *app.RequestContext) {
+	if m.reviewQueue != nil {
+		m.reviewQueue.Refresh(ctx)
+	}
 	families, err := m.registry.Gather()
 	if err != nil {
 		c.String(http.StatusInternalServerError, "metrics collection failed\n")

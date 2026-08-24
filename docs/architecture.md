@@ -767,7 +767,12 @@ danshi_moderation_submissions_total{provider,scene}
 danshi_moderation_provider_failures_total{provider,scene,reason}
 danshi_moderation_terminal_outcomes_total{provider,scene,outcome}
 danshi_moderation_callbacks_total{provider,outcome,reason}
-danshi_moderation_review_queue_items
+danshi_moderation_review_queue_cached_items
+danshi_moderation_review_queue_cache_ready
+danshi_moderation_review_queue_last_success_timestamp_seconds
+danshi_moderation_review_queue_last_refresh_success
+danshi_moderation_review_queue_refresh_in_progress
+danshi_moderation_review_queue_refresh_errors_total
 danshi_verification_events_total{provider,outcome,reason}
 go_*
 process_*
@@ -775,7 +780,11 @@ process_*
 
 `route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。业务指标的 `provider`、`scene`、`outcome`、`reason` 也全部在代码中收敛为固定枚举，未知值统一降为 `unknown`，不会透传用户、对象、任务、邮箱、正文或错误文本。
 
-审核提交和供应商调用失败按真实调用即时计数。`pass`、`review`、`block` 与带 `provider_failed` 标签的失败终态，以及成功处理的回调和成功发信，只在当前 UoW 事务提交后计数；事务回滚不会制造业务成功。重复回调计入 `callbacks_total{outcome="processed",reason="duplicate"}`，但不会重复增加终态。待复核 gauge 每次 scrape 都通过短事务调用与管理端分页、积压告警相同的 `queue_items` 计数：同一帖子无论有多少正文/图片 review 流水只计一个条目，其他对象分别计数。数据库不可用或计数超时会让该 collector 显式失败，不沿用陈旧值冒充当前深度。
+审核提交和供应商调用失败按真实调用即时计数。`pass`、`review`、`block` 与带 `provider_failed` 标签的失败终态，以及成功处理的回调和成功发信，只在当前 UoW 事务提交后计数；事务回滚不会制造业务成功。重复回调计入 `callbacks_total{outcome="processed",reason="duplicate"}`，但不会重复增加终态。
+
+待复核队列不把无界 scrape 并发传给数据库。进程内 collector 以 15 秒为最小刷新间隔，并用 try-lock 语义保证同一时刻至多一个调用方执行查询；并发 scrape 立即返回最近成功缓存，不等待刷新。刷新复用应用连接池，在只读事务中执行，与管理端分页、积压告警使用完全相同的 `queue_items` 口径，并同时受 2.5 秒 PostgreSQL `statement_timeout` 和 3 秒调用 context 超时约束。collector 不启动后台 goroutine，也不创建独立连接池。
+
+`review_queue_cached_items` 明确表示“最近一次成功观测值”，不能单独当作实时深度使用：告警必须同时查看 `cache_ready`、`last_refresh_success`、`refresh_in_progress`、`refresh_errors_total` 和 `last_success_timestamp_seconds`。启动尚无成功值或首次刷新失败时不导出 `cached_items`；已有缓存后的刷新失败会保留旧值，但失败状态和最后成功时间会明确暴露。刷新错误不会产生 invalid metric，也不会拖垮整个 `/metrics`。
 
 DB trace 进一步省略整个 SQL 文本与变量值；外部调用 span 只使用 `external.system` 与 `external.operation` 两个固定枚举属性，失败只记录通用状态 `external call failed`，不记录供应商错误正文，防止邮箱、验证码、对象键、webhook token、用户内容或云端原始响应进入 telemetry。
 

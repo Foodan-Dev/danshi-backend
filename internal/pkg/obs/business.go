@@ -2,6 +2,8 @@ package obs
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -9,7 +11,10 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 )
 
-const businessMetricCollectionTimeout = 3 * time.Second
+const (
+	reviewQueueRefreshTimeout  = 3 * time.Second
+	reviewQueueRefreshInterval = 15 * time.Second
+)
 
 // BusinessRecorder 是业务层只写的低基数指标端口。实现必须把所有入参收敛为固定枚举，
 // 不能把用户、对象、任务、邮箱、正文或错误文本写入 label。
@@ -212,32 +217,146 @@ func boundedReason(value string) string {
 
 type reviewQueueCollector struct {
 	counter ReviewQueueCounter
-	desc    *prometheus.Desc
+
+	mu                 sync.RWMutex
+	refreshing         bool
+	hasValue           bool
+	value              int64
+	lastSuccess        time.Time
+	lastAttempt        time.Time
+	lastRefreshSuccess bool
+	refreshErrors      uint64
+
+	refreshTimeout  time.Duration
+	refreshInterval time.Duration
+	now             func() time.Time
+
+	itemsDesc              *prometheus.Desc
+	cacheReadyDesc         *prometheus.Desc
+	lastSuccessDesc        *prometheus.Desc
+	lastRefreshSuccessDesc *prometheus.Desc
+	refreshingDesc         *prometheus.Desc
+	refreshErrorsDesc      *prometheus.Desc
 }
 
-func newReviewQueueCollector(counter ReviewQueueCounter) prometheus.Collector {
+func newReviewQueueCollector(counter ReviewQueueCounter) *reviewQueueCollector {
 	return &reviewQueueCollector{
-		counter: counter,
-		desc: prometheus.NewDesc(
-			"danshi_moderation_review_queue_items",
-			"Current review queue items using the same grouping semantics as the admin queue.",
+		counter:        counter,
+		refreshTimeout: reviewQueueRefreshTimeout, refreshInterval: reviewQueueRefreshInterval,
+		now: time.Now,
+		itemsDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_cached_items",
+			"Last successfully observed review queue items; inspect cache status metrics for freshness.",
 			nil,
 			nil,
+		),
+		cacheReadyDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_cache_ready",
+			"Whether a successful review queue observation is available (1) or not (0).",
+			nil, nil,
+		),
+		lastSuccessDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_last_success_timestamp_seconds",
+			"Unix timestamp of the last successful review queue observation.",
+			nil, nil,
+		),
+		lastRefreshSuccessDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_last_refresh_success",
+			"Whether the last completed review queue refresh succeeded (1) or failed/not run (0).",
+			nil, nil,
+		),
+		refreshingDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_refresh_in_progress",
+			"Whether one bounded review queue refresh is currently in progress.",
+			nil, nil,
+		),
+		refreshErrorsDesc: prometheus.NewDesc(
+			"danshi_moderation_review_queue_refresh_errors_total",
+			"Total failed or invalid review queue refresh attempts.",
+			nil, nil,
 		),
 	}
 }
 
-func (c *reviewQueueCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+func (c *reviewQueueCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.itemsDesc
+	ch <- c.cacheReadyDesc
+	ch <- c.lastSuccessDesc
+	ch <- c.lastRefreshSuccessDesc
+	ch <- c.refreshingDesc
+	ch <- c.refreshErrorsDesc
+}
 
-func (c *reviewQueueCollector) Collect(ch chan<- prometheus.Metric) {
-	ctx, cancel := context.WithTimeout(context.Background(), businessMetricCollectionTimeout)
-	defer cancel()
-	count, err := c.counter(ctx)
-	if err != nil {
-		ch <- prometheus.NewInvalidMetric(c.desc, err)
+// Refresh 尝试刷新队列缓存。同一时刻只有首个调用方执行数据库查询；其余调用方
+// 立即返回并由 Collect 导出既有缓存。查询与调用方 context 绑定且有硬超时，不启动
+// 后台 goroutine，也不建立独立连接池。
+func (c *reviewQueueCollector) Refresh(ctx context.Context) {
+	if c == nil || c.counter == nil {
 		return
 	}
-	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(count))
+	now := c.now().UTC()
+	c.mu.Lock()
+	if c.refreshing || (!c.lastAttempt.IsZero() && c.refreshInterval > 0 &&
+		now.Before(c.lastAttempt.Add(c.refreshInterval))) {
+		c.mu.Unlock()
+		return
+	}
+	c.refreshing = true
+	c.lastAttempt = now
+	c.mu.Unlock()
+
+	queryCtx, cancel := context.WithTimeout(ctx, c.refreshTimeout)
+	count, err := c.counter(queryCtx)
+	cancel()
+	if err == nil && count < 0 {
+		err = errors.New("review queue counter returned a negative value")
+	}
+	finishedAt := c.now().UTC()
+
+	c.mu.Lock()
+	c.refreshing = false
+	c.lastRefreshSuccess = err == nil
+	if err != nil {
+		c.refreshErrors++
+	} else {
+		c.hasValue = true
+		c.value = count
+		c.lastSuccess = finishedAt
+	}
+	c.mu.Unlock()
+}
+
+func (c *reviewQueueCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.RLock()
+	refreshing := c.refreshing
+	hasValue := c.hasValue
+	value := c.value
+	lastSuccess := c.lastSuccess
+	lastRefreshSuccess := c.lastRefreshSuccess
+	refreshErrors := c.refreshErrors
+	c.mu.RUnlock()
+
+	if hasValue {
+		ch <- prometheus.MustNewConstMetric(c.itemsDesc, prometheus.GaugeValue, float64(value))
+		ch <- prometheus.MustNewConstMetric(
+			c.lastSuccessDesc, prometheus.GaugeValue, float64(lastSuccess.Unix()),
+		)
+	}
+	ch <- prometheus.MustNewConstMetric(c.cacheReadyDesc, prometheus.GaugeValue, boolFloat(hasValue))
+	ch <- prometheus.MustNewConstMetric(
+		c.lastRefreshSuccessDesc, prometheus.GaugeValue, boolFloat(lastRefreshSuccess),
+	)
+	ch <- prometheus.MustNewConstMetric(c.refreshingDesc, prometheus.GaugeValue, boolFloat(refreshing))
+	ch <- prometheus.MustNewConstMetric(
+		c.refreshErrorsDesc, prometheus.CounterValue, float64(refreshErrors),
+	)
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 var _ BusinessRecorder = (*Metrics)(nil)

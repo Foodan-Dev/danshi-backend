@@ -32,6 +32,8 @@ import (
 // 本地 go build 不注入时保持 dev。
 var version = "dev"
 
+const reviewQueueStatementTimeout = 2500 * time.Millisecond
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "danshi-server 启动失败: %v\n", err)
@@ -83,10 +85,12 @@ func run() error {
 	reviewQueue := repository.ModerationAlertRepository{}
 	metrics, err := obs.NewMetrics(sqlDB, obs.WithReviewQueueCounter(
 		func(counterCtx context.Context) (count int64, counterErr error) {
-			counterErr = database.RunInTx(counterCtx, func(txCtx context.Context) error {
-				count, counterErr = reviewQueue.CountPendingReviewQueue(txCtx)
-				return counterErr
-			})
+			counterErr = database.RunInReadOnlyTx(
+				counterCtx, reviewQueueStatementTimeout, func(txCtx context.Context) error {
+					count, counterErr = reviewQueue.CountPendingReviewQueue(txCtx)
+					return counterErr
+				},
+			)
 			return count, counterErr
 		},
 	))
