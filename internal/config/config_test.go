@@ -65,6 +65,13 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"签名时效非正", func(c *config.Config) { c.COSPresignTTLS = 0 }, "COS_PRESIGN_TTL_SECONDS"},
 		{"读取签名时效非正", func(c *config.Config) { c.COSPresignGetTTLS = 0 }, "COS_PRESIGN_GET_TTL_SECONDS"},
 		{"图片域名不是 HTTPS", func(c *config.Config) { c.COSImageDomain = "http://img.example.com" }, "COS_IMG_DOMAIN"},
+		{"EdgeOne 站点 ID 格式错误", func(c *config.Config) { c.EdgeOneZoneID = "*" }, "EDGEONE_ZONE_ID"},
+		{"EdgeOne 缺腾讯配置", func(c *config.Config) { c.EdgeOneZoneID = "zone-example123" }, "腾讯云密钥"},
+		{"EdgeOne 图片 origin 带路径", func(c *config.Config) {
+			c.EdgeOneZoneID = "zone-example123"
+			c.TencentSecretID, c.TencentSecretKey = "id", "key"
+			c.COSImageDomain = "https://img.example.com/prefix"
+		}, "只能包含 scheme 与 host"},
 		{"回调令牌太短", func(c *config.Config) { c.ModerationCallbackToken = "short" }, "MODERATION_CALLBACK_TOKEN"},
 		{"回调鉴权失败阈值不能为单次", func(c *config.Config) {
 			c.ModerationCallbackAuthFailureThreshold = 1
@@ -116,6 +123,7 @@ func TestProdExtraConstraints(t *testing.T) {
 			c.TencentSESTemplateID = 0
 		}, "TENCENT_SES_TEMPLATE_ID"},
 		{"未配图片域名", func(c *config.Config) { c.COSImageDomain = "" }, "COS_IMG_DOMAIN"},
+		{"未配 EdgeOne 站点", func(c *config.Config) { c.EdgeOneZoneID = "" }, "EDGEONE_ZONE_ID"},
 		{"未配审核回调", func(c *config.Config) { c.TencentCICallbackURL = "" }, "TENCENT_CI_CALLBACK_URL"},
 	}
 	for _, c := range cases {
@@ -130,6 +138,7 @@ func TestProdExtraConstraints(t *testing.T) {
 			cfg.TencentSESTemplateID = 123
 			cfg.COSBucket, cfg.COSRegion = "b", "r"
 			cfg.COSImageDomain = "https://img.example.com"
+			cfg.EdgeOneZoneID = "zone-example123"
 			cfg.TencentCICallbackURL = "https://api.example.com/api/v2/moderation/tencent-ci/callback"
 			cfg.ModerationCallbackToken = goodSecret
 			c.mutate(&cfg)
@@ -150,6 +159,8 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("TENCENT_SES_FROM_EMAIL", "sender@example.com")
 	t.Setenv("TENCENT_SES_FROM_NAME", "测试发件人")
 	t.Setenv("TENCENT_SES_TEMPLATE_ID", "456")
+	t.Setenv("COS_IMG_DOMAIN", "https://img.example.com")
+	t.Setenv("EDGEONE_ZONE_ID", "zone-example123")
 	t.Setenv("MODERATION_CALLBACK_AUTH_FAILURE_THRESHOLD", "7")
 	t.Setenv("MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS", "90")
 	t.Setenv("MODERATION_REVIEW_BACKLOG_THRESHOLD", "250")
@@ -171,6 +182,9 @@ func TestLoadFromEnv(t *testing.T) {
 		cfg.TencentRegion != "ap-hongkong" || cfg.TencentSESFromEmail != "sender@example.com" ||
 		cfg.TencentSESFromName != "测试发件人" || cfg.TencentSESTemplateID != 456 {
 		t.Fatalf("腾讯云 SES 环境变量未完整加载: %+v", cfg)
+	}
+	if cfg.EdgeOneZoneID != "zone-example123" {
+		t.Fatalf("EdgeOne 环境变量未加载: %q", cfg.EdgeOneZoneID)
 	}
 	if cfg.ModerationCallbackAuthFailureThreshold != 7 ||
 		cfg.ModerationCallbackAuthFailureWindow() != 90*time.Second ||

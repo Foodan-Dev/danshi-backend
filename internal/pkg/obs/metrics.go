@@ -32,10 +32,17 @@ type Metrics struct {
 	moderation      moderationMetrics
 	verification    verificationMetrics
 	reviewQueue     *reviewQueueCollector
+	imageAccess     *imageAccessCollector
 }
 
 type metricsOptions struct {
 	reviewQueueCounter ReviewQueueCounter
+	imageAccessCounter ImageAccessStateCounter
+}
+
+// WithImageAccessStateCounter 注册固定状态的 durable image-access backlog 计数函数。
+func WithImageAccessStateCounter(counter ImageAccessStateCounter) MetricsOption {
+	return func(options *metricsOptions) { options.imageAccessCounter = counter }
 }
 
 // MetricsOption 配置可选的应用指标 collector。
@@ -99,6 +106,10 @@ func NewMetrics(pool *sql.DB, opts ...MetricsOption) (*Metrics, error) {
 		m.reviewQueue = newReviewQueueCollector(options.reviewQueueCounter)
 		metricCollectors = append(metricCollectors, m.reviewQueue)
 	}
+	if options.imageAccessCounter != nil {
+		m.imageAccess = newImageAccessCollector(options.imageAccessCounter)
+		metricCollectors = append(metricCollectors, m.imageAccess)
+	}
 	for _, collector := range metricCollectors {
 		if err := m.registry.Register(collector); err != nil {
 			return nil, fmt.Errorf("注册 Prometheus collector 失败: %w", err)
@@ -133,6 +144,9 @@ func (m *Metrics) Register(h *server.Hertz) {
 func (m *Metrics) handle(ctx context.Context, c *app.RequestContext) {
 	if m.reviewQueue != nil {
 		m.reviewQueue.Refresh(ctx)
+	}
+	if m.imageAccess != nil {
+		m.imageAccess.Refresh(ctx)
 	}
 	families, err := m.registry.Gather()
 	if err != nil {

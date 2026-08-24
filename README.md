@@ -154,6 +154,7 @@ make schema-test
 | `COS_MAX_IMAGE_BYTES` | `10485760` | 单张图片上限，默认 10 MiB |
 | `COS_PRESIGN_TTL_SECONDS` | `600` | 预签名上传 URL 有效期 |
 | `COS_PRESIGN_GET_TTL_SECONDS` | `3600` | 私有图片预签名读取 URL 有效期；默认 1 小时 |
+| `EDGEONE_ZONE_ID` | 无 | EdgeOne 站点 ID（`zone-...`）；生产环境必填，且只用于该站点的精确图片 URL 刷新 |
 | `TENCENT_CI_BIZ_TYPE` | 空 | 数据万象审核策略标识 |
 | `TENCENT_CI_CALLBACK_URL` | 无 | 数据万象回调 HTTPS URL；生产环境必填 |
 | `MODERATION_CALLBACK_TOKEN` | 无 | 回调鉴权密钥；生产环境必填且至少 32 字节 |
@@ -186,6 +187,20 @@ danshi-jobs check-moderation-backlog
 `review` 流水，也只计一个帖子待办；评论、标签、用户和非帖子图片仍各计一个通用待办。
 冷却状态保存在数据库中，因此不同 CronJob 进程和并发实例共享抑制结果；积压回落后会重置，
 下一次再次达到阈值会立即重新告警。
+
+图片审核访问状态由 durable outbox 与一次性 worker 收敛；由 cron/CronJob 周期执行：
+
+```bash
+danshi-jobs reconcile-image-access -batch-size 4
+```
+
+worker 用 `FOR UPDATE SKIP LOCKED` 有界领取并始终设置 COS ACL；只有 delivery 标记为
+`purge_required` 时，才提交 EdgeOne raw/display/thumb 三条精确 URL 刷新并通过
+`DescribePurgeTasks` 等待三个 Target 全部成功。首次 pending→pass 不消耗 URL 刷新配额，
+而转私有以及 review/block→pass 仍会刷新。Create 响应未知或
+进程在写回 JobId 前崩溃时只做时间窗对账，不自动重放；重试预算耗尽进入可观测
+`dead_letter`。`/metrics` 每 15 秒最多用一条只读分组查询刷新六个固定状态的缓存计数，
+不把图片 ID、URL、对象键、JobId 或供应商错误正文写入 label。
 
 ## API 文档
 

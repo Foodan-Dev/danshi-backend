@@ -522,6 +522,41 @@ DO $$ BEGIN
                   '复核后待办队列清空');
 END $$;
 
+\echo ''
+\echo '########## 1d-4a. 图片访问 durable outbox ##########'
+DO $$ BEGIN
+  PERFORM _assert_rejects($q$INSERT INTO image_access_intents
+    (image_asset_id,source_moderation_record_id,desired_public)
+    VALUES (101,603,true)$q$, ARRAY['23514'], 'review 意图不得要求公开');
+END $$;
+INSERT INTO image_access_intents
+  (id,image_asset_id,source_moderation_record_id,desired_public)
+VALUES (701,101,604,true);
+INSERT INTO image_access_deliveries
+  (image_asset_id,desired_intent_id,desired_public,purge_required,state,next_attempt_at)
+VALUES (101,701,true,false,'pending_acl',now());
+DO $$ BEGIN
+  PERFORM _assert((SELECT purge_required FROM image_access_deliveries WHERE image_asset_id=101)=false,
+                  '无需刷新时 delivery 仍保留并先等待 ACL');
+  PERFORM _assert_rejects($q$UPDATE image_access_intents SET desired_public=false WHERE id=701$q$,
+    ARRAY['55000'], '访问 intent 不可覆盖');
+  PERFORM _assert_rejects($q$INSERT INTO image_access_deliveries
+    (image_asset_id,desired_intent_id,desired_public,state,next_attempt_at)
+    VALUES (102,701,true,'pending_acl',now())$q$, ARRAY['23505'], '同一 intent 只能投影一次');
+  PERFORM _assert_rejects($q$UPDATE image_access_deliveries
+    SET desired_public=false WHERE image_asset_id=101$q$,
+    ARRAY['23503'], 'delivery 公开期望必须与不可变 intent 一致');
+  PERFORM _assert_rejects($q$UPDATE image_access_deliveries
+    SET image_asset_id=102 WHERE image_asset_id=101$q$,
+    ARRAY['23503'], 'delivery 与 intent 必须属于同一图片');
+  PERFORM _assert_rejects($q$UPDATE image_access_deliveries
+    SET state='submitted',provider_job_id=NULL WHERE image_asset_id=101$q$,
+    ARRAY['23514'], 'submitted 必须持有 provider JobId');
+  PERFORM _assert_rejects($q$UPDATE image_access_deliveries
+    SET state='pending_submit' WHERE image_asset_id=101$q$,
+    ARRAY['23514'], '无需刷新 CDN 的 delivery 不得进入提交状态');
+END $$;
+
 -- 管理员误杀恢复不是人工复核，不 supersede 机审行，但必须能按实际操作人列检索。
 INSERT INTO moderation_records
   (id,post_id,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
@@ -1128,6 +1163,7 @@ BEGIN
     'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_users_activate_avatar_asset','trg_image_assets_forbid_delete'
     ,'trg_user_ban_records_immutable','trg_user_ban_records_forbid_delete'
     ,'trg_user_role_records_immutable','trg_user_role_records_forbid_delete'
+    ,'trg_image_access_intents_validate','trg_image_access_intents_immutable'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE NOT tgisinternal AND tgname=want) THEN
       missing := missing || want;
@@ -1144,7 +1180,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 28, '业务表共 28 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 30, '业务表共 30 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

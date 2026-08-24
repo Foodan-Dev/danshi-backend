@@ -31,6 +31,17 @@ func TestDeriveImageTiersPreservesOrderAndKeys(t *testing.T) {
 	require.Len(t, thumbs, len(images))
 }
 
+func TestImageCacheURLsIncludesAllPublicTiers(t *testing.T) {
+	t.Parallel()
+
+	raw := "https://img.example.test/images/a.png"
+	require.Equal(t, []string{
+		raw,
+		raw + "?" + imageDisplayProcessingQuery,
+		raw + "?" + imageThumbProcessingQuery,
+	}, ImageCacheURLs(raw))
+}
+
 func TestDeriveImageTiersLeavesNonPublicValuesUntouched(t *testing.T) {
 	t.Parallel()
 

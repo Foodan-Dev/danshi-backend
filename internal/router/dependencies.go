@@ -37,9 +37,6 @@ func withDefaultDomainDeps(deps Deps) Deps {
 			deps.ImageStorage = localstorage.NewMemory()
 		}
 	}
-	if deps.ImageCachePurger == nil {
-		deps.ImageCachePurger = service.UnavailableImageCachePurger{}
-	}
 	if deps.ImageModerator == nil {
 		switch {
 		case provider != nil && deps.Config.TencentCIConfigured():

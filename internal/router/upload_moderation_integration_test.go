@@ -69,8 +69,7 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 		testutil.ImageModerationRule{Call: 4, Outcome: tencentPending("ci-image-acl-retry-job")},
 		testutil.ImageModerationRule{Call: 5, Outcome: tencentPending("ci-image-early-job")},
 	)
-	cachePurger := testutil.NewMockImageCachePurger()
-	engine := uploadModerationEngine(cfg, database, sender, storage, imageModerator, cachePurger)
+	engine := uploadModerationEngine(cfg, database, sender, storage, imageModerator)
 	author := registerPostTestUser(
 		t, engine, sender, "upload-moderation@fdueat.com", "上传审核用户",
 	)
@@ -85,9 +84,7 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("pending image callback approves post exactly once", func(t *testing.T) {
-		testImageCallbackAccessControl(
-			t, engine, gdb, sender, storage, cachePurger, author, fixture,
-		)
+		testImageCallbackAccessControl(t, engine, gdb, sender, storage, author, fixture)
 	})
 
 	t.Run("image callback before post creation publishes immediately", func(t *testing.T) {
@@ -105,7 +102,7 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("complete returns synchronous verdict and omits blocked public URL", func(t *testing.T) {
-		testUploadCompleteReturnsModeration(t, engine, storage, imageModerator, author)
+		testUploadCompleteReturnsModeration(t, engine, gdb, imageModerator, author)
 	})
 
 	t.Run("upload validation ownership duplicate and expiry", func(t *testing.T) {
@@ -338,6 +335,13 @@ func testPostLevelUnifiedModeration(
 	requireUnifiedManualRecords(
 		t, gdb, approved.pendingRecords, model.ModerationVerdictPass, reviewer.User.ID,
 	)
+	for index := 1; index < len(approved.images); index++ {
+		var delivery model.ImageAccessDelivery
+		require.NoError(t, gdb.First(&delivery, approved.images[index].ID).Error)
+		require.True(t, delivery.DesiredPublic)
+		require.True(t, delivery.PurgeRequired,
+			"review 转公开时必须刷新可能已缓存的私有响应")
+	}
 
 	rejected := createFixture(
 		"batch38-reject", model.ModerationVerdictReview,
@@ -431,7 +435,7 @@ func testPostLevelUnifiedModeration(
 func testUploadCompleteReturnsModeration(
 	t *testing.T,
 	engine *server.Hertz,
-	storage *fakeImageStorage,
+	gdb *gorm.DB,
 	imageModerator *testutil.MockModeration,
 	author service.AuthResult,
 ) {
@@ -465,7 +469,10 @@ func testUploadCompleteReturnsModeration(
 	require.Empty(t, blocked.PublicURL)
 	require.NotContains(t, string(raw.Result().Body()), `"public_url"`,
 		"block 响应不得返回已经转私有且必然 403 的公开地址")
-	require.NotEmpty(t, storage.AccessCalls())
+	var delivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&delivery, blocked.UploadID).Error)
+	require.False(t, delivery.DesiredPublic)
+	require.Equal(t, model.ImageAccessPendingACL, delivery.State)
 }
 
 func moderationItemsForPost(
@@ -521,7 +528,6 @@ func uploadModerationEngine(
 	sender service.VerificationEmailSender,
 	storage service.ImageStorage,
 	imageModerator service.ImageModerator,
-	cachePurgers ...service.ImageCachePurger,
 ) *server.Hertz {
 	engine := server.New(
 		server.WithHandleMethodNotAllowed(true),
@@ -533,9 +539,6 @@ func uploadModerationEngine(
 		ContentModerator: service.DirectPassContentModerator{}, ImageStorage: storage,
 		ImageModerator:    imageModerator,
 		ModerationAlerter: service.DiscardModerationAlerter{},
-	}
-	if len(cachePurgers) > 0 {
-		deps.ImageCachePurger = cachePurgers[0]
 	}
 	router.Register(engine, deps)
 	return engine
@@ -641,8 +644,11 @@ func testSignedModerationQueueAndAdminUser(
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
 	require.Equal(t, model.ModerationStatusReview, asset.Moderation)
 	_, err := storage.ReadPublicURL(asset.PublicURL)
-	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
-		"review 图片也必须转为私有对象")
+	require.NoError(t, err, "HTTP 事务只落 durable intent，ACL 由独立 worker 收敛")
+	var delivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&delivery, completed.UploadID).Error)
+	require.False(t, delivery.DesiredPublic)
+	require.Equal(t, model.ImageAccessPendingACL, delivery.State)
 	var record model.ModerationRecord
 	require.NoError(t, gdb.Where("provider_job_id = ?", jobID).First(&record).Error)
 
@@ -1161,7 +1167,6 @@ func testImageCallbackAccessControl(
 	gdb *gorm.DB,
 	sender *captureEmailSender,
 	storage *fakeImageStorage,
-	cachePurger *testutil.MockImageCachePurger,
 	author service.AuthResult,
 	fixture postFixture,
 ) {
@@ -1211,6 +1216,11 @@ func testImageCallbackAccessControl(
 	require.Equal(t, model.PostStatusApproved, storedPost.Status)
 	require.NoError(t, gdb.First(&asset, completed.UploadID).Error)
 	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
+	var publishedDelivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&publishedDelivery, completed.UploadID).Error)
+	require.True(t, publishedDelivery.DesiredPublic)
+	require.False(t, publishedDelivery.PurgeRequired,
+		"pending 首次放行的 URL 从未缓存过私有响应，不应消耗刷新配额")
 
 	status, response, _ = performJSON(
 		t, engine, http.MethodPost, callbackPath, callbackBody, "",
@@ -1246,16 +1256,16 @@ func testImageCallbackAccessControl(
 	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, blockedBody, "")
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	_, err = storage.ReadPublicURL(blocked.PublicURL)
-	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
-		"block 结论提交后，匿名客户端不得再通过 PublicURL 读取对象")
+	require.NoError(t, err, "回调事务不得执行外部 ACL；worker 随后收敛")
 	var blockedAsset model.ImageAsset
 	require.NoError(t, gdb.First(&blockedAsset, blocked.UploadID).Error)
 	require.Equal(t, model.ModerationStatusBlock, blockedAsset.Moderation)
-	require.Equal(t, []testutil.StorageAccessCall{
-		{ObjectKey: completed.ObjectKey, Public: true},
-		{ObjectKey: blocked.ObjectKey, Public: false},
-	}, storage.AccessCalls())
-	require.Equal(t, []string{completed.PublicURL, blocked.PublicURL}, cachePurger.Calls())
+	var blockedDelivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&blockedDelivery, blocked.UploadID).Error)
+	require.False(t, blockedDelivery.DesiredPublic)
+	require.True(t, blockedDelivery.PurgeRequired,
+		"转私有时必须清除可能仍缓存的公开响应")
+	require.Equal(t, model.ImageAccessPendingACL, blockedDelivery.State)
 
 	unrelated := registerPostTestUser(
 		t, engine, sender, "blocked-image-unrelated@fdueat.com", "违规图片无关用户",
@@ -1324,19 +1334,20 @@ func testImageCallbackAccessControl(
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &duplicate)
 	require.True(t, duplicate.Duplicate)
-	require.Len(t, storage.AccessCalls(), 3, "重复 block 回调必须安全重试对象访问控制")
-	require.Len(t, cachePurger.Calls(), 3, "重复 block 回调必须安全重试 CDN 刷新")
+	var duplicateDelivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&duplicateDelivery, blocked.UploadID).Error)
+	require.Equal(t, blockedDelivery.Generation, duplicateDelivery.Generation,
+		"同一 provider job 重放不得重置 durable worker")
 
 	retry := completeImageForAccessTest(t, engine, author.Token, 6144)
 	retryPayload := sharePostPayload(fixture, "ACL 故障不回滚审核", []string{"ACL 重试"})
 	retryPayload["images"] = []string{retry.PublicURL}
 	createPost(t, engine, author.Token, retryPayload)
-	storage.QueueAccess(testutil.StorageAccessBehavior{Err: errors.New("COS ACL unavailable")})
 	retryBody := tencentCallbackBody(
 		retry.UploadID, "ci-image-acl-retry-job", retry.ObjectKey, 1,
 	)
 	status, response, _ = performJSON(t, engine, http.MethodPost, callbackPath, retryBody, "")
-	require.Equal(t, http.StatusOK, status, "存储故障不得让审核回调失败重投")
+	require.Equal(t, http.StatusOK, status, "外部存储不在审核事务中")
 	var retryAsset model.ImageAsset
 	require.NoError(t, gdb.First(&retryAsset, retry.UploadID).Error)
 	require.Equal(t, model.ModerationStatusBlock, retryAsset.Moderation,
@@ -1354,8 +1365,7 @@ func testImageCallbackAccessControl(
 	decodeData(t, response, &duplicate)
 	require.True(t, duplicate.Duplicate)
 	_, err = storage.ReadPublicURL(retry.PublicURL)
-	require.ErrorIs(t, err, testutil.ErrMockPublicAccessDenied,
-		"重复回调应以幂等 ACL 操作修复上一次存储故障")
+	require.NoError(t, err, "重复回调不直接调用外部存储")
 
 	invalidPath := "/api/v2/moderation/tencent-ci/callback?token=wrong"
 	status, _, _ = performJSON(t, engine, http.MethodPost, invalidPath, callbackBody, "")
