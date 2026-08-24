@@ -18,7 +18,7 @@ var targetSeedTables = []struct {
 	expected      int64
 	validationSQL string
 }{
-	{name: "canteens", expected: 15, validationSQL: `SELECT count(*) = 15 AND count(*) FILTER (WHERE
+	{name: "canteens", expected: 15, validationSQL: `SELECT pg_catalog.count(*) = 15 AND pg_catalog.count(*) FILTER (WHERE
 (code, name, campus, sort_order, is_active) IN (
  ('canteen-danyuan','旦苑食堂','邯郸校区',10,true),
  ('canteen-beiqu','北区食堂','邯郸校区',20,true),
@@ -35,19 +35,19 @@ var targetSeedTables = []struct {
  ('canteen-fenglin-minzu','枫林民族餐厅','枫林校区',220,true),
  ('canteen-huli','护理学院餐厅','枫林校区',230,true),
  ('canteen-zhangjiang','张江食堂','张江校区',310,true)
-)) = 15 FROM canteens`},
-	{name: "cuisines", expected: 6, validationSQL: `SELECT count(*) = 6 AND count(*) FILTER (WHERE
+)) = 15 FROM public.canteens`},
+	{name: "cuisines", expected: 6, validationSQL: `SELECT pg_catalog.count(*) = 6 AND pg_catalog.count(*) FILTER (WHERE
 (name, sort_order, is_active) IN (
  ('中式',10,true), ('西式',20,true), ('日式',30,true),
  ('韩式',40,true), ('东南亚',50,true), ('其他',99,true)
-)) = 6 FROM cuisines`},
-	{name: "flavors", expected: 16, validationSQL: `SELECT count(*) = 16 AND count(*) FILTER (WHERE
+)) = 6 FROM public.cuisines`},
+	{name: "flavors", expected: 16, validationSQL: `SELECT pg_catalog.count(*) = 16 AND pg_catalog.count(*) FILTER (WHERE
 (name, sort_order, is_active) IN (
  ('清淡',10,true), ('微辣',20,true), ('中辣',30,true), ('麻辣',40,true),
  ('特辣',50,true), ('香辣',60,true), ('酸辣',70,true), ('甜味',80,true),
  ('咸鲜',90,true), ('浓郁',100,true), ('爽口',110,true), ('家常',120,true),
  ('川菜',130,true), ('湘菜',140,true), ('粤菜',150,true), ('其他',999,true)
-)) = 16 FROM flavors`},
+)) = 16 FROM public.flavors`},
 }
 
 func inspectTarget(ctx context.Context, tx *sql.Tx, transaction TransactionInspection) (TargetInspection, error) {
@@ -68,6 +68,13 @@ func inspectTarget(ctx context.Context, tx *sql.Tx, transaction TransactionInspe
 	if err := validateTargetV11Contract(ctx, tx); err != nil {
 		return TargetInspection{}, err
 	}
+	schemaFingerprint, err := targetSchemaFingerprint(ctx, tx)
+	if err != nil {
+		return TargetInspection{}, err
+	}
+	if schemaFingerprint != expectedTargetSchemaFingerprint {
+		return TargetInspection{}, gateError("target_schema_fingerprint_mismatch", "目标库 canonical schema 与仓库 v11 不一致")
+	}
 	seedRows, seedOK, err := inspectSeeds(ctx, tx)
 	if err != nil {
 		return TargetInspection{}, err
@@ -85,8 +92,9 @@ func inspectTarget(ctx context.Context, tx *sql.Tx, transaction TransactionInspe
 		return TargetInspection{}, gateError("target_not_seed_only", "目标库必须只含 v11 固定词表种子且业务表为空")
 	}
 	return TargetInspection{
-		PostgresMajor: major, GooseVersion: version, Transaction: transaction,
-		SeedRows: seedRows, BusinessRows: businessRows, UnexpectedTableCount: unexpected, SeedOnly: true,
+		PostgresMajor: major, GooseVersion: version, SchemaFingerprint: schemaFingerprint,
+		Transaction: transaction,
+		SeedRows:    seedRows, BusinessRows: businessRows, UnexpectedTableCount: unexpected, SeedOnly: true,
 	}, nil
 }
 
@@ -94,11 +102,11 @@ func gooseVersion(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var version int64
 	var historyComplete bool
 	err := tx.QueryRowContext(ctx, `SELECT
-COALESCE(max(version_id) FILTER (WHERE is_applied), 0),
-count(DISTINCT version_id) FILTER (WHERE version_id BETWEEN 1 AND 11 AND is_applied) = 11
-AND count(*) FILTER (WHERE version_id BETWEEN 1 AND 11 AND NOT is_applied) = 0
-AND count(*) FILTER (WHERE version_id > 11) = 0
-FROM goose_db_version`).Scan(&version, &historyComplete)
+COALESCE(pg_catalog.max(version_id) FILTER (WHERE is_applied), 0),
+pg_catalog.count(DISTINCT version_id) FILTER (WHERE version_id BETWEEN 1 AND 11 AND is_applied) = 11
+AND pg_catalog.count(*) FILTER (WHERE version_id BETWEEN 1 AND 11 AND NOT is_applied) = 0
+AND pg_catalog.count(*) FILTER (WHERE version_id > 11) = 0
+FROM public.goose_db_version`).Scan(&version, &historyComplete)
 	if err != nil {
 		return 0, gateError("target_goose_inspection_failed", "无法核验目标库 goose 版本")
 	}
@@ -131,21 +139,28 @@ func validateTargetV11Contract(ctx context.Context, tx *sql.Tx) error {
       AND column_name IN ('post_history_id', 'comment_history_id')
   )
   AND (
-    SELECT count(*) = 6 FROM pg_trigger
-    WHERE NOT tgisinternal AND tgenabled = 'O'
-      AND tgname IN (
-        'trg_posts_counters_insert_zero',
-        'trg_comments_sync_counts',
-        'trg_comments_sync_counts_on_visibility',
-        'trg_moderation_records_immutable',
-        'trg_user_role_records_immutable',
-        'trg_user_ban_records_immutable'
-      )
+    SELECT pg_catalog.count(*) = 6
+    FROM pg_catalog.pg_trigger AS trigger_value
+    JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger_value.tgrelid
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    JOIN (VALUES
+      ('trg_posts_counters_insert_zero', 'posts'),
+      ('trg_comments_sync_counts', 'comments'),
+      ('trg_comments_sync_counts_on_visibility', 'comments'),
+      ('trg_moderation_records_immutable', 'moderation_records'),
+      ('trg_user_role_records_immutable', 'user_role_records'),
+      ('trg_user_ban_records_immutable', 'user_ban_records')
+    ) AS expected(trigger_name, relation_name)
+      ON expected.trigger_name = trigger_value.tgname
+     AND expected.relation_name = relation.relname
+    WHERE namespace.nspname = 'public'
+      AND NOT trigger_value.tgisinternal
+      AND trigger_value.tgenabled = 'O'
   )
-  AND to_regprocedure('public.danshi_recount_all()') IS NOT NULL
-  AND to_regclass('public.user_roles') IS NOT NULL
-  AND to_regclass('public.user_role_records') IS NOT NULL
-  AND to_regclass('public.user_ban_records') IS NOT NULL`).Scan(&valid)
+  AND pg_catalog.to_regprocedure('public.danshi_recount_all()') IS NOT NULL
+  AND pg_catalog.to_regclass('public.user_roles') IS NOT NULL
+  AND pg_catalog.to_regclass('public.user_role_records') IS NOT NULL
+  AND pg_catalog.to_regclass('public.user_ban_records') IS NOT NULL`).Scan(&valid)
 	if err != nil {
 		return gateError("target_schema_contract_inspection_failed", "无法核验目标库 v11 关键 schema 契约")
 	}
@@ -159,7 +174,7 @@ func inspectSeeds(ctx context.Context, tx *sql.Tx) ([]AggregateCount, bool, erro
 	result := make([]AggregateCount, 0, len(targetSeedTables))
 	valid := true
 	for _, seed := range targetSeedTables {
-		query := "SELECT count(*) FROM " + seed.name
+		query := "SELECT pg_catalog.count(*) FROM public." + seed.name
 		var count int64
 		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
 			return nil, false, gateError("target_seed_inspection_failed", "无法核验目标库固定词表种子")
@@ -177,7 +192,7 @@ func inspectSeeds(ctx context.Context, tx *sql.Tx) ([]AggregateCount, bool, erro
 func countTargetBusinessRows(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var total int64
 	for _, table := range targetBusinessTables {
-		query := "SELECT count(*) FROM " + table
+		query := "SELECT pg_catalog.count(*) FROM public." + table
 		var count int64
 		if err := tx.QueryRowContext(ctx, query).Scan(&count); err != nil {
 			return 0, gateError("target_business_inspection_failed", "无法核验目标业务表是否为空")
@@ -193,7 +208,7 @@ func countUnexpectedTables(ctx context.Context, tx *sql.Tx) (int64, error) {
 		known = append(known, seed.name)
 	}
 	var count int64
-	err := tx.QueryRowContext(ctx, `SELECT count(*)
+	err := tx.QueryRowContext(ctx, `SELECT pg_catalog.count(*)
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
   AND NOT (table_name = ANY($1::text[]))`, known).Scan(&count)

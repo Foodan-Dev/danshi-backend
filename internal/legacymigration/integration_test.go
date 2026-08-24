@@ -1,29 +1,37 @@
-package legacymigration_test
+package legacymigration
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/Foodan-Dev/danshi-backend/internal/legacymigration"
 	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
-	source := openLegacyPostgres(t)
-	target := testutil.OpenPostgres(t).SQL
+	sourceFixture := openLegacyPostgres(t)
+	source := sourceFixture.SQL
+	targetFixture := testutil.OpenPostgres(t)
+	target := targetFixture.SQL
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 
 	t.Run("inspect is redacted and uses exact source transaction mode", func(t *testing.T) {
-		report, err := legacymigration.Run(ctx, source, target, legacymigration.ModeInspect)
+		report, err := Run(ctx, source, target, ModeInspect)
 		if err != nil {
 			t.Fatalf("Run(inspect): %v", err)
 		}
@@ -38,14 +46,14 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("plan takes fixed lock and does not write business data", func(t *testing.T) {
-		before := targetBusinessRows(ctx, t, target)
-		report, err := legacymigration.Run(ctx, source, target, legacymigration.ModePlan)
+		before := targetStateFingerprint(ctx, t, target)
+		report, err := Run(ctx, source, target, ModePlan)
 		if err != nil {
 			t.Fatalf("Run(plan): %v", err)
 		}
-		after := targetBusinessRows(ctx, t, target)
-		if before != after || after != 0 {
-			t.Fatalf("plan 改写了业务数据：before=%d after=%d", before, after)
+		after := targetStateFingerprint(ctx, t, target)
+		if before != after {
+			t.Fatalf("plan 改写了目标 public schema 或数据：before=%s after=%s", before, after)
 		}
 		if report.Plan == nil || report.Plan.Executable || report.ApplyEnabled {
 			t.Fatalf("plan 错误开放 apply：%+v", report.Plan)
@@ -53,21 +61,132 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 		assertRedacted(t, report)
 	})
 
+	t.Run("target inspection transaction rejects writes", func(t *testing.T) {
+		tx, _, err := beginTargetInspection(ctx, target, false)
+		if err != nil {
+			t.Fatalf("beginTargetInspection: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `INSERT INTO public.tags (name, moderation) VALUES ('readonly', 'pass')`)
+		if err == nil {
+			t.Fatal("目标只读事务意外接受业务写入")
+		}
+		var pgError *pgconn.PgError
+		if !errors.As(err, &pgError) || pgError.Code != "25006" {
+			t.Fatalf("目标写入应由 PostgreSQL 以 25006 拒绝，实际 %v", err)
+		}
+	})
+
+	t.Run("plan lock is first target query", func(t *testing.T) {
+		recorder := &queryRecorder{}
+		observedTarget := openTracedDatabase(t, targetFixture.DSN, recorder, nil)
+		if _, err := Run(ctx, source, observedTarget, ModePlan); err != nil {
+			t.Fatalf("Run(plan with tracer): %v", err)
+		}
+		statements := recorder.snapshot()
+		want := []string{
+			"begin isolation level repeatable read read only",
+			targetAdvisoryLockSQL,
+			setSafeSearchPathSQL,
+		}
+		if len(statements) < len(want) {
+			t.Fatalf("目标实际查询不足：%q", statements)
+		}
+		for index := range want {
+			if statements[index] != want[index] {
+				t.Fatalf("目标事务首查询顺序错误：got=%q want-prefix=%q", statements, want)
+			}
+		}
+	})
+
+	t.Run("shadow search path cannot redirect checks", func(t *testing.T) {
+		installShadowObjects(ctx, t, source, target)
+		runtimeParams := map[string]string{"search_path": "shadow,pg_catalog,public"}
+		shadowSource := openTracedDatabase(t, sourceFixture.DSN, nil, runtimeParams)
+		shadowTarget := openTracedDatabase(t, targetFixture.DSN, nil, runtimeParams)
+		report, err := Run(ctx, shadowSource, shadowTarget, ModePlan)
+		if err != nil {
+			t.Fatalf("Run(plan with hostile search_path): %v", err)
+		}
+		if report.Target.BusinessRows != 0 || !report.Target.SeedOnly ||
+			report.Target.Transaction.SearchPath != "pg_catalog" ||
+			report.Source.Transaction.SearchPath != "pg_catalog" {
+			t.Fatalf("shadow search_path 影响了检查结果：%+v", report)
+		}
+	})
+
+	t.Run("stable database identity ignores connection options", func(t *testing.T) {
+		first := openTracedDatabase(t, targetFixture.DSN, nil, map[string]string{
+			"TimeZone": "UTC", "application_name": "identity-one",
+		})
+		second := openTracedDatabase(t, targetFixture.DSN, nil, map[string]string{
+			"TimeZone": "Asia/Shanghai", "application_name": "identity-two",
+		})
+		firstTx, err := first.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("first BeginTx: %v", err)
+		}
+		defer func() { _ = firstTx.Rollback() }()
+		secondTx, err := second.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("second BeginTx: %v", err)
+		}
+		defer func() { _ = secondTx.Rollback() }()
+		firstIdentity, err := inspectDatabaseIdentity(ctx, firstTx)
+		if err != nil {
+			t.Fatalf("inspect first identity: %v", err)
+		}
+		secondIdentity, err := inspectDatabaseIdentity(ctx, secondTx)
+		if err != nil {
+			t.Fatalf("inspect second identity: %v", err)
+		}
+		if firstIdentity != secondIdentity {
+			t.Fatalf("同库不同 DSN/runtime options 身份不稳定：first=%+v second=%+v", firstIdentity, secondIdentity)
+		}
+	})
+
+	for _, fixture := range []struct {
+		name string
+		dsn  string
+		db   *sql.DB
+	}{{"postgres16", sourceFixture.DSN, source}, {"postgres18", targetFixture.DSN, target}} {
+		fixture := fixture
+		t.Run(fixture.name+" identity privilege gate", func(t *testing.T) {
+			testIdentityPrivilegeGate(ctx, t, fixture.db, fixture.dsn)
+		})
+	}
+
+	for _, column := range []string{"hometown", "bio"} {
+		column := column
+		t.Run("missing legacy users "+column+" is rejected", func(t *testing.T) {
+			if _, err := source.ExecContext(ctx, "ALTER TABLE public.users DROP COLUMN "+column); err != nil {
+				t.Fatalf("删除 legacy users.%s 探针: %v", column, err)
+			}
+			_, runErr := Run(ctx, source, target, ModeInspect)
+			if _, err := source.ExecContext(ctx, "ALTER TABLE public.users ADD COLUMN "+column+" text"); err != nil {
+				t.Fatalf("恢复 legacy users.%s 探针: %v", column, err)
+			}
+			if runErr == nil || runErr.Error() != "source_schema_mismatch" {
+				t.Fatalf("缺少 legacy users.%s 应 fail closed，实际 %v", column, runErr)
+			}
+		})
+	}
+
 	t.Run("plan fails closed when lock is busy", func(t *testing.T) {
 		connection, err := target.Conn(ctx)
 		if err != nil {
 			t.Fatalf("target.Conn: %v", err)
 		}
 		t.Cleanup(func() {
-			_, _ = connection.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", legacymigration.AdvisoryLockKey)
+			_, _ = connection.ExecContext(ctx, "SELECT pg_catalog.pg_advisory_unlock($1)", AdvisoryLockKey)
 			if closeErr := connection.Close(); closeErr != nil {
 				t.Errorf("关闭 advisory lock 连接: %v", closeErr)
 			}
 		})
-		if _, err := connection.ExecContext(ctx, "SELECT pg_advisory_lock($1)", legacymigration.AdvisoryLockKey); err != nil {
+		if _, err := connection.ExecContext(ctx, "SELECT pg_catalog.pg_advisory_lock($1)", AdvisoryLockKey); err != nil {
 			t.Fatalf("pg_advisory_lock: %v", err)
 		}
-		_, err = legacymigration.Run(ctx, source, target, legacymigration.ModePlan)
+		_, err = Run(ctx, source, target, ModePlan)
 		if err == nil || err.Error() != "target_lock_busy" {
 			t.Fatalf("锁冲突应 fail closed，实际 %v", err)
 		}
@@ -82,7 +201,7 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 				t.Errorf("恢复 goose 历史探针: %v", err)
 			}
 		})
-		_, err := legacymigration.Run(ctx, source, target, legacymigration.ModeInspect)
+		_, err := Run(ctx, source, target, ModeInspect)
 		if err == nil || err.Error() != "target_goose_history_incomplete" {
 			t.Fatalf("goose 历史缺口应 fail closed，实际 %v", err)
 		}
@@ -97,7 +216,7 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 				t.Errorf("恢复关键触发器探针: %v", err)
 			}
 		})
-		_, err := legacymigration.Run(ctx, source, target, legacymigration.ModeInspect)
+		_, err := Run(ctx, source, target, ModeInspect)
 		if err == nil || err.Error() != "target_schema_contract_mismatch" {
 			t.Fatalf("关键触发器漂移应 fail closed，实际 %v", err)
 		}
@@ -112,7 +231,7 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 				t.Errorf("恢复词表种子探针: %v", err)
 			}
 		})
-		_, err := legacymigration.Run(ctx, source, target, legacymigration.ModeInspect)
+		_, err := Run(ctx, source, target, ModeInspect)
 		if err == nil || err.Error() != "target_not_seed_only" {
 			t.Fatalf("被修改的固定种子应 fail closed，实际 %v", err)
 		}
@@ -122,14 +241,19 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 		if _, err := target.ExecContext(ctx, "INSERT INTO tags (name, moderation) VALUES ('dirty', 'pass')"); err != nil {
 			t.Fatalf("插入脏目标探针: %v", err)
 		}
-		_, err := legacymigration.Run(ctx, source, target, legacymigration.ModeInspect)
+		_, err := Run(ctx, source, target, ModeInspect)
 		if err == nil || err.Error() != "target_not_seed_only" {
 			t.Fatalf("非空目标应 fail closed，实际 %v", err)
 		}
 	})
 }
 
-func openLegacyPostgres(t *testing.T) *sql.DB {
+type postgresFixture struct {
+	SQL *sql.DB
+	DSN string
+}
+
+func openLegacyPostgres(t *testing.T) postgresFixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -157,10 +281,126 @@ func openLegacyPostgres(t *testing.T) *sql.DB {
 	if _, err := database.ExecContext(ctx, legacyFixtureSQL); err != nil {
 		t.Fatalf("创建 legacy fixture: %v", err)
 	}
+	return postgresFixture{SQL: database, DSN: dsn}
+}
+
+type queryRecorder struct {
+	mu         sync.Mutex
+	statements []string
+}
+
+func (recorder *queryRecorder) TraceQueryStart(
+	ctx context.Context,
+	_ *pgx.Conn,
+	data pgx.TraceQueryStartData,
+) context.Context {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	recorder.statements = append(recorder.statements, data.SQL)
+	return ctx
+}
+
+func (*queryRecorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (recorder *queryRecorder) snapshot() []string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return append([]string(nil), recorder.statements...)
+}
+
+func openTracedDatabase(
+	t *testing.T,
+	dsn string,
+	tracer pgx.QueryTracer,
+	runtimeParams map[string]string,
+) *sql.DB {
+	t.Helper()
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgx.ParseConfig: %v", err)
+	}
+	config.Tracer = tracer
+	for key, value := range runtimeParams {
+		config.RuntimeParams[key] = value
+	}
+	database := stdlib.OpenDB(*config)
+	t.Cleanup(func() { _ = database.Close() })
 	return database
 }
 
-func assertRedacted(t *testing.T, report legacymigration.Report) {
+func installShadowObjects(ctx context.Context, t *testing.T, source, target *sql.DB) {
+	t.Helper()
+	if _, err := source.ExecContext(ctx, `
+CREATE SCHEMA shadow;
+CREATE TABLE shadow.users (LIKE public.users INCLUDING ALL);
+CREATE FUNCTION shadow.current_setting(text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT 'shadowed'::text $$`); err != nil {
+		t.Fatalf("创建来源 shadow objects: %v", err)
+	}
+	if _, err := target.ExecContext(ctx, `
+CREATE SCHEMA shadow;
+CREATE TABLE shadow.tags (LIKE public.tags INCLUDING ALL);
+INSERT INTO shadow.tags (name, moderation) VALUES ('shadow', 'pass');
+CREATE FUNCTION shadow.pg_try_advisory_xact_lock(bigint) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $$ SELECT false $$;
+CREATE FUNCTION shadow.current_setting(text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$ SELECT 'shadowed'::text $$`); err != nil {
+		t.Fatalf("创建目标 shadow objects: %v", err)
+	}
+}
+
+func testIdentityPrivilegeGate(
+	ctx context.Context,
+	t *testing.T,
+	admin *sql.DB,
+	dsn string,
+) {
+	t.Helper()
+	const role = "legacy_identity_probe"
+	if _, err := admin.ExecContext(ctx, `CREATE ROLE legacy_identity_probe LOGIN PASSWORD 'probe-password'`); err != nil {
+		t.Fatalf("创建普通身份探针角色: %v", err)
+	}
+	cleanupCtx := context.WithoutCancel(ctx)
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(cleanupCtx, `GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO PUBLIC`)
+		_, _ = admin.ExecContext(cleanupCtx, `REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM legacy_identity_probe`)
+		_, _ = admin.ExecContext(cleanupCtx, `DROP ROLE IF EXISTS legacy_identity_probe`)
+	})
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgx.ParseConfig: %v", err)
+	}
+	config.User = role
+	config.Password = "probe-password"
+	probe := stdlib.OpenDB(*config)
+	t.Cleanup(func() { _ = probe.Close() })
+	inspect := func() error {
+		tx, beginErr := probe.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if beginErr != nil {
+			return beginErr
+		}
+		defer func() { _ = tx.Rollback() }()
+		_, inspectErr := inspectDatabaseIdentity(ctx, tx)
+		return inspectErr
+	}
+	if err := inspect(); err != nil {
+		t.Fatalf("普通角色默认读取稳定身份失败: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, `REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC`); err != nil {
+		t.Fatalf("撤销 PUBLIC identity 权限: %v", err)
+	}
+	if err := inspect(); err == nil || err.Error() != "database_identity_privilege_missing" {
+		t.Fatalf("缺少 identity 权限应 fail closed，实际 %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, `GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO legacy_identity_probe`); err != nil {
+		t.Fatalf("授予探针角色 identity 权限: %v", err)
+	}
+	if err := inspect(); err != nil {
+		t.Fatalf("最小直接授权后读取稳定身份失败: %v", err)
+	}
+}
+
+func assertRedacted(t *testing.T, report Report) {
 	t.Helper()
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -179,25 +419,42 @@ func assertRedacted(t *testing.T, report legacymigration.Report) {
 	}
 }
 
-func targetBusinessRows(ctx context.Context, t *testing.T, database *sql.DB) int64 {
+func targetStateFingerprint(ctx context.Context, t *testing.T, database *sql.DB) string {
 	t.Helper()
-	var count int64
-	if err := database.QueryRowContext(ctx, `SELECT
-		(SELECT count(*) FROM users) +
-		(SELECT count(*) FROM posts) +
-		(SELECT count(*) FROM comments) +
-		(SELECT count(*) FROM image_assets) +
-		(SELECT count(*) FROM tags) +
-		(SELECT count(*) FROM moderation_records)`).Scan(&count); err != nil {
-		t.Fatalf("统计目标业务行: %v", err)
+	tables := append([]string{"goose_db_version"}, targetBusinessTables...)
+	for _, seed := range targetSeedTables {
+		tables = append(tables, seed.name)
 	}
-	return count
+	sort.Strings(tables)
+	digest := sha256.New()
+	for _, table := range tables {
+		query := fmt.Sprintf(`SELECT pg_catalog.count(*), COALESCE(
+			pg_catalog.md5(pg_catalog.string_agg(pg_catalog.to_jsonb(row_value)::text, '' ORDER BY pg_catalog.to_jsonb(row_value)::text)),
+			'empty') FROM public.%s AS row_value`, table)
+		var count int64
+		var rowsHash string
+		if err := database.QueryRowContext(ctx, query).Scan(&count, &rowsHash); err != nil {
+			t.Fatalf("fingerprint 目标表 %s: %v", table, err)
+		}
+		_, _ = fmt.Fprintf(digest, "%s\t%d\t%s\n", table, count, rowsHash)
+	}
+	tx, _, err := beginTargetInspection(ctx, database, false)
+	if err != nil {
+		t.Fatalf("beginTargetInspection: %v", err)
+	}
+	schemaHash, err := targetSchemaFingerprint(ctx, tx)
+	_ = tx.Rollback()
+	if err != nil {
+		t.Fatalf("targetSchemaFingerprint: %v", err)
+	}
+	_, _ = fmt.Fprintf(digest, "schema\t%s\n", schemaHash)
+	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
 const legacyFixtureSQL = `
 CREATE TABLE users (
  id uuid PRIMARY KEY, email text, password text, name text, gender text, avatar_url text,
- role text, is_active boolean, created_at timestamptz, updated_at timestamptz
+ hometown text, bio text, role text, is_active boolean, created_at timestamptz, updated_at timestamptz
 );
 CREATE TABLE image_assets (
  id uuid PRIMARY KEY, uploader_id uuid, purpose text, object_key text, public_url text,
@@ -228,7 +485,7 @@ CREATE TABLE email_verification_codes (
 );
 INSERT INTO users VALUES (
  '11111111-1111-1111-1111-111111111111', 'private@example.invalid', 'hash', 'name', NULL,
- 'https://private.invalid/object', 'admin', false, now(), now()
+ 'https://private.invalid/object', NULL, NULL, 'admin', false, now(), now()
 );
 INSERT INTO posts VALUES (
  '22222222-2222-2222-2222-222222222222', 'share', 'title', 'legacy-body-do-not-print',

@@ -5,6 +5,11 @@ import (
 	"database/sql"
 )
 
+const (
+	targetAdvisoryLockSQL = "SELECT pg_catalog.pg_try_advisory_xact_lock($1)"
+	setSafeSearchPathSQL  = "SET LOCAL search_path = pg_catalog"
+)
+
 func beginSourceSnapshot(ctx context.Context, database *sql.DB) (*sql.Tx, TransactionInspection, error) {
 	tx, err := database.BeginTx(ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
@@ -17,12 +22,17 @@ func beginSourceSnapshot(ctx context.Context, database *sql.DB) (*sql.Tx, Transa
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, gateError("source_snapshot_mode_failed", "无法启用来源库 DEFERRABLE 只读快照")
 	}
+	if _, err := tx.ExecContext(ctx, setSafeSearchPathSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, gateError("source_search_path_failed", "无法固定来源事务 search_path")
+	}
 	settings, err := inspectTransaction(ctx, tx)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, err
 	}
-	if settings.Isolation != "repeatable read" || !settings.ReadOnly || !settings.Deferrable {
+	if settings.Isolation != "repeatable read" || !settings.ReadOnly || !settings.Deferrable ||
+		settings.SearchPath != "pg_catalog" {
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, gateError("source_snapshot_mode_mismatch", "来源事务未满足 REPEATABLE READ READ ONLY DEFERRABLE")
 	}
@@ -41,7 +51,7 @@ func beginTargetInspection(ctx context.Context, database *sql.DB, lock bool) (*s
 	// 如果先读 GUC 再取锁，锁交接期间提交的业务写入可能落在旧快照之外。
 	if lock {
 		var acquired bool
-		if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", AdvisoryLockKey).Scan(&acquired); err != nil {
+		if err := tx.QueryRowContext(ctx, targetAdvisoryLockSQL, AdvisoryLockKey).Scan(&acquired); err != nil {
 			_ = tx.Rollback()
 			return nil, TransactionInspection{}, gateError("target_lock_failed", "无法获取迁移 advisory lock")
 		}
@@ -50,12 +60,17 @@ func beginTargetInspection(ctx context.Context, database *sql.DB, lock bool) (*s
 			return nil, TransactionInspection{}, gateError("target_lock_busy", "另一迁移勘察或执行进程正持有目标锁")
 		}
 	}
+	if _, err := tx.ExecContext(ctx, setSafeSearchPathSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, gateError("target_search_path_failed", "无法固定目标事务 search_path")
+	}
 	settings, err := inspectTransaction(ctx, tx)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, err
 	}
-	if settings.Isolation != "repeatable read" || !settings.ReadOnly {
+	if settings.Isolation != "repeatable read" || !settings.ReadOnly ||
+		settings.SearchPath != "pg_catalog" {
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, gateError("target_snapshot_mode_mismatch", "目标事务未满足 REPEATABLE READ READ ONLY")
 	}
@@ -63,14 +78,16 @@ func beginTargetInspection(ctx context.Context, database *sql.DB, lock bool) (*s
 }
 
 func inspectTransaction(ctx context.Context, tx *sql.Tx) (TransactionInspection, error) {
-	var isolation, readOnly, deferrable string
-	err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_isolation'),
-current_setting('transaction_read_only'), current_setting('transaction_deferrable')`).
-		Scan(&isolation, &readOnly, &deferrable)
+	var isolation, readOnly, deferrable, searchPath string
+	err := tx.QueryRowContext(ctx, `SELECT pg_catalog.current_setting('transaction_isolation'),
+pg_catalog.current_setting('transaction_read_only'), pg_catalog.current_setting('transaction_deferrable'),
+pg_catalog.current_setting('search_path')`).
+		Scan(&isolation, &readOnly, &deferrable, &searchPath)
 	if err != nil {
 		return TransactionInspection{}, gateError("transaction_mode_inspection_failed", "无法核验数据库事务模式")
 	}
 	return TransactionInspection{
 		Isolation: isolation, ReadOnly: readOnly == "on", Deferrable: deferrable == "on",
+		SearchPath: searchPath,
 	}, nil
 }

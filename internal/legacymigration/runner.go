@@ -103,20 +103,32 @@ func buildPlan(source SourceInspection, target TargetInspection) *MigrationPlan 
 }
 
 type databaseIdentity struct {
-	database      string
-	serverAddress string
-	serverPort    int
-	serverStarted string
+	systemIdentifier string
+	databaseOID      string
 }
 
 func inspectDatabaseIdentity(ctx context.Context, tx *sql.Tx) (databaseIdentity, error) {
+	var allowed bool
+	if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.has_function_privilege(
+current_user, 'pg_catalog.pg_control_system()', 'EXECUTE'
+)`).Scan(&allowed); err != nil {
+		return databaseIdentity{}, gateError("database_identity_privilege_inspection_failed", "无法核验稳定数据库身份读取权限")
+	}
+	if !allowed {
+		return databaseIdentity{}, gateError("database_identity_privilege_missing", "迁移检查角色缺少 pg_control_system() EXECUTE 权限")
+	}
 	identity := databaseIdentity{}
-	err := tx.QueryRowContext(ctx, `SELECT current_database(),
-COALESCE(inet_server_addr()::text, ''), inet_server_port(), pg_postmaster_start_time()::text`).Scan(
-		&identity.database, &identity.serverAddress, &identity.serverPort, &identity.serverStarted,
+	err := tx.QueryRowContext(ctx, `SELECT control.system_identifier::text, database.oid::text
+FROM pg_catalog.pg_control_system() AS control
+JOIN pg_catalog.pg_database AS database
+  ON database.datname = pg_catalog.current_database()`).Scan(
+		&identity.systemIdentifier, &identity.databaseOID,
 	)
 	if err != nil {
-		return databaseIdentity{}, gateError("database_identity_inspection_failed", "无法核验来源与目标数据库身份")
+		return databaseIdentity{}, gateError(
+			"database_identity_inspection_failed",
+			"无法核验稳定数据库身份",
+		)
 	}
 	return identity, nil
 }

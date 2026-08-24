@@ -48,6 +48,7 @@ type TransactionInspection struct {
 	Isolation  string `json:"isolation"`
 	ReadOnly   bool   `json:"read_only"`
 	Deferrable bool   `json:"deferrable"`
+	SearchPath string `json:"search_path"`
 }
 
 // AggregateCount 用固定 code 表示一个脱敏聚合计数。
@@ -69,6 +70,7 @@ type SourceInspection struct {
 type TargetInspection struct {
 	PostgresMajor        int                   `json:"postgres_major"`
 	GooseVersion         int64                 `json:"goose_version"`
+	SchemaFingerprint    string                `json:"schema_fingerprint"`
 	Transaction          TransactionInspection `json:"transaction"`
 	SeedRows             []AggregateCount      `json:"seed_rows"`
 	BusinessRows         int64                 `json:"business_rows"`

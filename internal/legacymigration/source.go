@@ -7,7 +7,7 @@ import (
 )
 
 var legacyColumns = map[string][]string{
-	"users":                    {"id", "email", "password", "name", "gender", "avatar_url", "role", "is_active", "created_at", "updated_at"},
+	"users":                    {"id", "email", "password", "name", "gender", "avatar_url", "hometown", "bio", "role", "is_active", "created_at", "updated_at"},
 	"image_assets":             {"id", "uploader_id", "purpose", "object_key", "public_url", "content_type", "size", "status", "created_at", "updated_at"},
 	"posts":                    {"id", "post_type", "title", "content", "category", "canteen", "tags", "share_type", "cuisine", "flavors", "price", "images", "like_count", "favorite_count", "budget_range", "preferences", "author_id", "status", "comment_count", "view_count", "created_at", "updated_at"},
 	"comments":                 {"id", "content", "post_id", "author_id", "parent_id", "reply_to_user_id", "mentioned_user_ids", "like_count", "reply_count", "created_at", "updated_at"},
@@ -71,15 +71,15 @@ func legacyTableRows(ctx context.Context, tx *sql.Tx) ([]AggregateCount, error) 
 		code string
 		sql  string
 	}{
-		{"users", "SELECT count(*) FROM users"},
-		{"image_assets", "SELECT count(*) FROM image_assets"},
-		{"posts", "SELECT count(*) FROM posts"},
-		{"comments", "SELECT count(*) FROM comments"},
-		{"follows", "SELECT count(*) FROM follows"},
-		{"favorites", "SELECT count(*) FROM favorites"},
-		{"likes", "SELECT count(*) FROM likes"},
-		{"notifications", "SELECT count(*) FROM notifications"},
-		{"email_verification_codes", "SELECT count(*) FROM email_verification_codes"},
+		{"users", "SELECT pg_catalog.count(*) FROM public.users"},
+		{"image_assets", "SELECT pg_catalog.count(*) FROM public.image_assets"},
+		{"posts", "SELECT pg_catalog.count(*) FROM public.posts"},
+		{"comments", "SELECT pg_catalog.count(*) FROM public.comments"},
+		{"follows", "SELECT pg_catalog.count(*) FROM public.follows"},
+		{"favorites", "SELECT pg_catalog.count(*) FROM public.favorites"},
+		{"likes", "SELECT pg_catalog.count(*) FROM public.likes"},
+		{"notifications", "SELECT pg_catalog.count(*) FROM public.notifications"},
+		{"email_verification_codes", "SELECT pg_catalog.count(*) FROM public.email_verification_codes"},
 	}
 	return aggregateQueries(ctx, tx, queries, "source_count_failed", "无法聚合来源库行数")
 }
@@ -89,15 +89,15 @@ func legacyMetrics(ctx context.Context, tx *sql.Tx) ([]AggregateCount, []Aggrega
 		code string
 		sql  string
 	}{
-		{"inactive_users", "SELECT count(*) FROM users WHERE NOT is_active"},
-		{"admin_users", "SELECT count(*) FROM users WHERE role = 'admin'"},
-		{"super_admin_users", "SELECT count(*) FROM users WHERE role = 'super_admin'"},
-		{"legacy_comment_moderation_rows", "SELECT count(*) FROM comments"},
-		{"legacy_image_moderation_rows", "SELECT count(*) FROM image_assets"},
-		{"posts_with_view_count", "SELECT count(*) FROM posts WHERE view_count > 0"},
-		{"view_count_total", "SELECT COALESCE(sum(view_count), 0) FROM posts"},
-		{"current_post_rows_not_histories", "SELECT count(*) FROM posts"},
-		{"current_comment_rows_not_histories", "SELECT count(*) FROM comments"},
+		{"inactive_users", "SELECT pg_catalog.count(*) FROM public.users WHERE NOT is_active"},
+		{"admin_users", "SELECT pg_catalog.count(*) FROM public.users WHERE role = 'admin'"},
+		{"super_admin_users", "SELECT pg_catalog.count(*) FROM public.users WHERE role = 'super_admin'"},
+		{"legacy_comment_moderation_rows", "SELECT pg_catalog.count(*) FROM public.comments"},
+		{"legacy_image_moderation_rows", "SELECT pg_catalog.count(*) FROM public.image_assets"},
+		{"posts_with_view_count", "SELECT pg_catalog.count(*) FROM public.posts WHERE view_count > 0"},
+		{"view_count_total", "SELECT COALESCE(pg_catalog.sum(view_count), 0) FROM public.posts"},
+		{"current_post_rows_not_histories", "SELECT pg_catalog.count(*) FROM public.posts"},
+		{"current_comment_rows_not_histories", "SELECT pg_catalog.count(*) FROM public.comments"},
 	}
 	metrics, err := aggregateQueries(ctx, tx, queries, "source_metric_failed", "无法聚合来源库迁移指标")
 	if err != nil {
@@ -107,15 +107,15 @@ func legacyMetrics(ctx context.Context, tx *sql.Tx) ([]AggregateCount, []Aggrega
 		code string
 		sql  string
 	}{
-		{"unknown_user_roles", "SELECT count(*) FROM users WHERE role IS NULL OR role NOT IN ('user', 'admin', 'super_admin')"},
-		{"invalid_post_types", "SELECT count(*) FROM posts WHERE post_type IS NULL OR post_type NOT IN ('share', 'seeking')"},
-		{"invalid_budget_shapes", "SELECT count(*) FROM posts WHERE budget_range IS NOT NULL AND jsonb_typeof(budget_range) NOT IN ('null', 'object')"},
-		{"invalid_preference_shapes", "SELECT count(*) FROM posts WHERE preferences IS NOT NULL AND jsonb_typeof(preferences) NOT IN ('null', 'object')"},
-		{"invalid_tag_shapes", "SELECT count(*) FROM posts WHERE tags IS NOT NULL AND jsonb_typeof(tags) IS DISTINCT FROM 'array'"},
-		{"invalid_flavor_shapes", "SELECT count(*) FROM posts WHERE flavors IS NOT NULL AND jsonb_typeof(flavors) IS DISTINCT FROM 'array'"},
-		{"invalid_image_shapes", "SELECT count(*) FROM posts WHERE images IS NOT NULL AND jsonb_typeof(images) IS DISTINCT FROM 'array'"},
-		{"unknown_like_types", "SELECT count(*) FROM likes WHERE likeable_type IS NULL OR likeable_type NOT IN ('post', 'comment')"},
-		{"negative_view_counts", "SELECT count(*) FROM posts WHERE view_count IS NULL OR view_count < 0"},
+		{"unknown_user_roles", "SELECT pg_catalog.count(*) FROM public.users WHERE role IS NULL OR role NOT IN ('user', 'admin', 'super_admin')"},
+		{"invalid_post_types", "SELECT pg_catalog.count(*) FROM public.posts WHERE post_type IS NULL OR post_type NOT IN ('share', 'seeking')"},
+		{"invalid_budget_shapes", "SELECT pg_catalog.count(*) FROM public.posts WHERE budget_range IS NOT NULL AND pg_catalog.jsonb_typeof(budget_range) NOT IN ('null', 'object')"},
+		{"invalid_preference_shapes", "SELECT pg_catalog.count(*) FROM public.posts WHERE preferences IS NOT NULL AND pg_catalog.jsonb_typeof(preferences) NOT IN ('null', 'object')"},
+		{"invalid_tag_shapes", "SELECT pg_catalog.count(*) FROM public.posts WHERE tags IS NOT NULL AND pg_catalog.jsonb_typeof(tags) IS DISTINCT FROM 'array'"},
+		{"invalid_flavor_shapes", "SELECT pg_catalog.count(*) FROM public.posts WHERE flavors IS NOT NULL AND pg_catalog.jsonb_typeof(flavors) IS DISTINCT FROM 'array'"},
+		{"invalid_image_shapes", "SELECT pg_catalog.count(*) FROM public.posts WHERE images IS NOT NULL AND pg_catalog.jsonb_typeof(images) IS DISTINCT FROM 'array'"},
+		{"unknown_like_types", "SELECT pg_catalog.count(*) FROM public.likes WHERE likeable_type IS NULL OR likeable_type NOT IN ('post', 'comment')"},
+		{"negative_view_counts", "SELECT pg_catalog.count(*) FROM public.posts WHERE view_count IS NULL OR view_count < 0"},
 	}
 	blockers, err := aggregateQueries(ctx, tx, blockerQueries, "source_blocker_failed", "无法聚合来源库阻断项")
 	if err != nil {

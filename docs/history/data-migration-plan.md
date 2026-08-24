@@ -419,8 +419,17 @@ SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
 - PostgreSQL 只在 `SERIALIZABLE READ ONLY` 下让 `DEFERRABLE` 产生冲突安全快照效果；
   这里保留该 GUC 是为了严格记录执行事务形态，一致性保证来自 `REPEATABLE READ`，
   不能把它宣称为 serializable safe snapshot；
-- 目标必须是 PostgreSQL 18、goose v11，且只含固定词表种子；
-- `plan` 获取固定 transaction-level advisory lock，但目标事务仍为只读；
+- 来源和目标事务都把 `search_path` 收紧为 `pg_catalog`；所有业务表显式限定为
+  `public.<table>`，catalog、系统函数和 `information_schema` 也显式限定，避免同名对象 shadow；
+- 来源与目标是否同库使用 PostgreSQL cluster `system_identifier` 与 database OID 的组合判断，
+  不依赖 DSN、地址、数据库名或 session `TimeZone`；普通检查角色必须保留
+  `EXECUTE ON FUNCTION pg_catalog.pg_control_system()`，权限缺失时工具 fail closed；
+- 目标必须是 PostgreSQL 18、goose v11，且只含固定词表种子、所有业务表为空；
+- 目标 schema 还必须匹配由干净 PostgreSQL 18 执行仓库 goose v1 到 v11 后生成的
+  canonical SHA-256 fingerprint；门禁覆盖业务表列、默认值与空值、全部约束和索引、
+  trigger 的所属表与函数绑定、应用函数定义、sequence、policy、view/type inventory；
+- `plan` 在目标事务的第一条查询获取 schema-qualified 固定 transaction-level advisory lock，
+  随后才固定 `search_path`；目标事务始终为 `REPEATABLE READ READ ONLY`；
 - 输出只包含固定枚举与聚合计数，不包含数据库名、DSN、邮箱、正文、UUID 或 URL；
 - 报告的 `inspection_level=foundation_preflight`；基础 blocker 清零不代表显式清洗 manifest、
   词表映射与逐项人工审批已经完成；
