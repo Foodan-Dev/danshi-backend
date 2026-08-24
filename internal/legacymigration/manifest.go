@@ -560,7 +560,12 @@ func canonicalEmail(value string) (string, error) {
 	if err != nil || parsed.Name != "" || parsed.Address != value {
 		return "", gateError("manifest_email_invalid", "私有清洗 manifest 含无效目标邮箱")
 	}
-	return strings.ToLower(value), nil
+	canonical := strings.ToLower(value)
+	// PostgreSQL varchar(255) 按字符而非 UTF-8 字节计数。
+	if utf8.RuneCountInString(canonical) > 255 {
+		return "", gateError("manifest_email_too_long", "私有清洗 manifest 的目标邮箱超过数据库字符长度约束")
+	}
+	return canonical, nil
 }
 
 func (manifest manifestData) validate() error {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
@@ -380,6 +381,46 @@ func TestLoadManifestRejectsCanonicalEmailAndTargetImageDuplicates(t *testing.T)
 		},
 	}
 	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_entry_duplicate")
+}
+
+func TestLoadManifestEnforcesEmailVarcharLengthByCharacters(t *testing.T) {
+	tests := []struct {
+		name      string
+		localRune string
+		length    int
+		wantCode  string
+	}{
+		{name: "ASCII 255 characters", localRune: "a", length: 255},
+		{name: "ASCII 256 characters", localRune: "a", length: 256, wantCode: "manifest_email_too_long"},
+		{name: "Unicode 255 characters", localRune: "界", length: 255},
+		{name: "Unicode 256 characters", localRune: "界", length: 256, wantCode: "manifest_email_too_long"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const suffix = "@example.invalid"
+			localLength := test.length - utf8.RuneCountInString(suffix)
+			email := strings.Repeat(test.localRune, localLength) + suffix
+			if utf8.RuneCountInString(email) != test.length {
+				t.Fatalf("测试邮箱字符数错误：%d", utf8.RuneCountInString(email))
+			}
+			document := emptyManifestDocument()
+			document["email_rewrites"] = []any{map[string]any{
+				"user_id": syntheticUUID(index + 1), "action": "rewrite", "new_email": email,
+			}}
+			path := writeManifest(t, mustJSON(t, document), 0o600)
+			if test.wantCode != "" {
+				assertManifestCode(t, path, test.wantCode)
+				return
+			}
+			manifest, _, err := loadManifestForTest(t, path)
+			if err != nil {
+				t.Fatalf("255 字符邮箱应被接受：%v", err)
+			}
+			if actual := utf8.RuneCountInString(manifest.EmailRewrites[0].NewEmail); actual != 255 {
+				t.Fatalf("canonical email 字符数=%d，期望 255", actual)
+			}
+		})
+	}
 }
 
 func TestLoadManifestRejectsReparentReferencesToExcludedEntities(t *testing.T) {
