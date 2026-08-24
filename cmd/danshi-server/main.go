@@ -83,6 +83,7 @@ func run() error {
 	log.Info("schema 版本核对通过", slog.Int64("version", db.ExpectedVersion),
 		slog.String("build", version))
 	reviewQueue := repository.ModerationAlertRepository{}
+	imageAccessOutbox := repository.ImageAccessOutboxRepository{}
 	metrics, err := obs.NewMetrics(sqlDB, obs.WithReviewQueueCounter(
 		func(counterCtx context.Context) (count int64, counterErr error) {
 			counterErr = database.RunInReadOnlyTx(
@@ -92,6 +93,16 @@ func run() error {
 				},
 			)
 			return count, counterErr
+		},
+	), obs.WithImageAccessStateCounter(
+		func(counterCtx context.Context) (counts map[string]int64, counterErr error) {
+			counterErr = database.RunInReadOnlyTx(
+				counterCtx, 750*time.Millisecond, func(txCtx context.Context) error {
+					counts, counterErr = imageAccessOutbox.CountByState(txCtx)
+					return counterErr
+				},
+			)
+			return counts, counterErr
 		},
 	))
 	if err != nil {
