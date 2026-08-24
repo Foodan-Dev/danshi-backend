@@ -59,6 +59,7 @@ type Config struct {
 	COSMaxImageBytes     int64  `mapstructure:"COS_MAX_IMAGE_BYTES"`
 	COSPresignTTLS       int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
 	COSPresignGetTTLS    int    `mapstructure:"COS_PRESIGN_GET_TTL_SECONDS"`
+	EdgeOneZoneID        string `mapstructure:"EDGEONE_ZONE_ID"`
 
 	TencentCIBizType                       string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
 	TencentCICallbackURL                   string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
@@ -122,6 +123,12 @@ func (c Config) TencentCIConfigured() bool {
 	return c.COSConfigured() && c.TencentCICallbackURL != "" && c.ModerationCallbackToken != ""
 }
 
+// EdgeOneConfigured 报告精确 URL 缓存清除是否具备完整运行配置。
+func (c Config) EdgeOneConfigured() bool {
+	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
+		c.COSImageDomain != "" && c.EdgeOneZoneID != ""
+}
+
 // TencentSESConfigured 报告注册验证码是否具备完整的腾讯云 SES 配置。
 func (c Config) TencentSESConfigured() bool {
 	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
@@ -180,6 +187,7 @@ var bindings = map[string]any{
 	"COS_MAX_IMAGE_BYTES":         int64(10 * 1024 * 1024),
 	"COS_PRESIGN_TTL_SECONDS":     600,
 	"COS_PRESIGN_GET_TTL_SECONDS": 3600,
+	"EDGEONE_ZONE_ID":             "",
 
 	"TENCENT_CI_BIZ_TYPE":                             "",
 	"TENCENT_CI_CALLBACK_URL":                         "",

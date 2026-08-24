@@ -160,7 +160,7 @@ type DiscardImageAccessController struct{}
 // Apply 明确丢弃对象访问控制副作用。
 func (DiscardImageAccessController) Apply(context.Context, ImageAccessChange) {}
 
-// ImageCachePurger 隔离 CDN 缓存刷新供应商；本批不绑定 EdgeOne SDK。
+// ImageCachePurger 隔离 CDN 缓存刷新供应商；实现必须覆盖该原图对外暴露的全部固定派生档位。
 type ImageCachePurger interface {
 	PurgeURL(ctx context.Context, publicURL string) error
 }

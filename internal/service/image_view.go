@@ -39,6 +39,14 @@ func deriveImageTiers(images []string) (displays []string, thumbs []string) {
 	return displays, thumbs
 }
 
+// ImageCacheURLs 返回一个公开原图在 API 中实际暴露的全部精确缓存 URL。
+// 审核收紧 ACL 时必须同时刷新 raw、display 与 thumb，否则 EdgeOne 的完整 URL
+// Cache Key 会让已缓存的实时处理派生图继续可见。
+func ImageCacheURLs(image string) []string {
+	displays, thumbs := deriveImageTiers([]string{image})
+	return []string{image, displays[0], thumbs[0]}
+}
+
 // derivableImageURL 判定一个地址能否安全地追加实时处理参数。
 //
 // 判据刻意与供应商无关。原先只按 COS 的 q-signature 参数名识别签名 URL，

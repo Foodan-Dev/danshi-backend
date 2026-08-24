@@ -13,7 +13,8 @@
 - `COS_IMG_DOMAIN`；
 - `COS_MAX_IMAGE_BYTES`；
 - `COS_PRESIGN_TTL_SECONDS`；
-- `COS_PRESIGN_GET_TTL_SECONDS`。
+- `COS_PRESIGN_GET_TTL_SECONDS`；
+- `EDGEONE_ZONE_ID`。
 
 图片审核还需要 `TENCENT_CI_BIZ_TYPE`、`TENCENT_CI_CALLBACK_URL` 和 `MODERATION_CALLBACK_TOKEN`。
 
@@ -140,7 +141,13 @@ URL，公开列表与详情仍返回 `PublicURL`，不改变既有内容可见�
 
 图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。`review` 或 `block` 结论提交后，对象 ACL 会幂等切换为 `private`；人工复核改判为 `pass` 时再切回 `public-read`。对象不删除，`image_assets.moderation` 仍是唯一审核真源，没有额外的可见性状态列。
 
-ACL 切换与 CDN 刷新都在数据库事务提交后执行。它们失败时审核结论仍然保留、回调仍返回成功，并记录带资产 ID 和对象键的错误；同一供应商任务号的重复回调会按数据库中的当前审核状态再次校准 ACL。缓存刷新通过可替换端口隔离，本仓库当前没有装配 EdgeOne `CreatePurgeTask` 运行时实现，部署方在实现接入前必须把该错误日志视为安全告警，并在上线清单中完成边缘缓存刷新能力。
+ACL 切换与 EdgeOne 缓存刷新都在数据库事务提交后执行。它们失败时审核结论仍然保留、回调仍返回成功，并记录资产 ID、目标公开状态和脱敏错误类别；同一供应商任务号的重复回调会按数据库中的当前审核状态再次校准 ACL 与缓存。
+
+运行时通过腾讯云官方 Go SDK 调用 `CreatePurgeTask`，类型固定为 `purge_url`。适配器只接受 `COS_IMG_DOMAIN` 下不带查询参数的单个 HTTPS 原图 URL，再把 API 实际暴露的 `raw`、`display`、`thumb` 三个**精确 URL**作为同一任务的 Targets；它不提供目录、Hostname、全站、Cache-Tag 或跨站点刷新能力。这样既清除原图缓存，也覆盖 EdgeOne 完整 URL Cache Key 下彼此独立的两档数据万象派生图。
+
+单进程采用 burst=1、最多 10 请求/秒的间隔限制；一次调用最多尝试 2 次，只有腾讯云明确返回的后端/代理/配额系统瞬态错误和 API 限频会在 200ms 后重试，参数、权限、日配额、响应内 FailedList 与“服务端可能已受理”的模糊网络错误不重放。腾讯云单请求超时为 5 秒，整个适配器调用另有 12 秒硬上限，SDK 自身重试关闭，避免两层重试相乘。官方 API 限制是每个 `API + 接入地域 + 子账号` 20 次/秒，多副本部署必须保证所有副本的理论总速率不超过该上限。
+
+`CreatePurgeTask` 返回成功只表示异步任务已受理，不代表边缘节点已经完成清除。当前事务后回调仍是进程内 best-effort：进程在提交后崩溃或异步任务随后失败时，不具备 durable 收敛保证。把 ACL/purge 意图与审核结论同事务写入 outbox、由有界 worker 查询任务终态并重试，是生产切流前必须关闭的可靠性门禁；本适配器本身不得被当作该门禁已经完成。
 
 ## 4. 生命周期
 
@@ -245,10 +252,13 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 - 对象 key 由服务端使用用户 ID、年月和随机 128 bit 片段生成；
 - Content-Type、Content-Length 和 Content-MD5 全部签入 URL；
 - 公开 URL 只通过配置的 HTTPS 域名构造；
+- `COS_IMG_DOMAIN` 必须是只含 scheme 与 host 的 HTTPS origin，EdgeOne 站点 ID 不接受 `*`；
 - 回调 URL 使用 HTTPS，并带独立的高强度 callback token；
 - 回调按 provider job ID 幂等；
 - `review/block` 图片对象使用可逆的私有 ACL，改判 `pass` 时重新公开；
 - 私有图片读取签名默认 1 小时有效，完整签名 URL 不进入日志、trace 或持久缓存；
 - 运行身份除上传、HEAD 和清理权限外，还必须具有目标对象的 ACL 修改权限；
+- EdgeOne 只授予目标站点的 `teo:CreatePurgeTask`，资源限定为
+  `qcs::teo::uin/<主账号 UIN>:zone/<EDGEONE_ZONE_ID>`，不得授予 `teo:*` 或全站点资源；
 - 用户只能引用本人、用途匹配的资产；
 - trace 与日志不得记录云密钥、完整预签名 URL 或 callback token。

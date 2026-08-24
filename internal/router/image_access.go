@@ -43,7 +43,6 @@ func (a afterCommitImageAccessController) logFailure(
 	}
 	a.log.ErrorContext(ctx, message,
 		slog.Uint64("image_asset_id", change.ImageAssetID),
-		slog.String("object_key", change.ObjectKey),
 		slog.Bool("public", change.Public),
 		slog.Any("err", err),
 	)

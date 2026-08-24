@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/mail"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -16,6 +17,8 @@ var placeholderSecrets = map[string]bool{
 }
 
 const minSecretBytes = 32
+
+var edgeOneZoneIDPattern = regexp.MustCompile(`^zone-[a-z0-9]+$`)
 
 // Validate 是启动期防线：宁可起不来，也不要带着错误配置对外服务。
 // 所有问题一次性收集完再返回，免得运维改一条重启一次。
@@ -98,6 +101,7 @@ func (c Config) Validate() error {
 			add("%v", err)
 		}
 	}
+	validateEdgeOne(c, add)
 	if c.TencentCICallbackURL != "" {
 		if err := validateHTTPSURL("TENCENT_CI_CALLBACK_URL", c.TencentCICallbackURL); err != nil {
 			add("%v", err)
@@ -141,6 +145,21 @@ func validateModerationAlerting(c Config, add func(string, ...any)) {
 	}
 }
 
+func validateEdgeOne(c Config, add func(string, ...any)) {
+	if c.EdgeOneZoneID == "" {
+		return
+	}
+	if !edgeOneZoneIDPattern.MatchString(c.EdgeOneZoneID) {
+		add("EDGEONE_ZONE_ID 必须是 zone- 开头的小写字母数字站点 ID")
+	}
+	if c.TencentSecretID == "" || c.TencentSecretKey == "" || c.COSImageDomain == "" {
+		add("配置 EDGEONE_ZONE_ID 时必须同时配置腾讯云密钥与 COS_IMG_DOMAIN")
+	}
+	if err := validateOriginURL("COS_IMG_DOMAIN", c.COSImageDomain); err != nil {
+		add("EdgeOne URL 刷新要求 %v", err)
+	}
+}
+
 func validateProd(c Config, origins []string, add func(string, ...any)) {
 	if !c.EmailVerificationRequired {
 		add("生产环境必须开启 EMAIL_VERIFICATION_REQUIRED")
@@ -162,6 +181,9 @@ func validateProd(c Config, origins []string, add func(string, ...any)) {
 	}
 	if c.COSImageDomain == "" {
 		add("生产环境必须配置 COS_IMG_DOMAIN")
+	}
+	if c.EdgeOneZoneID == "" {
+		add("生产环境必须配置 EDGEONE_ZONE_ID")
 	}
 	if c.TencentCICallbackURL == "" || c.ModerationCallbackToken == "" {
 		add("生产环境必须配置 TENCENT_CI_CALLBACK_URL / MODERATION_CALLBACK_TOKEN")
@@ -196,6 +218,17 @@ func validateHTTPSURL(name, value string) error {
 	}
 	if u.User != nil {
 		return fmt.Errorf("%s 不得包含 URL 用户信息", name)
+	}
+	return nil
+}
+
+func validateOriginURL(name, value string) error {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fmt.Errorf("%s 必须是 HTTPS origin", name)
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s 只能包含 scheme 与 host，不得包含路径、查询参数或 fragment", name)
 	}
 	return nil
 }

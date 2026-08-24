@@ -154,6 +154,7 @@ make schema-test
 | `COS_MAX_IMAGE_BYTES` | `10485760` | 单张图片上限，默认 10 MiB |
 | `COS_PRESIGN_TTL_SECONDS` | `600` | 预签名上传 URL 有效期 |
 | `COS_PRESIGN_GET_TTL_SECONDS` | `3600` | 私有图片预签名读取 URL 有效期；默认 1 小时 |
+| `EDGEONE_ZONE_ID` | 无 | EdgeOne 站点 ID（`zone-...`）；生产环境必填，且只用于该站点的精确图片 URL 刷新 |
 | `TENCENT_CI_BIZ_TYPE` | 空 | 数据万象审核策略标识 |
 | `TENCENT_CI_CALLBACK_URL` | 无 | 数据万象回调 HTTPS URL；生产环境必填 |
 | `MODERATION_CALLBACK_TOKEN` | 无 | 回调鉴权密钥；生产环境必填且至少 32 字节 |
