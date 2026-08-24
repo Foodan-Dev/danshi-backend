@@ -28,6 +28,7 @@ func collectMismatches(ctx context.Context, target *sql.DB, expected dataset, di
 		return nil, err
 	}
 	issues := compareDatasets(expected, actual)
+	issues = append(issues, javaScriptSafeIDMismatches(expected)...)
 	issues = append(issues, compareSourceFlavors(expected.SourceFlavors, dict)...)
 	zeroIssues, err := verifyUntouchedTables(ctx, tx)
 	if err != nil {
@@ -423,6 +424,33 @@ func compareDatasets(expected, actual dataset) []mismatch {
 	issues = append(issues, compareMap("post_likes", expected.PostLikes, actual.PostLikes)...)
 	issues = append(issues, compareMap("comment_likes", expected.CommentLikes, actual.CommentLikes)...)
 	issues = append(issues, compareMap("notifications", expected.Notifications, actual.Notifications)...)
+	return issues
+}
+
+func javaScriptSafeIDMismatches(data dataset) []mismatch {
+	issues := make([]mismatch, 0)
+	issues = append(issues, unsafeMapIDMismatches("users", data.Users)...)
+	issues = append(issues, unsafeMapIDMismatches("user_role_records", data.RoleRecords)...)
+	issues = append(issues, unsafeMapIDMismatches("user_ban_records", data.BanRecords)...)
+	issues = append(issues, unsafeMapIDMismatches("image_assets", data.Images)...)
+	issues = append(issues, unsafeMapIDMismatches("cuisines", data.Cuisines)...)
+	issues = append(issues, unsafeMapIDMismatches("flavors", data.Flavors)...)
+	issues = append(issues, unsafeMapIDMismatches("posts", data.Posts)...)
+	issues = append(issues, unsafeMapIDMismatches("tags", data.Tags)...)
+	issues = append(issues, unsafeMapIDMismatches("comments", data.Comments)...)
+	issues = append(issues, unsafeMapIDMismatches("notifications", data.Notifications)...)
+	return issues
+}
+
+func unsafeMapIDMismatches[V any](table string, rows map[int64]V) []mismatch {
+	issues := make([]mismatch, 0)
+	for id, row := range rows {
+		if id > javaScriptMaxSafeInteger {
+			issues = append(issues, mismatch{
+				Table: table, SourceID: structSourceID(row), Field: "id", Code: "javascript_unsafe_integer",
+			})
+		}
+	}
 	return issues
 }
 

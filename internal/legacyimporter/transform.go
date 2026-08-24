@@ -13,13 +13,16 @@ import (
 func transformSource(source sourceData, dict dictionaries) (dataset, error) {
 	result := newDataset(source)
 	userIDs, postIDs, commentIDs := map[string]int64{}, map[string]int64{}, map[string]int64{}
-	if err := registerUUIDs(source.Users, userIDs, func(row sourceUser) string { return row.ID }, "users"); err != nil {
+	if err := registerSequentialIDs(source.Users, userIDs,
+		func(row sourceUser) string { return row.ID }, func(row sourceUser) int64 { return row.TargetID }, "users"); err != nil {
 		return dataset{}, err
 	}
-	if err := registerUUIDs(source.Posts, postIDs, func(row sourcePost) string { return row.ID }, "posts"); err != nil {
+	if err := registerSequentialIDs(source.Posts, postIDs,
+		func(row sourcePost) string { return row.ID }, func(row sourcePost) int64 { return row.TargetID }, "posts"); err != nil {
 		return dataset{}, err
 	}
-	if err := registerUUIDs(source.Comments, commentIDs, func(row sourceComment) string { return row.ID }, "comments"); err != nil {
+	if err := registerSequentialIDs(source.Comments, commentIDs,
+		func(row sourceComment) string { return row.ID }, func(row sourceComment) int64 { return row.TargetID }, "comments"); err != nil {
 		return dataset{}, err
 	}
 	imageIDs, imageByURL, err := transformImages(source, userIDs, &result)
@@ -67,18 +70,30 @@ func newDataset(source sourceData) dataset {
 	}
 }
 
-func registerUUIDs[T any](rows []T, target map[string]int64, id func(T) string, table string) error {
+func registerSequentialIDs[T any](
+	rows []T,
+	target map[string]int64,
+	sourceID func(T) string,
+	targetID func(T) int64,
+	table string,
+) error {
 	reverse := map[int64]string{}
 	for _, row := range rows {
-		sourceID := id(row)
-		mapped, err := mapUUID(sourceID)
-		if err != nil {
-			return rowFailure("invalid_uuid", table, sourceID, "id")
+		source := sourceID(row)
+		mapped := targetID(row)
+		if !isUUID(source) {
+			return rowFailure("invalid_uuid", table, source, "id")
 		}
-		if previous, exists := reverse[mapped]; exists && previous != sourceID {
-			return rowFailure("deterministic_id_collision", table, sourceID, "id")
+		if mapped <= 0 {
+			return rowFailure("invalid_sequential_id", table, source, "id")
 		}
-		reverse[mapped], target[sourceID] = sourceID, mapped
+		if previous, exists := target[source]; exists && previous != mapped {
+			return rowFailure("duplicate_source_id", table, source, "id")
+		}
+		if previous, exists := reverse[mapped]; exists && previous != source {
+			return rowFailure("duplicate_sequential_id", table, source, "id")
+		}
+		reverse[mapped], target[source] = source, mapped
 	}
 	return nil
 }
@@ -97,9 +112,12 @@ func transformImages(source sourceData, userIDs map[string]int64, result *datase
 			!strings.HasPrefix(sourceRow.PublicURL, "https://img.fdueat.com/") {
 			return nil, nil, rowFailure("unexpected_image_asset", "image_assets", sourceRow.ID, "shape")
 		}
-		id, err := mapUUID(sourceRow.ID)
-		if err != nil {
+		if !isUUID(sourceRow.ID) {
 			return nil, nil, rowFailure("invalid_uuid", "image_assets", sourceRow.ID, "id")
+		}
+		id := sourceRow.TargetID
+		if id <= 0 {
+			return nil, nil, rowFailure("invalid_sequential_id", "image_assets", sourceRow.ID, "id")
 		}
 		if previous, exists := reverse[id]; exists && previous != sourceRow.ID {
 			return nil, nil, rowFailure("deterministic_id_collision", "image_assets", sourceRow.ID, "id")
@@ -189,7 +207,7 @@ func transformUserRoleAndBan(sourceRow sourceUser, userID int64, result *dataset
 	if role != "" {
 		key := relationKey(int64String(userID), role)
 		result.Roles[key] = roleRow{SourceID: sourceRow.ID, UserID: userID, Role: role, GrantedAt: sourceRow.UpdatedAt}
-		recordID := mapText("user-role-record", sourceRow.ID+"\x00"+role)
+		recordID := int64(len(result.RoleRecords) + 1)
 		result.RoleRecords[recordID] = roleRecordRow{
 			SourceID: sourceRow.ID, ID: recordID,
 			UserID: userID, Role: role, Action: "grant", CreatedAt: sourceRow.UpdatedAt,
@@ -197,7 +215,7 @@ func transformUserRoleAndBan(sourceRow sourceUser, userID int64, result *dataset
 		addEvent(result, "TRANSFORM", "users", sourceRow.ID, "role", "role_to_capability_binding")
 	}
 	if !sourceRow.IsActive {
-		recordID := mapText("user-ban-record", sourceRow.ID)
+		recordID := int64(len(result.BanRecords) + 1)
 		result.BanRecords[recordID] = banRecordRow{
 			SourceID: sourceRow.ID, ID: recordID,
 			UserID: userID, Action: "ban", BanPermanent: true, Reason: stringPointer(legacyBanReason),
@@ -326,9 +344,15 @@ func transformPostTags(sourceRow sourcePost, postID int64, result *dataset) erro
 		if name == "" || strings.TrimSpace(name) != name || len([]rune(name)) > 10 {
 			return rowFailure("invalid_tag", "posts", sourceRow.ID, "tags")
 		}
-		tagID := mapText("tag", strings.ToLower(name))
-		if existing, exists := result.Tags[tagID]; exists && !strings.EqualFold(existing.Name, name) {
-			return rowFailure("deterministic_id_collision", "tags", sourceRow.ID, "name")
+		tagID := int64(0)
+		for existingID, existing := range result.Tags {
+			if strings.EqualFold(existing.Name, name) {
+				tagID = existingID
+				break
+			}
+		}
+		if tagID == 0 {
+			tagID = int64(len(result.Tags) + 1)
 		}
 		if existing, exists := result.Tags[tagID]; !exists {
 			result.Tags[tagID] = tagRow{
@@ -446,7 +470,10 @@ func ensureHistoricalDictionary(
 	existing map[string]dictionaryItem,
 	target map[int64]dictionaryRow,
 ) (int64, error) {
-	id := mapText("legacy-"+table, name)
+	id, err := historicalDictionaryID(table, name, existing)
+	if err != nil {
+		return 0, rowFailure("historical_dictionary_id_undefined", table, sourceID, "id")
+	}
 	for existingName, item := range existing {
 		if item.ID == id && existingName != name {
 			return 0, rowFailure("deterministic_id_collision", table, sourceID, "id")
@@ -470,6 +497,39 @@ func ensureHistoricalDictionary(
 		CreatedAt: createdAt, UpdatedAt: createdAt,
 	}
 	return id, nil
+}
+
+func historicalDictionaryID(table, name string, existing map[string]dictionaryItem) (int64, error) {
+	var names []string
+	switch table {
+	case "cuisines":
+		names = []string{"云南菜", "台湾菜", "江西菜"}
+	case "flavors":
+		names = []string{"咸", "辣", "酸甜"}
+	default:
+		return 0, rowFailure("unknown_historical_dictionary", table, name, "id")
+	}
+	base := int64(0)
+	for existingName, item := range existing {
+		if !containsString(names, existingName) && item.ID > base {
+			base = item.ID
+		}
+	}
+	for index, candidate := range names {
+		if candidate == name {
+			return base + int64(index) + 1, nil
+		}
+	}
+	return 0, rowFailure("unknown_historical_dictionary", table, name, "id")
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func legacyFlavorSortOrder(name string) int32 {
@@ -694,9 +754,12 @@ func transformRelations(source sourceData, userIDs, postIDs, commentIDs map[stri
 
 func transformNotifications(source sourceData, userIDs, postIDs, commentIDs map[string]int64, result *dataset) error {
 	for _, sourceRow := range source.Notifications {
-		id, err := mapUUID(sourceRow.ID)
-		if err != nil {
+		if !isUUID(sourceRow.ID) {
 			return rowFailure("invalid_uuid", "notifications", sourceRow.ID, "id")
+		}
+		id := sourceRow.TargetID
+		if id <= 0 {
+			return rowFailure("invalid_sequential_id", "notifications", sourceRow.ID, "id")
 		}
 		row := notificationRow{
 			SourceID: sourceRow.ID, ID: id, RecipientID: userIDs[sourceRow.RecipientID],

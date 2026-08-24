@@ -3,8 +3,22 @@ package legacyimporter
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
 )
+
+var explicitlyImportedIdentityTables = []string{
+	"users",
+	"user_role_records",
+	"user_ban_records",
+	"image_assets",
+	"cuisines",
+	"flavors",
+	"posts",
+	"tags",
+	"comments",
+	"notifications",
+}
 
 func writeDataset(ctx context.Context, target *sql.DB, data dataset) (writeErr error) {
 	tx, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -27,7 +41,7 @@ func writeDataset(ctx context.Context, target *sql.DB, data dataset) (writeErr e
 	}
 	writers := []func(context.Context, *sql.Tx, dataset) error{
 		writeUsers, writeRolesAndAudit, writeImages, writeUserAvatars, writeHistoricalDictionaries, writePosts, writeTags,
-		writePostRelations, writeComments, writeActions, writeNotifications, recountAll,
+		writePostRelations, writeComments, writeActions, writeNotifications, advanceIdentitySequences, recountAll,
 	}
 	for _, writer := range writers {
 		if err = writer(ctx, tx, data); err != nil {
@@ -304,6 +318,26 @@ func writeNotifications(ctx context.Context, tx *sql.Tx, data dataset) error {
 			row.RelatedCommentID, row.Content, row.IsRead, row.CreatedAt, row.UpdatedAt)
 		if err != nil {
 			return failure("target_write_failed", "notifications", err)
+		}
+	}
+	return nil
+}
+
+func advanceIdentitySequences(ctx context.Context, tx *sql.Tx, _ dataset) error {
+	for _, table := range explicitlyImportedIdentityTables {
+		query := fmt.Sprintf(`
+			SELECT setval(
+				pg_get_serial_sequence($1, 'id'),
+				COALESCE(MAX(id), 1),
+				MAX(id) IS NOT NULL
+			)
+			FROM public.%s`, table) // table comes only from the fixed allowlist above.
+		var sequenceValue sql.NullInt64
+		if err := tx.QueryRowContext(ctx, query, "public."+table).Scan(&sequenceValue); err != nil {
+			return failure("target_sequence_advance_failed", table, err)
+		}
+		if !sequenceValue.Valid {
+			return failure("target_identity_sequence_missing", table, nil)
 		}
 	}
 	return nil

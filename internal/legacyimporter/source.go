@@ -49,9 +49,10 @@ func loadSourceData(ctx context.Context, db *sql.DB) (_ sourceData, loadErr erro
 
 func loadUsers(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, email, password, name, gender, hometown, avatar_url, bio,
+		SELECT ROW_NUMBER() OVER (ORDER BY created_at, id::text),
+		       id::text, email, password, name, gender, hometown, avatar_url, bio,
 		       role, is_active, created_at, updated_at
-		FROM users ORDER BY id`)
+		FROM users ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "users", err)
 	}
@@ -59,7 +60,7 @@ func loadUsers(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	for rows.Next() {
 		var row sourceUser
 		var gender, hometown, avatar, bio sql.NullString
-		if err = rows.Scan(&row.ID, &row.Email, &row.Password, &row.Name, &gender, &hometown,
+		if err = rows.Scan(&row.TargetID, &row.ID, &row.Email, &row.Password, &row.Name, &gender, &hometown,
 			&avatar, &bio, &row.Role, &row.IsActive, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return failure("source_scan_failed", "users", err)
 		}
@@ -72,9 +73,10 @@ func loadUsers(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 
 func loadImages(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, uploader_id::text, purpose, object_key, public_url, content_type,
+		SELECT ROW_NUMBER() OVER (ORDER BY created_at, id::text),
+		       id::text, uploader_id::text, purpose, object_key, public_url, content_type,
 		       size, status, created_at, updated_at
-		FROM image_assets ORDER BY id`)
+		FROM image_assets ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "image_assets", err)
 	}
@@ -83,7 +85,7 @@ func loadImages(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 		var row sourceImage
 		var uploader sql.NullString
 		var size sql.NullInt64
-		if err = rows.Scan(&row.ID, &uploader, &row.Purpose, &row.ObjectKey, &row.PublicURL,
+		if err = rows.Scan(&row.TargetID, &row.ID, &uploader, &row.Purpose, &row.ObjectKey, &row.PublicURL,
 			&row.ContentType, &size, &row.Status, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return failure("source_scan_failed", "image_assets", err)
 		}
@@ -95,13 +97,14 @@ func loadImages(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 
 func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, post_type, title, content, category, canteen,
+		SELECT ROW_NUMBER() OVER (ORDER BY created_at, id::text),
+		       id::text, post_type, title, content, category, canteen,
 		       COALESCE(tags, '[]'::jsonb)::text, share_type, cuisine,
 		       flavors::text, jsonb_typeof(flavors), price::text,
 		       COALESCE(images, '[]'::jsonb)::text, like_count, favorite_count,
 		       budget_range::text, preferences::text, jsonb_typeof(preferences), author_id::text, status,
 		       comment_count, view_count, created_at, updated_at
-		FROM posts ORDER BY id`)
+		FROM posts ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "posts", err)
 	}
@@ -111,7 +114,7 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 		var canteen, shareType, cuisine, price, budget sql.NullString
 		var flavorsJSON, flavorsType, preferencesJSON, preferencesType sql.NullString
 		var tagsJSON, imagesJSON string
-		if err = rows.Scan(&row.ID, &row.PostType, &row.Title, &row.Content, &row.Category,
+		if err = rows.Scan(&row.TargetID, &row.ID, &row.PostType, &row.Title, &row.Content, &row.Category,
 			&canteen, &tagsJSON, &shareType, &cuisine, &flavorsJSON, &flavorsType, &price, &imagesJSON,
 			&row.LikeCount, &row.FavoriteCount, &budget, &preferencesJSON, &preferencesType, &row.AuthorID,
 			&row.Status, &row.CommentCount, &row.ViewCount, &row.CreatedAt, &row.UpdatedAt); err != nil {
@@ -147,9 +150,10 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 
 func loadComments(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, content, post_id::text, author_id::text, parent_id::text,
+		SELECT ROW_NUMBER() OVER (ORDER BY created_at, id::text),
+		       id::text, content, post_id::text, author_id::text, parent_id::text,
 		       reply_to_user_id::text, like_count, reply_count, created_at, updated_at
-		FROM comments ORDER BY created_at, id`)
+		FROM comments ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "comments", err)
 	}
@@ -157,7 +161,7 @@ func loadComments(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	for rows.Next() {
 		var row sourceComment
 		var parent, replyTo sql.NullString
-		if err = rows.Scan(&row.ID, &row.Content, &row.PostID, &row.AuthorID, &parent,
+		if err = rows.Scan(&row.TargetID, &row.ID, &row.Content, &row.PostID, &row.AuthorID, &parent,
 			&replyTo, &row.LikeCount, &row.ReplyCount, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return failure("source_scan_failed", "comments", err)
 		}
@@ -170,7 +174,7 @@ func loadComments(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 func loadLikes(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id::text, user_id::text, likeable_type, likeable_id::text, created_at
-		FROM likes ORDER BY id`)
+		FROM likes ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "likes", err)
 	}
@@ -186,7 +190,9 @@ func loadLikes(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 }
 
 func loadFavorites(ctx context.Context, tx *sql.Tx, data *sourceData) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id::text, user_id::text, post_id::text, created_at FROM favorites ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id::text, user_id::text, post_id::text, created_at
+		FROM favorites ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "favorites", err)
 	}
@@ -202,7 +208,9 @@ func loadFavorites(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 }
 
 func loadFollows(ctx context.Context, tx *sql.Tx, data *sourceData) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id::text, follower_id::text, following_id::text, created_at FROM follows ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id::text, follower_id::text, following_id::text, created_at
+		FROM follows ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "follows", err)
 	}
@@ -219,9 +227,10 @@ func loadFollows(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 
 func loadNotifications(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id::text, recipient_id::text, sender_id::text, type, related_id::text,
+		SELECT ROW_NUMBER() OVER (ORDER BY created_at, id::text),
+		       id::text, recipient_id::text, sender_id::text, type, related_id::text,
 		       related_type, content, is_read, created_at, updated_at
-		FROM notifications ORDER BY id`)
+		FROM notifications ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "notifications", err)
 	}
@@ -229,7 +238,7 @@ func loadNotifications(ctx context.Context, tx *sql.Tx, data *sourceData) error 
 	for rows.Next() {
 		var row sourceNotification
 		var relatedID, relatedType, content sql.NullString
-		if err = rows.Scan(&row.ID, &row.RecipientID, &row.SenderID, &row.Type, &relatedID,
+		if err = rows.Scan(&row.TargetID, &row.ID, &row.RecipientID, &row.SenderID, &row.Type, &relatedID,
 			&relatedType, &content, &row.IsRead, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return failure("source_scan_failed", "notifications", err)
 		}
@@ -240,7 +249,9 @@ func loadNotifications(ctx context.Context, tx *sql.Tx, data *sourceData) error 
 }
 
 func loadSourceFlavors(ctx context.Context, tx *sql.Tx, data *sourceData) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id::text, name, is_active, sort_order, created_at FROM flavors ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id::text, name, is_active, sort_order, created_at
+		FROM flavors ORDER BY created_at, id::text`)
 	if err != nil {
 		return failure("source_read_failed", "flavors", err)
 	}

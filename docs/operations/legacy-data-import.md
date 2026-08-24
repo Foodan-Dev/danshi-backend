@@ -14,15 +14,17 @@
 
 ## 映射与幂等
 
-旧 UUID 先规范化，再计算：
+users、image_assets、posts、comments、notifications 分别在来源表内生成从 1 开始的确定 ID：
 
-```text
-SHA-256("danshi-legacy-import/v1\0uuid\0" + canonical_uuid)
+```sql
+ROW_NUMBER() OVER (ORDER BY created_at, id::text)
 ```
 
-取摘要前 64 位、清除符号位，得到正的 `bigint`。文本标签使用独立的 `tag` 命名空间和小写名称计算 ID。每张目标表在写入前检查映射碰撞；碰撞会终止，不做猜测。
+`created_at` 后追加来源 UUID 文本序，构成稳定全序；同一来源快照无论执行多少次都会得到相同映射。来源 UUID 仍作为逐行对账和安全报告中的来源行身份，但不参与目标 ID 计算。被明确丢弃的来源行会使对应表的目标 ID 留出空号，不影响确定性。标签和角色/封禁审计流水按上述稳定来源遍历顺序在各自目标表内从 1 编号；历史菜系与口味按固定名称顺序接在现有 seed 最大 ID 之后，避免覆盖 seed。
 
-实体按确定 ID `INSERT ... ON CONFLICT`，关系表按复合主键 upsert。只因历史数据存在的停用菜系与口味也使用独立命名空间的确定 ID 幂等写入，不修改 goose seed。不可修改的角色/封禁审计表使用确定 ID 和 `ON CONFLICT DO NOTHING`；非空目标只有先通过完整 verify 才能进入重跑，所以不会用 `DO NOTHING` 掩盖不同内容。identity sequence 保持从小值开始，后续正常写入无需跳到散列 ID 的最大值。
+所有迁入实体 ID 必须小于等于 `9007199254740991`（`Number.MAX_SAFE_INTEGER`）。这是 React Native/TypeScript 客户端用普通 `JSON.parse` 把 OpenAPI `integer` ID 解析成 JavaScript `number` 的精度边界，不是 PostgreSQL `bigint` 的限制；超出该值会在客户端被舍入，随后用错误 ID 请求资源。Verify 会把这条约束作为硬门禁。
+
+实体按确定 ID `INSERT ... ON CONFLICT`，关系表按复合主键 upsert。只因历史数据存在的停用菜系与口味也使用确定小整数 ID 幂等写入，不修改 goose seed。不可修改的角色/封禁审计表使用确定 ID 和 `ON CONFLICT DO NOTHING`；非空目标只有先通过完整 verify 才能进入重跑，所以不会用 `DO NOTHING` 掩盖不同内容。导入事务在所有显式 ID 写入完成后，对 users、角色/封禁审计、图片、菜系、口味、posts、tags、comments、notifications 逐表通过 `pg_get_serial_sequence(table, 'id')` 和 `setval` 将 identity sequence 推到当前 `max(id)`；后续业务省略 ID 插入时从 `max(id)+1` 开始，不与迁入行冲突。
 
 ## 迁入口径
 
@@ -84,9 +86,10 @@ go test -count=1 -run '^TestImportAndVerifyFromDump$' ./internal/legacyimporter
 3. 对源 `flavors` seed 逐行核对名称与启用状态，对 3 个历史菜系和 3 个历史口味逐字段核对确定 ID、原名、停用状态、排序与时间戳，并确认本次不应写入的 mentions、histories、moderation、sessions、verification codes 和 dictionary suggestions 仍为空。
 4. 对每条评论核对 post/author/parent/root/reply target，对每条动作关系核对两端，对每个图片引用核对资产与位置。
 5. 将帖子和评论的 like/favorite/comment/reply 计数与动作表、可见评论重新派生的值逐行比较。Import 结束前还会调用 `danshi_recount_all()`。
-6. 逐行输出所有故意丢弃或改写的来源 UUID；出现差额时输出 `MISMATCH table=... source_id=... field=... code=...`，但不输出字段值。
+6. 断言每个迁入实体 ID 都不超过 `Number.MAX_SAFE_INTEGER`；该门禁保护前端 JSON 数字精度，与数据库 `bigint` 容量无关。
+7. 逐行输出所有故意丢弃或改写的来源 UUID；出现差额时输出 `MISMATCH table=... source_id=... field=... code=...`，但不输出字段值。
 
-任意 `MISMATCH`、来源决策计数变化、缺失 seed、食堂未命中、评论父节点推定不唯一、ID 碰撞、目标多余行或 goose 版本不符都判失败。
+任意 `MISMATCH`、来源决策计数变化、缺失 seed、食堂未命中、评论父节点推定不唯一、非安全整数 ID、重复顺序 ID、目标多余行或 goose 版本不符都判失败。
 
 ## 失败与回退
 

@@ -21,6 +21,7 @@ type sourceData struct {
 }
 
 type sourceUser struct {
+	TargetID                  int64
 	ID, Email, Password, Name string
 	Gender, Hometown          *string
 	AvatarURL, Bio            *string
@@ -30,6 +31,7 @@ type sourceUser struct {
 }
 
 type sourceImage struct {
+	TargetID                                               int64
 	ID, Purpose, ObjectKey, PublicURL, ContentType, Status string
 	UploaderID                                             *string
 	Size                                                   *int64
@@ -37,6 +39,7 @@ type sourceImage struct {
 }
 
 type sourcePost struct {
+	TargetID                                                 int64
 	ID, PostType, Title, Content, Category, AuthorID, Status string
 	Canteen, ShareType, Cuisine, Price                       *string
 	Tags, Flavors, Images                                    []string
@@ -52,6 +55,7 @@ type sourcePreferences struct {
 }
 
 type sourceComment struct {
+	TargetID                      int64
 	ID, Content, PostID, AuthorID string
 	ParentID, ReplyToUserID       *string
 	LikeCount, ReplyCount         int32
@@ -74,6 +78,7 @@ type sourceFollow struct {
 }
 
 type sourceNotification struct {
+	TargetID                        int64
 	ID, RecipientID, SenderID, Type string
 	RelatedID, RelatedType, Content *string
 	IsRead                          bool

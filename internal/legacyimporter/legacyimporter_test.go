@@ -10,17 +10,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMapUUIDIsStablePositiveAndNamespaced(t *testing.T) {
+func TestRegisterSequentialIDsUsesSourceRowNumbers(t *testing.T) {
 	t.Parallel()
 
-	first, err := mapUUID("4a4e232a-63b5-4d7e-b17e-684cd064377c")
-	require.NoError(t, err)
-	second, err := mapUUID("4A4E232A-63B5-4D7E-B17E-684CD064377C")
-	require.NoError(t, err)
-	require.Equal(t, int64(2287392585008901255), first)
-	require.Equal(t, first, second)
-	require.Positive(t, first)
-	require.NotEqual(t, first, mapText("tag", "4a4e232a-63b5-4d7e-b17e-684cd064377c"))
+	rows := []sourceUser{
+		{TargetID: 1, ID: "4a4e232a-63b5-4d7e-b17e-684cd064377c"},
+		{TargetID: 2, ID: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
+	}
+	ids := map[string]int64{}
+	require.NoError(t, registerSequentialIDs(rows, ids,
+		func(row sourceUser) string { return row.ID }, func(row sourceUser) int64 { return row.TargetID }, "users"))
+	require.Equal(t, int64(1), ids[rows[0].ID])
+	require.Equal(t, int64(2), ids[rows[1].ID])
+
+	rows[1].TargetID = 1
+	require.ErrorContains(t, registerSequentialIDs(rows, map[string]int64{},
+		func(row sourceUser) string { return row.ID }, func(row sourceUser) int64 { return row.TargetID }, "users"),
+		"code=duplicate_sequential_id")
+	rows[1].TargetID, rows[1].ID = 2, "not-a-uuid"
+	require.ErrorContains(t, registerSequentialIDs(rows, map[string]int64{},
+		func(row sourceUser) string { return row.ID }, func(row sourceUser) int64 { return row.TargetID }, "users"),
+		"code=invalid_uuid")
 }
 
 func TestValidateLocalDSN(t *testing.T) {
@@ -180,4 +190,21 @@ func TestReportsNeverContainComparedValues(t *testing.T) {
 	require.NotContains(t, report, "secret-hash")
 	require.Contains(t, report, "source_id=source-user field=email code=value_mismatch")
 	require.True(t, strings.HasSuffix(report, "VERIFY_FAILED mismatches=1\n"))
+}
+
+func TestVerifyRejectsIDsOutsideJavaScriptSafeIntegerRange(t *testing.T) {
+	t.Parallel()
+
+	data := newDataset(sourceData{})
+	unsafeID := javaScriptMaxSafeInteger + 1
+	data.Users[unsafeID] = userRow{SourceID: "source-user", ID: unsafeID}
+	issues := javaScriptSafeIDMismatches(data)
+	require.Equal(t, []mismatch{{
+		Table: "users", SourceID: "source-user", Field: "id", Code: "javascript_unsafe_integer",
+	}}, issues)
+
+	data.Users = map[int64]userRow{
+		javaScriptMaxSafeInteger: {SourceID: "safe-user", ID: javaScriptMaxSafeInteger},
+	}
+	require.Empty(t, javaScriptSafeIDMismatches(data))
 }
