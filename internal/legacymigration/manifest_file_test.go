@@ -1,6 +1,7 @@
 package legacymigration
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,7 +66,7 @@ func TestLoadManifestRejectsFIFOWithoutBlocking(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := LoadManifest(path)
+		_, err := LoadManifest(path, ManifestDigest(sha256.Sum256(emptyManifestJSON())))
 		done <- err
 	}()
 	select {

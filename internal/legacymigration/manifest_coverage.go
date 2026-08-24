@@ -3,105 +3,123 @@ package legacymigration
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"fmt"
 )
 
-// ManifestEntity 是 coverage key 的固定实体类型。
+// ManifestEntity 是 anomaly identity 的固定实体类型。
 type ManifestEntity string
 
 const (
-	// ManifestEntityUser 表示来源用户 UUID。
+	// ManifestEntityUser 表示来源用户。
 	ManifestEntityUser ManifestEntity = "user"
-	// ManifestEntityPost 表示来源帖子 UUID。
+	// ManifestEntityPost 表示来源帖子。
 	ManifestEntityPost ManifestEntity = "post"
-	// ManifestEntityComment 表示来源评论 UUID。
+	// ManifestEntityComment 表示来源评论。
 	ManifestEntityComment ManifestEntity = "comment"
-	// ManifestEntityDictionaryMapping 表示来源词表类别和值。
+	// ManifestEntityDictionaryMapping 表示来源词表项。
 	ManifestEntityDictionaryMapping ManifestEntity = "dictionary_mapping"
-	// ManifestEntityPostImageReference 表示来源帖子 UUID 和原始图片引用。
+	// ManifestEntityPostImageReference 表示来源帖子图片引用。
 	ManifestEntityPostImageReference ManifestEntity = "post_image_reference"
-	// ManifestEntityDuplicateImageAsset 表示重复组 key 和来源图片资产 UUID。
+	// ManifestEntityDuplicateImageAsset 表示来源重复图片资产。
 	ManifestEntityDuplicateImageAsset ManifestEntity = "duplicate_image_asset"
-	// ManifestEntityLike 表示来源点赞 UUID。
+	// ManifestEntityLike 表示来源点赞。
 	ManifestEntityLike ManifestEntity = "like"
-	// ManifestEntityNotification 表示来源通知 UUID。
+	// ManifestEntityNotification 表示来源通知。
 	ManifestEntityNotification ManifestEntity = "notification"
 )
 
-// CanonicalManifestKey 是规范化 anomaly identity 的 SHA-256；它不暴露来源值。
+// CanonicalManifestKey 是不暴露来源值的 SHA-256 identity。
 type CanonicalManifestKey [sha256.Size]byte
 
-// String 返回固定长度的小写十六进制 key。
-func (key CanonicalManifestKey) String() string {
-	return hex.EncodeToString(key[:])
+func (key CanonicalManifestKey) String() string { return hex.EncodeToString(key[:]) }
+
+// ManifestDecisionOption 描述一种获批的 section/action 解决方式；字段私有以防调用层改写。
+type ManifestDecisionOption struct {
+	category string
+	action   string
 }
 
-// ManifestRequirement 是 dataset 发现的一条必须被指定 section 精确覆盖的 anomaly。
+// NewManifestDecisionOption 创建固定 section/action 决议选项。
+func NewManifestDecisionOption(category, action string) (ManifestDecisionOption, error) {
+	if !manifestCategoryAcceptsAction(category, action) {
+		return ManifestDecisionOption{}, gateError("manifest_requirement_category_invalid", "manifest requirement 决议类别或 action 不受支持")
+	}
+	return ManifestDecisionOption{category: category, action: action}, nil
+}
+
+// ManifestRequirement 是一条 anomaly identity 及其允许的替代决议集合。
 type ManifestRequirement struct {
-	Section string
-	Entity  ManifestEntity
-	Key     CanonicalManifestKey
+	anomaly   CanonicalManifestKey
+	entity    ManifestEntity
+	entityKey CanonicalManifestKey
+	allowed   []ManifestDecisionOption
 }
 
-// ManifestRequirements 是 dataset adapter 交给 manifest coverage 门禁的 canonical key set。
+// ManifestRequirements 只能由完整 dataset adapter 构建并封装。
 type ManifestRequirements struct {
-	Entries []ManifestRequirement
-	Source  ManifestSourceContext
+	entries []ManifestRequirement
+	source  manifestSourceContext
+	seal    ManifestDigest
 }
 
-// ManifestCoverageSummary 只输出固定 code 的聚合计数，不输出 anomaly key 或来源值。
+// ManifestCoverageSummary 只输出固定 code 和聚合计数。
 type ManifestCoverageSummary struct {
 	Counts []AggregateCount `json:"counts"`
 }
 
-// NewManifestRequirement 规范化标识并创建不含原始值的 requirement。
-// UUID entity 接受兼容表示后统一为标准小写带连字符；opaque value 必须已无首尾空白。
-func NewManifestRequirement(
-	section string,
-	entity ManifestEntity,
-	identifiers ...string,
-) (ManifestRequirement, error) {
+// NewManifestRequirement 构建 anomaly identity；anomalyCode 必须来自 dataset agent，不能由 manifest 反推。
+func NewManifestRequirement(anomalyCode string, entity ManifestEntity, identifiers []string, allowed ...ManifestDecisionOption) (ManifestRequirement, error) {
+	if !isIdentifier(anomalyCode) || len(allowed) == 0 {
+		return ManifestRequirement{}, gateError("manifest_requirement_identity_invalid", "manifest requirement anomaly 或 allowed 为空")
+	}
 	parts, err := canonicalRequirementParts(entity, identifiers)
 	if err != nil {
 		return ManifestRequirement{}, err
 	}
-	if !manifestSectionAcceptsEntity(section, entity) {
-		return ManifestRequirement{}, gateError("manifest_requirement_category_invalid", "manifest requirement category 不受支持")
+	seen := make(map[ManifestDecisionOption]struct{}, len(allowed))
+	copyAllowed := make([]ManifestDecisionOption, 0, len(allowed))
+	for _, option := range allowed {
+		if !manifestSectionAcceptsEntity(option.category, entity) || !manifestCategoryAcceptsAction(option.category, option.action) {
+			return ManifestRequirement{}, gateError("manifest_requirement_category_invalid", "manifest requirement 决议与实体不兼容")
+		}
+		if _, duplicate := seen[option]; duplicate {
+			return ManifestRequirement{}, gateError("manifest_requirements_duplicate", "manifest requirement allowed 决议重复")
+		}
+		seen[option] = struct{}{}
+		copyAllowed = append(copyAllowed, option)
 	}
-	key := hashCanonicalManifestKey(string(entity), parts...)
-	return ManifestRequirement{Section: section, Entity: entity, Key: key}, nil
+	entityKey := hashCanonicalManifestKey(string(entity), parts...)
+	return ManifestRequirement{
+		anomaly: hashCanonicalManifestKey("anomaly", anomalyCode, string(entity), entityKey.String()),
+		entity:  entity, entityKey: entityKey, allowed: copyAllowed,
+	}, nil
 }
 
-// ValidateCoverage 要求 dataset anomaly 和 manifest 决议 exact-set 相等。
-// wrong category 不重复计入 missing/unused；返回值只含固定 code 和数量。
-func ValidateCoverage(
-	manifest Manifest,
-	requirements ManifestRequirements,
-) (ManifestCoverageSummary, error) {
-	normalized, err := cloneAndCanonicalizeManifest(manifest)
+// ValidateCoverage 复验同一 ApprovedManifest、expected digest 和独立 dataset exact-set。
+func ValidateCoverage(approved ApprovedManifest, expected ManifestDigest, requirements ManifestRequirements) (ManifestCoverageSummary, error) {
+	manifest, err := approved.verify(expected)
 	if err != nil {
 		return ManifestCoverageSummary{}, err
 	}
-	actual, err := manifestRequirementEntries(normalized)
+	required, source, err := requirements.verify()
 	if err != nil {
 		return ManifestCoverageSummary{}, err
 	}
-	summary, duplicateRequirements, duplicateManifest, err := compareCoverage(actual, requirements.Entries)
+	actual, err := manifestDecisionEntries(manifest)
+	if err != nil {
+		return ManifestCoverageSummary{}, err
+	}
+	summary, duplicateRequirements, duplicateManifest, err := compareCoverage(actual, required)
 	if err != nil {
 		return ManifestCoverageSummary{}, err
 	}
 	if duplicateRequirements > 0 || duplicateManifest > 0 {
-		return summary, gateError("manifest_coverage_duplicate", "manifest coverage key set 含重复项")
+		return summary, gateError("manifest_coverage_duplicate", "manifest coverage exact-set 含重复或双重决议")
 	}
-	if err := normalized.validate(); err != nil {
-		return summary, err
+	if coverageCount(summary, "missing") > 0 || coverageCount(summary, "unused") > 0 || coverageCount(summary, "wrong_category") > 0 {
+		return summary, gateError("manifest_coverage_mismatch", "manifest 未精确覆盖 dataset anomaly exact-set")
 	}
-	if coverageCount(summary, "missing") > 0 ||
-		coverageCount(summary, "unused") > 0 ||
-		coverageCount(summary, "wrong_category") > 0 {
-		return summary, gateError("manifest_coverage_mismatch", "manifest 未精确覆盖 dataset anomaly key set")
-	}
-	if err := validateManifestAgainstSourceContext(normalized, requirements.Source); err != nil {
+	if err := validateManifestAgainstSourceContext(manifest, source); err != nil {
 		return summary, err
 	}
 	return summary, nil
@@ -119,89 +137,134 @@ func hashCanonicalManifestKey(entity string, parts ...string) CanonicalManifestK
 	return key
 }
 
-type manifestRequirementIdentity struct {
-	section string
-	entity  ManifestEntity
-	key     CanonicalManifestKey
-}
-
-type manifestEntityIdentity struct {
+type manifestDecision struct {
 	entity ManifestEntity
 	key    CanonicalManifestKey
+	option ManifestDecisionOption
 }
 
-func compareCoverage(
-	actual []ManifestRequirement,
-	required []ManifestRequirement,
-) (ManifestCoverageSummary, int64, int64, error) {
-	requiredSet, duplicateRequirements, err := indexRequirements(required)
-	if err != nil {
-		return ManifestCoverageSummary{}, 0, 0, err
+func compareCoverage(actual []manifestDecision, required []ManifestRequirement) (ManifestCoverageSummary, int64, int64, error) {
+	seenRequirements := make(map[CanonicalManifestKey]struct{}, len(required))
+	var duplicateRequirements int64
+	for _, requirement := range required {
+		if err := validateRequirement(requirement); err != nil {
+			return ManifestCoverageSummary{}, 0, 0, err
+		}
+		if _, duplicate := seenRequirements[requirement.anomaly]; duplicate {
+			duplicateRequirements++
+		} else {
+			seenRequirements[requirement.anomaly] = struct{}{}
+		}
 	}
-	actualSet, duplicateManifest, err := indexRequirements(actual)
-	if err != nil {
-		return ManifestCoverageSummary{}, 0, 0, err
+	seenActual := make(map[manifestDecision]struct{}, len(actual))
+	var duplicateManifest int64
+	for _, decision := range actual {
+		if _, duplicate := seenActual[decision]; duplicate {
+			duplicateManifest++
+		} else {
+			seenActual[decision] = struct{}{}
+		}
 	}
+	// 用最大二分匹配避免 allowed 集重叠时被输入顺序影响。例如 {A,B} 与 {A}
+	// 必须能匹配实际 A+B，而不能因为第一条先拿走 A 产生伪 duplicate/missing。
+	actualOwner := make([]int, len(actual))
+	for index := range actualOwner {
+		actualOwner[index] = -1
+	}
+	var augment func(int, []bool) bool
+	augment = func(requirementIndex int, visited []bool) bool {
+		for actualIndex, decision := range actual {
+			if visited[actualIndex] || !requirementAccepts(required[requirementIndex], decision) {
+				continue
+			}
+			visited[actualIndex] = true
+			if actualOwner[actualIndex] < 0 || augment(actualOwner[actualIndex], visited) {
+				actualOwner[actualIndex] = requirementIndex
+				return true
+			}
+		}
+		return false
+	}
+	for requirementIndex := range required {
+		_ = augment(requirementIndex, make([]bool, len(actual)))
+	}
+	matchedActual := make([]bool, len(actual))
+	matchedRequirement := make([]bool, len(required))
 	var matched int64
-	unmatchedActual := make(map[manifestEntityIdentity]int64)
-	for identity := range actualSet {
-		if _, exists := requiredSet[identity]; exists {
+	for actualIndex, requirementIndex := range actualOwner {
+		if requirementIndex >= 0 {
+			matchedActual[actualIndex] = true
+			matchedRequirement[requirementIndex] = true
 			matched++
-			continue
 		}
-		entity := manifestEntityIdentity{entity: identity.entity, key: identity.key}
-		unmatchedActual[entity]++
 	}
-	unmatchedRequired := make(map[manifestEntityIdentity]int64)
-	for identity := range requiredSet {
-		if _, exists := actualSet[identity]; exists {
+	// 一个 anomaly 的第二个同样获批替代方案属于双重决议，而不是普通 stale。
+	for actualIndex, decision := range actual {
+		if matchedActual[actualIndex] {
 			continue
 		}
-		entity := manifestEntityIdentity{entity: identity.entity, key: identity.key}
-		unmatchedRequired[entity]++
+		for _, requirement := range required {
+			if requirementAccepts(requirement, decision) {
+				duplicateManifest++
+				matchedActual[actualIndex] = true
+				break
+			}
+		}
 	}
 	var missing, unused, wrongCategory int64
-	for entity, actualCount := range unmatchedActual {
-		requiredCount := unmatchedRequired[entity]
-		wrong := min(actualCount, requiredCount)
-		wrongCategory += wrong
-		unused += actualCount - wrong
-		unmatchedRequired[entity] -= wrong
+	for actualIndex, decision := range actual {
+		if matchedActual[actualIndex] {
+			continue
+		}
+		wrongIndex := -1
+		for requirementIndex, requirement := range required {
+			if !matchedRequirement[requirementIndex] && requirement.entity == decision.entity && requirement.entityKey == decision.key {
+				wrongIndex = requirementIndex
+				break
+			}
+		}
+		if wrongIndex >= 0 {
+			matchedRequirement[wrongIndex] = true
+			wrongCategory++
+		} else {
+			unused++
+		}
 	}
-	for _, requiredCount := range unmatchedRequired {
-		missing += requiredCount
+	for index := range required {
+		if !matchedRequirement[index] {
+			missing++
+		}
 	}
-	return newCoverageSummary(
-		int64(len(required)), int64(len(actual)), matched, missing, unused, wrongCategory,
-		duplicateRequirements, duplicateManifest,
-	), duplicateRequirements, duplicateManifest, nil
+	return newCoverageSummary(int64(len(required)), int64(len(actual)), matched, missing, unused, wrongCategory, duplicateRequirements, duplicateManifest), duplicateRequirements, duplicateManifest, nil
 }
 
-func indexRequirements(entries []ManifestRequirement) (
-	map[manifestRequirementIdentity]struct{},
-	int64,
-	error,
-) {
-	exact := make(map[manifestRequirementIdentity]struct{}, len(entries))
-	var duplicates int64
-	for _, entry := range entries {
-		if !manifestSectionAcceptsEntity(entry.Section, entry.Entity) || entry.Key == (CanonicalManifestKey{}) {
-			return nil, 0, gateError("manifest_requirements_invalid", "manifest requirements 含无效 canonical key")
-		}
-		identity := manifestRequirementIdentity{section: entry.Section, entity: entry.Entity, key: entry.Key}
-		if _, exists := exact[identity]; exists {
-			duplicates++
-		} else {
-			exact[identity] = struct{}{}
+func validateRequirement(requirement ManifestRequirement) error {
+	if requirement.anomaly == (CanonicalManifestKey{}) || requirement.entityKey == (CanonicalManifestKey{}) || len(requirement.allowed) == 0 {
+		return gateError("manifest_requirements_invalid", "manifest requirements 含无效或被变异的 identity")
+	}
+	for _, option := range requirement.allowed {
+		if !manifestSectionAcceptsEntity(option.category, requirement.entity) || !manifestCategoryAcceptsAction(option.category, option.action) {
+			return gateError("manifest_requirements_invalid", "manifest requirements 含无效 allowed 决议")
 		}
 	}
-	return exact, duplicates, nil
+	return nil
+}
+
+func requirementAccepts(requirement ManifestRequirement, decision manifestDecision) bool {
+	if requirement.entity != decision.entity || requirement.entityKey != decision.key {
+		return false
+	}
+	for _, option := range requirement.allowed {
+		if option == decision.option {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalRequirementParts(entity ManifestEntity, identifiers []string) ([]string, error) {
 	switch entity {
-	case ManifestEntityUser, ManifestEntityPost, ManifestEntityComment,
-		ManifestEntityLike, ManifestEntityNotification:
+	case ManifestEntityUser, ManifestEntityPost, ManifestEntityComment, ManifestEntityLike, ManifestEntityNotification:
 		if len(identifiers) != 1 {
 			return nil, gateError("manifest_requirement_identity_invalid", "manifest requirement identity 数量不正确")
 		}
@@ -211,10 +274,14 @@ func canonicalRequirementParts(entity ManifestEntity, identifiers []string) ([]s
 		}
 		return []string{value}, nil
 	case ManifestEntityDictionaryMapping:
-		if len(identifiers) != 2 || !validDictionary(identifiers[0]) || !isIdentifier(identifiers[1]) {
+		if len(identifiers) != 2 {
+			return nil, gateError("manifest_requirement_identity_invalid", "manifest requirement 词表 identity 数量不正确")
+		}
+		kind := normalizeDictionaryKind(identifiers[0])
+		if !validDictionary(kind) || !isIdentifier(identifiers[1]) {
 			return nil, gateError("manifest_requirement_identity_invalid", "manifest requirement 词表 identity 无效")
 		}
-		return []string{identifiers[0], identifiers[1]}, nil
+		return []string{kind, identifiers[1]}, nil
 	case ManifestEntityPostImageReference:
 		if len(identifiers) != 2 || !isIdentifier(identifiers[1]) {
 			return nil, gateError("manifest_requirement_identity_invalid", "manifest requirement 帖子图片 identity 无效")
@@ -263,124 +330,122 @@ func manifestSectionAcceptsEntity(section string, entity ManifestEntity) bool {
 	}
 }
 
-func manifestRequirementEntries(manifest Manifest) ([]ManifestRequirement, error) {
-	entries := make([]ManifestRequirement, 0, manifest.Summary().TotalEntries)
-	appendEntry := func(section string, entity ManifestEntity, identifiers ...string) error {
-		entry, err := NewManifestRequirement(section, entity, identifiers...)
+func manifestCategoryAcceptsAction(category, action string) bool {
+	switch category {
+	case "excluded_users", "excluded_content", "orphan_like_exclusions", "orphan_notification_exclusions":
+		return action == "exclude"
+	case "email_rewrites":
+		return action == "rewrite"
+	case "post_type_resolutions":
+		return action == "set_type"
+	case "dictionary_mappings":
+		return action == "map"
+	case "post_image_resolutions":
+		return action == "map" || action == "exclude"
+	case "avatar_resolutions":
+		return action == "clear" || action == "replace"
+	case "duplicate_image_asset_resolutions":
+		return action == "keep" || action == "exclude"
+	case "comment_reparent_resolutions":
+		return action == "set_parent" || action == "set_parent_and_reply_to" || action == "clear_parent" || action == "set_reply_to" || action == "clear_reply_to"
+	default:
+		return false
+	}
+}
+
+func manifestDecisionEntries(manifest manifestData) ([]manifestDecision, error) {
+	entries := make([]manifestDecision, 0, manifest.Summary().TotalEntries)
+	appendEntry := func(category, action string, entity ManifestEntity, identifiers ...string) error {
+		parts, err := canonicalRequirementParts(entity, identifiers)
 		if err != nil {
 			return err
 		}
-		entries = append(entries, entry)
+		entries = append(entries, manifestDecision{entity: entity, key: hashCanonicalManifestKey(string(entity), parts...), option: ManifestDecisionOption{category: category, action: action}})
 		return nil
 	}
-	for _, decision := range manifest.ExcludedUsers {
-		if err := appendEntry("excluded_users", ManifestEntityUser, decision.UserID); err != nil {
+	for _, d := range manifest.ExcludedUsers {
+		if err := appendEntry("excluded_users", d.Action, ManifestEntityUser, d.UserID); err != nil {
 			return nil, err
 		}
 	}
-	for _, decision := range manifest.ExcludedContent {
-		if err := appendEntry("excluded_content", ManifestEntity(decision.ContentType), decision.ContentID); err != nil {
+	for _, d := range manifest.ExcludedContent {
+		if err := appendEntry("excluded_content", d.Action, ManifestEntity(d.ContentType), d.ContentID); err != nil {
 			return nil, err
 		}
 	}
-	if err := appendSimpleManifestRequirements(manifest, appendEntry); err != nil {
-		return nil, err
+	for _, d := range manifest.EmailRewrites {
+		if err := appendEntry("email_rewrites", d.Action, ManifestEntityUser, d.UserID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.PostTypeResolutions {
+		if err := appendEntry("post_type_resolutions", d.Action, ManifestEntityPost, d.PostID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.DictionaryMappings {
+		if err := appendEntry("dictionary_mappings", d.Action, ManifestEntityDictionaryMapping, d.Dictionary, d.Source); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.PostImageResolutions {
+		if err := appendEntry("post_image_resolutions", d.Action, ManifestEntityPostImageReference, d.PostID, d.SourceReference); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.AvatarResolutions {
+		if err := appendEntry("avatar_resolutions", d.Action, ManifestEntityUser, d.UserID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.DuplicateImageAssetResolutions {
+		if err := appendEntry("duplicate_image_asset_resolutions", d.Action, ManifestEntityDuplicateImageAsset, d.GroupKey, d.ImageAssetID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.CommentReparentResolutions {
+		if err := appendEntry("comment_reparent_resolutions", d.Action, ManifestEntityComment, d.CommentID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.OrphanLikeExclusions {
+		if err := appendEntry("orphan_like_exclusions", d.Action, ManifestEntityLike, d.LikeID); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range manifest.OrphanNotificationExclusions {
+		if err := appendEntry("orphan_notification_exclusions", d.Action, ManifestEntityNotification, d.NotificationID); err != nil {
+			return nil, err
+		}
 	}
 	return entries, nil
-}
-
-func appendSimpleManifestRequirements(
-	manifest Manifest,
-	appendEntry func(string, ManifestEntity, ...string) error,
-) error {
-	for _, decision := range manifest.EmailRewrites {
-		if err := appendEntry("email_rewrites", ManifestEntityUser, decision.UserID); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.PostTypeResolutions {
-		if err := appendEntry("post_type_resolutions", ManifestEntityPost, decision.PostID); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.DictionaryMappings {
-		if err := appendEntry(
-			"dictionary_mappings", ManifestEntityDictionaryMapping, decision.Dictionary, decision.Source,
-		); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.PostImageResolutions {
-		if err := appendEntry(
-			"post_image_resolutions", ManifestEntityPostImageReference, decision.PostID, decision.SourceReference,
-		); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.AvatarResolutions {
-		if err := appendEntry("avatar_resolutions", ManifestEntityUser, decision.UserID); err != nil {
-			return err
-		}
-	}
-	return appendRemainingManifestRequirements(manifest, appendEntry)
-}
-
-func appendRemainingManifestRequirements(
-	manifest Manifest,
-	appendEntry func(string, ManifestEntity, ...string) error,
-) error {
-	for _, decision := range manifest.DuplicateImageAssetResolutions {
-		if err := appendEntry(
-			"duplicate_image_asset_resolutions", ManifestEntityDuplicateImageAsset,
-			decision.GroupKey, decision.ImageAssetID,
-		); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.CommentReparentResolutions {
-		if err := appendEntry("comment_reparent_resolutions", ManifestEntityComment, decision.CommentID); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.OrphanLikeExclusions {
-		if err := appendEntry("orphan_like_exclusions", ManifestEntityLike, decision.LikeID); err != nil {
-			return err
-		}
-	}
-	for _, decision := range manifest.OrphanNotificationExclusions {
-		if err := appendEntry("orphan_notification_exclusions", ManifestEntityNotification, decision.NotificationID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func cloneAndCanonicalizeManifest(manifest Manifest) (Manifest, error) {
-	if !manifest.validated || manifest.SchemaVersion != ManifestSchemaVersion {
-		return Manifest{}, gateError("manifest_not_validated", "coverage 只能使用经过严格文件门禁加载的 manifest")
-	}
-	data, err := json.Marshal(manifest)
-	if err != nil {
-		return Manifest{}, gateError("manifest_internal_clone_failed", "无法建立 manifest coverage 副本")
-	}
-	var clone Manifest
-	if err := json.Unmarshal(data, &clone); err != nil {
-		return Manifest{}, gateError("manifest_internal_clone_failed", "无法建立 manifest coverage 副本")
-	}
-	if err := clone.canonicalize(); err != nil {
-		return Manifest{}, err
-	}
-	clone.validated = true
-	return clone, nil
 }
 
 func validDictionary(value string) bool {
 	return value == "canteen" || value == "cuisine" || value == "flavor"
 }
 
-func newCoverageSummary(
-	required, actual, matched, missing, unused, wrongCategory, duplicateRequirements, duplicateManifest int64,
-) ManifestCoverageSummary {
+// Format 阻止 fmt 输出 anomaly identity。
+func (ManifestRequirement) Format(state fmt.State, _ rune) {
+	_, _ = fmt.Fprint(state, "<manifest-requirement:redacted>")
+}
+
+// MarshalJSON 只返回固定脱敏标记。
+func (ManifestRequirement) MarshalJSON() ([]byte, error) {
+	return []byte(`{"type":"manifest_requirement","redacted":true}`), nil
+}
+
+// Format 阻止 fmt 输出 requirements 和 source context。
+func (ManifestRequirements) Format(state fmt.State, _ rune) {
+	_, _ = fmt.Fprint(state, "<manifest-requirements:redacted>")
+}
+
+// MarshalJSON 只返回固定脱敏标记。
+func (ManifestRequirements) MarshalJSON() ([]byte, error) {
+	return []byte(`{"type":"manifest_requirements","redacted":true}`), nil
+}
+
+func newCoverageSummary(required, actual, matched, missing, unused, wrongCategory, duplicateRequirements, duplicateManifest int64) ManifestCoverageSummary {
 	return ManifestCoverageSummary{Counts: []AggregateCount{
 		{Code: "requirements", Count: required},
 		{Code: "manifest_decisions", Count: actual},

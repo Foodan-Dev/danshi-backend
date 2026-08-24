@@ -13,7 +13,7 @@ import (
 func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
 	data := emptyManifestJSON()
 	path := writeManifest(t, data, 0o400)
-	manifest, digest, err := LoadManifest(path)
+	manifest, digest, err := loadManifestForTest(t, path)
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
@@ -31,6 +31,56 @@ func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
 		if section.Code != requiredManifestSections[index] || section.Count != 0 {
 			t.Fatalf("固定 section code 或计数错误：%+v", summary.Sections)
 		}
+	}
+}
+
+func TestLoadManifestRequiresAndBindsIndependentDigest(t *testing.T) {
+	data := emptyManifestJSON()
+	path := writeManifest(t, data, 0o600)
+	if _, err := LoadManifest(path, ManifestDigest{}); err == nil || err.Error() != "manifest_digest_required" {
+		t.Fatalf("遗漏独立 digest 应 fail closed，实际 %v", err)
+	}
+	wrong := ManifestDigest(sha256.Sum256([]byte("wrong-approved-bytes")))
+	if _, err := LoadManifest(path, wrong); err == nil || err.Error() != "manifest_digest_mismatch" {
+		t.Fatalf("错误独立 digest 应 fail closed，实际 %v", err)
+	}
+	expected := ManifestDigest(sha256.Sum256(data))
+	approved, err := LoadManifest(path, expected)
+	if err != nil {
+		t.Fatalf("正确独立 digest 加载失败：%v", err)
+	}
+	if _, err := approved.Summary(ManifestDigest{}); err == nil || err.Error() != "manifest_digest_required" {
+		t.Fatalf("Summary 不能省略 digest：%v", err)
+	}
+	if _, err := approved.Summary(wrong); err == nil || err.Error() != "manifest_digest_mismatch" {
+		t.Fatalf("Summary 未重新绑定 digest：%v", err)
+	}
+	if summary, err := approved.Summary(expected); err != nil || summary.TotalEntries != 0 {
+		t.Fatalf("Summary 正确 digest 失败：%v %+v", err, summary)
+	}
+}
+
+func TestApprovedManifestLoadedFromFileDetectsMutationAndRedactsValues(t *testing.T) {
+	document := emptyManifestDocument()
+	privateID := syntheticUUID(91)
+	document["excluded_users"] = []any{map[string]any{"user_id": privateID, "action": "exclude"}}
+	data := mustJSON(t, document)
+	expected := ManifestDigest(sha256.Sum256(data))
+	approved, err := LoadManifest(writeManifest(t, data, 0o600), expected)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	encoded, marshalErr := json.Marshal(approved)
+	if marshalErr != nil {
+		t.Fatalf("json.Marshal: %v", marshalErr)
+	}
+	formatted := fmt.Sprintf("%+v", approved)
+	if strings.Contains(string(encoded), privateID) || strings.Contains(formatted, privateID) {
+		t.Fatalf("ApprovedManifest 泄露私有决议：%s / %s", encoded, formatted)
+	}
+	approved.data.ExcludedUsers[0].Action = "rewrite"
+	if _, err := approved.Summary(expected); err == nil || err.Error() != "approved_manifest_tampered" {
+		t.Fatalf("file-load 后 mutation 未被 canonical seal 捕获：%v", err)
 	}
 }
 
@@ -78,7 +128,7 @@ func TestLoadManifestAcceptsValidatedNonEmptyDecisions(t *testing.T) {
 		map[string]any{"notification_id": syntheticUUID(13), "action": "exclude"},
 	}
 
-	manifest, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600))
+	manifest, _, err := loadManifestForTest(t, writeManifest(t, mustJSON(t, document), 0o600))
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
@@ -218,7 +268,7 @@ func TestLoadManifestRejectsInvalidUTF8AndIsolatedSurrogate(t *testing.T) {
 		`"dictionary_mappings":[{"dictionary":"cuisine","source":"\ufffd","action":"map","target":"\ud83d\ude00"}]`,
 		1,
 	)
-	manifest, _, err := LoadManifest(writeManifest(t, []byte(validUnicode), 0o600))
+	manifest, _, err := loadManifestForTest(t, writeManifest(t, []byte(validUnicode), 0o600))
 	if err != nil {
 		t.Fatalf("合法 replacement rune 与配对 surrogate 不应被拒绝：%v", err)
 	}
@@ -291,7 +341,7 @@ func TestLoadManifestCanonicalizesUUIDsBeforeIdentityChecks(t *testing.T) {
 	compact := strings.ReplaceAll(canonical, "-", "")
 	document := emptyManifestDocument()
 	document["excluded_users"] = []any{map[string]any{"user_id": variant, "action": "exclude"}}
-	manifest, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600))
+	manifest, _, err := loadManifestForTest(t, writeManifest(t, mustJSON(t, document), 0o600))
 	if err != nil {
 		t.Fatalf("LoadManifest variant UUID: %v", err)
 	}
@@ -412,7 +462,7 @@ func TestLoadManifestRejectsAmbiguousOrCyclicReparentActions(t *testing.T) {
 			"target_parent_id": syntheticUUID(2), "target_reply_to_user_id": syntheticUUID(3),
 		},
 	}
-	if _, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600)); err != nil {
+	if _, _, err := loadManifestForTest(t, writeManifest(t, mustJSON(t, document), 0o600)); err != nil {
 		t.Fatalf("显式组合 action 应被接受：%v", err)
 	}
 }
@@ -469,7 +519,7 @@ func TestLoadManifestRejectsReferencesToOtherExcludedEntities(t *testing.T) {
 func TestLoadManifestErrorsNeverEchoPathValuesOrParserDetails(t *testing.T) {
 	privateValue := "private-manifest-value-do-not-print"
 	path := writeManifest(t, []byte(`{"schema_version":1,"excluded_users":["`+privateValue+`"`), 0o600)
-	_, _, err := LoadManifest(path)
+	_, _, err := loadManifestForTest(t, path)
 	if err == nil {
 		t.Fatal("非法 JSON 应被拒绝")
 	}
@@ -484,7 +534,7 @@ func TestLoadManifestErrorsNeverEchoPathValuesOrParserDetails(t *testing.T) {
 	}
 
 	missingPath := filepath.Join(t.TempDir(), privateValue+".json")
-	_, _, err = LoadManifest(missingPath)
+	_, _, err = loadManifestForTest(t, missingPath)
 	if err == nil || strings.Contains(err.Error(), privateValue) {
 		t.Fatalf("文件错误泄露私有路径或没有失败：%v", err)
 	}
@@ -534,10 +584,25 @@ func writeManifest(t *testing.T, data []byte, mode os.FileMode) string {
 
 func assertManifestCode(t *testing.T, path, code string) {
 	t.Helper()
-	_, _, err := LoadManifest(path)
+	_, _, err := loadManifestForTest(t, path)
 	if err == nil || err.Error() != code {
 		t.Fatalf("期望 %s，实际 %v", code, err)
 	}
+}
+
+func loadManifestForTest(t *testing.T, path string) (manifestData, ManifestDigest, error) {
+	t.Helper()
+	data, readErr := os.ReadFile(path)
+	expected := ManifestDigest(sha256.Sum256(data))
+	if readErr != nil || expected == (ManifestDigest{}) {
+		expected = ManifestDigest(sha256.Sum256([]byte("synthetic-independent-approval")))
+	}
+	approved, err := LoadManifest(path, expected)
+	if err != nil {
+		return manifestData{}, expected, err
+	}
+	manifest, err := approved.verify(expected)
+	return manifest, expected, err
 }
 
 func syntheticUUID(index int) string {

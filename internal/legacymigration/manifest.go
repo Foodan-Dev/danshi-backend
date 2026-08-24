@@ -50,8 +50,8 @@ var (
 	}
 )
 
-// Manifest 是受权限保护的旧库清洗决议。它可以包含私有来源标识，禁止直接写入日志或公开报告。
-type Manifest struct {
+// manifestData 是受权限保护的旧库清洗决议，只能封装在 ApprovedManifest 内部。
+type manifestData struct {
 	SchemaVersion                  int                             `json:"schema_version"`
 	ExcludedUsers                  []ExcludedUserDecision          `json:"excluded_users"`
 	ExcludedContent                []ExcludedContentDecision       `json:"excluded_content"`
@@ -64,7 +64,6 @@ type Manifest struct {
 	CommentReparentResolutions     []CommentReparentResolution     `json:"comment_reparent_resolutions"`
 	OrphanLikeExclusions           []OrphanLikeExclusion           `json:"orphan_like_exclusions"`
 	OrphanNotificationExclusions   []OrphanNotificationExclusion   `json:"orphan_notification_exclusions"`
-	validated                      bool
 }
 
 // ExcludedUserDecision 显式排除一个来源用户。
@@ -152,7 +151,7 @@ type ManifestSummary struct {
 }
 
 // Summary 将私有 manifest 收敛为固定 code 的聚合计数，不复制任何行级值。
-func (manifest Manifest) Summary() ManifestSummary {
+func (manifest manifestData) Summary() ManifestSummary {
 	counts := []int{
 		len(manifest.ExcludedUsers),
 		len(manifest.ExcludedContent),
@@ -178,70 +177,75 @@ func (manifest Manifest) Summary() ManifestSummary {
 	return result
 }
 
-// LoadManifest 从权限受限的普通文件加载并严格验证私有清洗决议，同时返回内容摘要。
-// ManifestDigest 必须由后续 plan/apply 原样绑定；返回错误不会包含路径、manifest 值或底层错误。
-func LoadManifest(path string) (Manifest, ManifestDigest, error) {
+// LoadManifest 从权限受限的普通文件加载并严格验证私有清洗决议。
+// expected 必须来自独立审批渠道；返回对象把该摘要与决议封装在一起，错误不会包含路径、manifest 值或底层错误。
+func LoadManifest(path string, expected ManifestDigest) (ApprovedManifest, error) {
+	if expected == (ManifestDigest{}) {
+		return ApprovedManifest{}, gateError("manifest_digest_required", "必须提供独立获批的 manifest SHA-256")
+	}
 	data, digest, err := readManifestFile(path)
 	if err != nil {
-		return Manifest{}, ManifestDigest{}, err
+		return ApprovedManifest{}, err
+	}
+	if !digest.equal(expected) {
+		return ApprovedManifest{}, gateError("manifest_digest_mismatch", "私有清洗 manifest SHA-256 与获批摘要不一致")
 	}
 	manifest, err := decodeManifest(data)
 	if err != nil {
-		return Manifest{}, ManifestDigest{}, err
+		return ApprovedManifest{}, err
 	}
-	return manifest, digest, nil
+	return newApprovedManifest(manifest, digest)
 }
 
-func decodeManifest(data []byte) (Manifest, error) {
+func decodeManifest(data []byte) (manifestData, error) {
 	if !utf8.Valid(data) {
-		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 必须是合法 UTF-8 JSON")
+		return manifestData{}, gateError("manifest_invalid_json", "私有清洗 manifest 必须是合法 UTF-8 JSON")
 	}
 	if err := validateJSONSurrogatePairs(data); err != nil {
-		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 含未配对的 UTF-16 surrogate")
+		return manifestData{}, gateError("manifest_invalid_json", "私有清洗 manifest 含未配对的 UTF-16 surrogate")
 	}
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		if errors.Is(err, errDuplicateManifestKey) {
-			return Manifest{}, gateError("manifest_duplicate_key", "私有清洗 manifest 含重复 JSON key")
+			return manifestData{}, gateError("manifest_duplicate_key", "私有清洗 manifest 含重复 JSON key")
 		}
-		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 不是合法 JSON")
+		return manifestData{}, gateError("manifest_invalid_json", "私有清洗 manifest 不是合法 JSON")
 	}
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
-		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 顶层必须是 JSON object")
+		return manifestData{}, gateError("manifest_invalid_json", "私有清洗 manifest 顶层必须是 JSON object")
 	}
 	if err := validateExactManifestFields(fields); err != nil {
-		return Manifest{}, err
+		return manifestData{}, err
 	}
 	if _, exists := fields["schema_version"]; !exists {
-		return Manifest{}, gateError("manifest_schema_version_missing", "私有清洗 manifest 缺少 schema_version")
+		return manifestData{}, gateError("manifest_schema_version_missing", "私有清洗 manifest 缺少 schema_version")
 	}
 	for _, section := range requiredManifestSections {
 		raw, exists := fields[section]
 		if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			return Manifest{}, gateError("manifest_section_missing", "私有清洗 manifest 必须显式包含全部 section，空 section 也必须写 []")
+			return manifestData{}, gateError("manifest_section_missing", "私有清洗 manifest 必须显式包含全部 section，空 section 也必须写 []")
 		}
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var manifest Manifest
+	var manifest manifestData
 	if err := decoder.Decode(&manifest); err != nil {
-		return Manifest{}, gateError("manifest_schema_invalid", "私有清洗 manifest 不符合 v1 结构")
+		return manifestData{}, gateError("manifest_schema_invalid", "私有清洗 manifest 不符合 v1 结构")
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 只能包含一个 JSON object")
+		return manifestData{}, gateError("manifest_invalid_json", "私有清洗 manifest 只能包含一个 JSON object")
 	}
 	if manifest.SchemaVersion != ManifestSchemaVersion {
-		return Manifest{}, gateError("manifest_schema_version_unsupported", "私有清洗 manifest schema_version 不受支持")
+		return manifestData{}, gateError("manifest_schema_version_unsupported", "私有清洗 manifest schema_version 不受支持")
 	}
 	if err := manifest.canonicalize(); err != nil {
-		return Manifest{}, err
+		return manifestData{}, err
 	}
 	if err := manifest.validate(); err != nil {
-		return Manifest{}, err
+		return manifestData{}, err
 	}
-	manifest.validated = true
 	return manifest, nil
 }
 
@@ -418,7 +422,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func (manifest *Manifest) canonicalize() error {
+func (manifest *manifestData) canonicalize() error {
 	if err := manifest.canonicalizeUsers(); err != nil {
 		return err
 	}
@@ -444,7 +448,7 @@ func (manifest *Manifest) canonicalize() error {
 	return nil
 }
 
-func (manifest *Manifest) canonicalizeUsers() error {
+func (manifest *manifestData) canonicalizeUsers() error {
 	for index := range manifest.ExcludedUsers {
 		if err := canonicalizeUUID(&manifest.ExcludedUsers[index].UserID, false); err != nil {
 			return err
@@ -469,7 +473,7 @@ func (manifest *Manifest) canonicalizeUsers() error {
 	return nil
 }
 
-func (manifest *Manifest) canonicalizePostsAndContent() error {
+func (manifest *manifestData) canonicalizePostsAndContent() error {
 	for index := range manifest.ExcludedContent {
 		if err := canonicalizeUUID(&manifest.ExcludedContent[index].ContentID, false); err != nil {
 			return err
@@ -485,10 +489,20 @@ func (manifest *Manifest) canonicalizePostsAndContent() error {
 			return err
 		}
 	}
+	for index := range manifest.DictionaryMappings {
+		manifest.DictionaryMappings[index].Dictionary = normalizeDictionaryKind(manifest.DictionaryMappings[index].Dictionary)
+	}
 	return nil
 }
 
-func (manifest *Manifest) canonicalizeImages() error {
+func normalizeDictionaryKind(value string) string {
+	if value == "preference_flavor" {
+		return "flavor"
+	}
+	return value
+}
+
+func (manifest *manifestData) canonicalizeImages() error {
 	for index := range manifest.PostImageResolutions {
 		if err := canonicalizeUUID(&manifest.PostImageResolutions[index].TargetImageAssetID, true); err != nil {
 			return err
@@ -507,7 +521,7 @@ func (manifest *Manifest) canonicalizeImages() error {
 	return nil
 }
 
-func (manifest *Manifest) canonicalizeComments() error {
+func (manifest *manifestData) canonicalizeComments() error {
 	for index := range manifest.CommentReparentResolutions {
 		decision := &manifest.CommentReparentResolutions[index]
 		if err := canonicalizeUUID(&decision.CommentID, false); err != nil {
@@ -549,7 +563,7 @@ func canonicalEmail(value string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
-func (manifest Manifest) validate() error {
+func (manifest manifestData) validate() error {
 	validation := manifestValidation{
 		excludedUsers:   make(map[string]struct{}, len(manifest.ExcludedUsers)),
 		excludedContent: make(map[[2]string]struct{}, len(manifest.ExcludedContent)),
