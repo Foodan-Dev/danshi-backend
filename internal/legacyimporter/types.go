@@ -40,10 +40,15 @@ type sourcePost struct {
 	ID, PostType, Title, Content, Category, AuthorID, Status string
 	Canteen, ShareType, Cuisine, Price                       *string
 	Tags, Flavors, Images                                    []string
+	Preferences                                              *sourcePreferences
 	BudgetMin, BudgetMax                                     *int32
-	HasPreferences                                           bool
 	LikeCount, FavoriteCount, CommentCount, ViewCount        int32
 	CreatedAt, UpdatedAt                                     time.Time
+}
+
+type sourcePreferences struct {
+	PreferFlavors []string `json:"prefer_flavors"`
+	AvoidFlavors  []string `json:"avoid_flavors"`
 }
 
 type sourceComment struct {
@@ -83,13 +88,12 @@ type sourceFlavor struct {
 }
 
 type dictionaries struct {
-	Canteens     map[string]int64
-	CuisineOther int64
-	FlavorOther  int64
-	Flavors      map[string]dictionaryFlavor
+	Canteens map[string]int64
+	Cuisines map[string]dictionaryItem
+	Flavors  map[string]dictionaryItem
 }
 
-type dictionaryFlavor struct {
+type dictionaryItem struct {
 	ID        int64
 	IsActive  bool
 	SortOrder int32
@@ -101,6 +105,8 @@ type dataset struct {
 	RoleRecords   map[int64]roleRecordRow
 	BanRecords    map[int64]banRecordRow
 	Images        map[int64]imageRow
+	Cuisines      map[int64]dictionaryRow
+	Flavors       map[int64]dictionaryRow
 	Posts         map[int64]postRow
 	Tags          map[int64]tagRow
 	PostTags      map[string]postTagRow
@@ -178,6 +184,16 @@ type imageRow struct {
 	Moderation  string    `verify:"moderation"`
 	CreatedAt   time.Time `verify:"created_at"`
 	UpdatedAt   time.Time `verify:"updated_at"`
+}
+
+type dictionaryRow struct {
+	SourceID  string    `verify:"-"`
+	ID        int64     `verify:"id"`
+	Name      string    `verify:"name"`
+	SortOrder int32     `verify:"sort_order"`
+	IsActive  bool      `verify:"is_active"`
+	CreatedAt time.Time `verify:"created_at"`
+	UpdatedAt time.Time `verify:"updated_at"`
 }
 
 type postRow struct {

@@ -22,18 +22,21 @@ SHA-256("danshi-legacy-import/v1\0uuid\0" + canonical_uuid)
 
 取摘要前 64 位、清除符号位，得到正的 `bigint`。文本标签使用独立的 `tag` 命名空间和小写名称计算 ID。每张目标表在写入前检查映射碰撞；碰撞会终止，不做猜测。
 
-实体按确定 ID `INSERT ... ON CONFLICT`，关系表按复合主键 upsert。不可修改的角色/封禁审计表使用确定 ID 和 `ON CONFLICT DO NOTHING`；非空目标只有先通过完整 verify 才能进入重跑，所以不会用 `DO NOTHING` 掩盖不同内容。identity sequence 保持从小值开始，后续正常写入无需跳到散列 ID 的最大值。
+实体按确定 ID `INSERT ... ON CONFLICT`，关系表按复合主键 upsert。只因历史数据存在的停用菜系与口味也使用独立命名空间的确定 ID 幂等写入，不修改 goose seed。不可修改的角色/封禁审计表使用确定 ID 和 `ON CONFLICT DO NOTHING`；非空目标只有先通过完整 verify 才能进入重跑，所以不会用 `DO NOTHING` 掩盖不同内容。identity sequence 保持从小值开始，后续正常写入无需跳到散列 ID 的最大值。
 
 ## 迁入口径
 
-- `companion` 合并为 `seeking`；食堂按 seed 名称匹配，菜系和旧自由文本口味统一映射到“其他”；标签按原名创建。
+- `companion` 合并为 `seeking`；食堂按 seed 名称匹配；标签按原名创建。
+- 菜系中 `西餐` 映射到 seed `西式`，`快餐` 映射到 seed `其他`；`云南菜`、`台湾菜`、`江西菜` 原名创建为 `is_active=false` 的历史词条，`sort_order` 排在 seed 之后。
+- 分享帖的 `flavors` 写入 `post_flavors(stance='has')`：`咸`、`辣`、`酸甜` 原名创建为 `is_active=false` 的历史词条。求推荐帖的 `preferences.prefer_flavors` 写入 `stance='prefer'`，`preferences.avoid_flavors` 写入 `stance='avoid'`；`清淡`、`麻辣` 命中同名 seed，`重辣` 映射到 seed `特辣`。
+- `flavors` 只有 JSONB array 才展开，`preferences` 只有 JSONB object 才展开；SQL NULL 与 JSON `null` 标量都保持无值，不伪装成空容器。`post_flavors` 以 `(post_id, flavor_id)` 去重；重复的同 stance 映射合并，冲突 stance 则终止导入。
 - `budget_range` 拍平，`price` 和 `view_count` 原值迁入；触发器维护的计数列不从旧值写入。
 - 评论保留真实父链并重新计算 `root_id`。根评论回复对象填帖子作者；两条可唯一推定的错挂回复重挂到同楼较早评论；指定异常评论改为回复父评论作者。
 - 2 个空 URL/pending 资产、8 个占位图引用和 3 个假头像被剔除。其余 38 张存量资产按 grandfather 语义迁为 `ready/pass`；真实命中的帖子图片和头像建立外键关系。
 - 13 条悬空点赞和 2 条悬空通知丢弃；关注、收藏直迁。
 - 旧 `admin` 只授予现有 `moderator`，旧 `super_admin` 授予现有 `super_admin`。普通用户不写 `user_roles`。
 - `is_active=false` 映射为永久封禁，固定理由为“旧系统账号已停用”；旧系统没有操作者，因此 `banned_by` 和审计 `actor_id` 如实留空。
-- `preferences` 无目标字段，2 个非空对象丢弃。旧库另有 11 个非空 `hometown`，新 schema 同样没有目标字段，也明确丢弃，不拼进 `bio`。
+- 旧库另有 11 个非空 `hometown`，新 schema 没有目标字段，明确丢弃，不拼进 `bio`。
 - 旧 `flavors` 的 16 个 seed 名称和启用状态逐行与新 seed 核对；目标 goose seed 的排序为真源，不迁旧 `sort_order`。
 
 勘察数字有一处与原决策表不同：38 张可迁资产中，实际是 27 张 post 资产被帖子引用、2 张 post 资产 ready 但未引用、9 张 avatar 资产被头像引用；不是“4 张 post 资产未引用”。执行以真实 URL 引用关系为准，不人为解除两条有效引用。
@@ -78,7 +81,7 @@ go test -count=1 -run '^TestImportAndVerifyFromDump$' ./internal/legacyimporter
 
 1. 从同一个只读来源快照重新构造全部确定映射和负责人裁决。
 2. 对 users、角色/封禁绑定及审计、图片、posts、tags 及全部帖子关系、comments、follows、favorites、拆分后的两张 likes、notifications 逐行逐字段比较。
-3. 对源 `flavors` seed 逐行核对名称与启用状态，并确认本次不应写入的 mentions、histories、moderation、sessions、verification codes 和 dictionary suggestions 仍为空。
+3. 对源 `flavors` seed 逐行核对名称与启用状态，对 3 个历史菜系和 3 个历史口味逐字段核对确定 ID、原名、停用状态、排序与时间戳，并确认本次不应写入的 mentions、histories、moderation、sessions、verification codes 和 dictionary suggestions 仍为空。
 4. 对每条评论核对 post/author/parent/root/reply target，对每条动作关系核对两端，对每个图片引用核对资产与位置。
 5. 将帖子和评论的 like/favorite/comment/reply 计数与动作表、可见评论重新派生的值逐行比较。Import 结束前还会调用 `danshi_recount_all()`。
 6. 逐行输出所有故意丢弃或改写的来源 UUID；出现差额时输出 `MISMATCH table=... source_id=... field=... code=...`，但不输出字段值。

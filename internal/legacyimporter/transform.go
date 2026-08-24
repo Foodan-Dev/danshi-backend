@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -57,7 +58,8 @@ func transformSource(source sourceData, dict dictionaries) (dataset, error) {
 func newDataset(source sourceData) dataset {
 	return dataset{
 		Users: map[int64]userRow{}, Roles: map[string]roleRow{}, RoleRecords: map[int64]roleRecordRow{},
-		BanRecords: map[int64]banRecordRow{}, Images: map[int64]imageRow{}, Posts: map[int64]postRow{},
+		BanRecords: map[int64]banRecordRow{}, Images: map[int64]imageRow{},
+		Cuisines: map[int64]dictionaryRow{}, Flavors: map[int64]dictionaryRow{}, Posts: map[int64]postRow{},
 		Tags: map[int64]tagRow{}, PostTags: map[string]postTagRow{}, PostFlavors: map[string]postFlavorRow{},
 		PostImages: map[string]postImageRow{}, Comments: map[int64]commentRow{}, Follows: map[string]followRow{},
 		Favorites: map[string]favoriteRow{}, PostLikes: map[string]postLikeRow{}, CommentLikes: map[string]commentLikeRow{},
@@ -223,10 +225,9 @@ func transformPosts(source sourceData, dict dictionaries, userIDs, postIDs, imag
 		if err != nil {
 			return err
 		}
-		var cuisineID *int64
-		if sourceRow.Cuisine != nil {
-			cuisineID = int64Pointer(dict.CuisineOther)
-			addEvent(result, "TRANSFORM", "posts", sourceRow.ID, "cuisine", "cuisine_to_other")
+		cuisineID, err := resolveCuisine(sourceRow, dict, result)
+		if err != nil {
+			return err
 		}
 		price, err := normalizePrice(sourceRow)
 		if err != nil {
@@ -239,13 +240,10 @@ func transformPosts(source sourceData, dict dictionaries, userIDs, postIDs, imag
 			Price: price, BudgetMin: sourceRow.BudgetMin, BudgetMax: sourceRow.BudgetMax,
 			ViewCount: sourceRow.ViewCount, CreatedAt: sourceRow.CreatedAt, UpdatedAt: sourceRow.UpdatedAt,
 		}
-		if sourceRow.HasPreferences {
-			addEvent(result, "OMIT", "posts", sourceRow.ID, "preferences", "target_field_absent")
-		}
 		if err = transformPostTags(sourceRow, postID, result); err != nil {
 			return err
 		}
-		if err = transformPostFlavors(sourceRow, postType, postID, dict.FlavorOther, result); err != nil {
+		if err = transformPostFlavors(sourceRow, postType, postID, dict, result); err != nil {
 			return err
 		}
 		if err = transformPostImages(sourceRow, postID, imageByURL, result); err != nil {
@@ -265,6 +263,50 @@ func resolveCanteen(sourceRow sourcePost, dict dictionaries) (*int64, error) {
 		return nil, rowFailure("canteen_not_found", "posts", sourceRow.ID, "canteen")
 	}
 	return int64Pointer(id), nil
+}
+
+func resolveCuisine(sourceRow sourcePost, dict dictionaries, result *dataset) (*int64, error) {
+	if sourceRow.Cuisine == nil {
+		return nil, nil
+	}
+	var targetName, eventCode string
+	switch *sourceRow.Cuisine {
+	case "西餐":
+		targetName, eventCode = "西式", "cuisine_seed_alias"
+	case "快餐":
+		targetName, eventCode = "其他", "cuisine_to_other"
+	case "云南菜", "台湾菜", "江西菜":
+		id, err := ensureHistoricalDictionary(
+			"cuisines", *sourceRow.Cuisine, sourceRow.ID, sourceRow.CreatedAt,
+			legacyCuisineSortOrder(*sourceRow.Cuisine), dict.Cuisines, result.Cuisines,
+		)
+		if err != nil {
+			return nil, err
+		}
+		addEvent(result, "TRANSFORM", "posts", sourceRow.ID, "cuisine", "cuisine_historical_inactive")
+		return int64Pointer(id), nil
+	default:
+		return nil, rowFailure("cuisine_mapping_undefined", "posts", sourceRow.ID, "cuisine")
+	}
+	item, exists := dict.Cuisines[targetName]
+	if !exists {
+		return nil, rowFailure("cuisine_seed_not_found", "posts", sourceRow.ID, "cuisine")
+	}
+	addEvent(result, "TRANSFORM", "posts", sourceRow.ID, "cuisine", eventCode)
+	return int64Pointer(item.ID), nil
+}
+
+func legacyCuisineSortOrder(name string) int32 {
+	switch name {
+	case "云南菜":
+		return 10_000
+	case "台湾菜":
+		return 10_010
+	case "江西菜":
+		return 10_020
+	default:
+		return 0
+	}
 }
 
 func normalizePrice(sourceRow sourcePost) (*string, error) {
@@ -306,20 +348,141 @@ func transformPostTags(sourceRow sourcePost, postID int64, result *dataset) erro
 	return nil
 }
 
-func transformPostFlavors(sourceRow sourcePost, postType string, postID, flavorOther int64, result *dataset) error {
-	if len(sourceRow.Flavors) == 0 {
-		return nil
-	}
-	if postType != "share" {
+func transformPostFlavors(sourceRow sourcePost, postType string, postID int64, dict dictionaries, result *dataset) error {
+	if len(sourceRow.Flavors) != 0 && postType != "share" {
 		return rowFailure("flavor_stance_undefined", "posts", sourceRow.ID, "flavors")
 	}
-	key := relationKey(int64String(postID), int64String(flavorOther))
-	result.PostFlavors[key] = postFlavorRow{
-		SourceID: sourceRow.ID, PostID: postID,
-		FlavorID: flavorOther, Stance: "has", PostType: postType,
+	for _, name := range sourceRow.Flavors {
+		if err := transformPostFlavorValue(sourceRow, postType, postID, name, "has", "flavors", dict, result); err != nil {
+			return err
+		}
 	}
-	addEvent(result, "TRANSFORM", "posts", sourceRow.ID, "flavors", "flavors_to_other")
+	if sourceRow.Preferences == nil {
+		return nil
+	}
+	if postType != "seeking" {
+		return rowFailure("preference_stance_undefined", "posts", sourceRow.ID, "preferences")
+	}
+	for _, name := range sourceRow.Preferences.PreferFlavors {
+		if err := transformPostFlavorValue(
+			sourceRow, postType, postID, name, "prefer", "preferences.prefer_flavors", dict, result,
+		); err != nil {
+			return err
+		}
+	}
+	for _, name := range sourceRow.Preferences.AvoidFlavors {
+		if err := transformPostFlavorValue(
+			sourceRow, postType, postID, name, "avoid", "preferences.avoid_flavors", dict, result,
+		); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func transformPostFlavorValue(
+	sourceRow sourcePost,
+	postType string,
+	postID int64,
+	name, stance, field string,
+	dict dictionaries,
+	result *dataset,
+) error {
+	var flavorID int64
+	var targetName, eventCode string
+	switch {
+	case stance == "has" && (name == "咸" || name == "辣" || name == "酸甜"):
+		var err error
+		flavorID, err = ensureHistoricalDictionary(
+			"flavors", name, sourceRow.ID, sourceRow.CreatedAt,
+			legacyFlavorSortOrder(name), dict.Flavors, result.Flavors,
+		)
+		if err != nil {
+			return err
+		}
+		eventCode = "flavor_historical_inactive"
+	case stance == "prefer" && name == "清淡":
+		targetName, eventCode = "清淡", "flavor_seed_match"
+	case stance == "avoid" && name == "麻辣":
+		targetName, eventCode = "麻辣", "flavor_seed_match"
+	case stance == "avoid" && name == "重辣":
+		targetName, eventCode = "特辣", "flavor_seed_alias"
+	default:
+		return rowFailure("flavor_mapping_undefined", "posts", sourceRow.ID, field)
+	}
+	if targetName != "" {
+		item, exists := dict.Flavors[targetName]
+		if !exists {
+			return rowFailure("flavor_seed_not_found", "posts", sourceRow.ID, field)
+		}
+		flavorID = item.ID
+	}
+	addEvent(result, "TRANSFORM", "posts", sourceRow.ID, field, eventCode)
+	return addPostFlavor(sourceRow.ID, field, postID, flavorID, stance, postType, result)
+}
+
+func addPostFlavor(sourceID, field string, postID, flavorID int64, stance, postType string, result *dataset) error {
+	if (postType == "share") != (stance == "has") {
+		return rowFailure("flavor_stance_post_type_mismatch", "posts", sourceID, field)
+	}
+	key := relationKey(int64String(postID), int64String(flavorID))
+	if existing, duplicate := result.PostFlavors[key]; duplicate {
+		if existing.Stance != stance || existing.PostType != postType {
+			return rowFailure("conflicting_flavor_stance", "posts", sourceID, field)
+		}
+		addEvent(result, "TRANSFORM", "posts", sourceID, field, "flavor_mapping_deduplicated")
+		return nil
+	}
+	result.PostFlavors[key] = postFlavorRow{
+		SourceID: sourceID, PostID: postID, FlavorID: flavorID, Stance: stance, PostType: postType,
+	}
+	return nil
+}
+
+func ensureHistoricalDictionary(
+	table, name, sourceID string,
+	createdAt time.Time,
+	sortOrder int32,
+	existing map[string]dictionaryItem,
+	target map[int64]dictionaryRow,
+) (int64, error) {
+	id := mapText("legacy-"+table, name)
+	for existingName, item := range existing {
+		if item.ID == id && existingName != name {
+			return 0, rowFailure("deterministic_id_collision", table, sourceID, "id")
+		}
+	}
+	if item, exists := existing[name]; exists && item.ID != id {
+		return 0, rowFailure("historical_dictionary_id_mismatch", table, sourceID, "id")
+	}
+	if current, exists := target[id]; exists {
+		if current.Name != name {
+			return 0, rowFailure("deterministic_id_collision", table, sourceID, "id")
+		}
+		if createdAt.Before(current.CreatedAt) {
+			current.SourceID, current.CreatedAt, current.UpdatedAt = sourceID, createdAt, createdAt
+			target[id] = current
+		}
+		return id, nil
+	}
+	target[id] = dictionaryRow{
+		SourceID: sourceID, ID: id, Name: name, SortOrder: sortOrder, IsActive: false,
+		CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	return id, nil
+}
+
+func legacyFlavorSortOrder(name string) int32 {
+	switch name {
+	case "咸":
+		return 10_000
+	case "辣":
+		return 10_010
+	case "酸甜":
+		return 10_020
+	default:
+		return 0
+	}
 }
 
 func transformPostImages(sourceRow sourcePost, postID int64, imageByURL map[string]int64, result *dataset) error {
@@ -652,8 +815,9 @@ func populateDetailedStats(source sourceData, result *dataset) {
 	for _, post := range source.Posts {
 		postImageRefs += len(post.Images)
 		tagRefs += len(post.Tags)
-		if len(post.Flavors) != 0 {
-			flavorRefs++
+		flavorRefs += len(post.Flavors)
+		if post.Preferences != nil {
+			flavorRefs += len(post.Preferences.PreferFlavors) + len(post.Preferences.AvoidFlavors)
 		}
 	}
 	result.Stats["user_roles"] = tableStat{SourceRows: managedRoles, TargetRows: len(result.Roles)}
@@ -668,7 +832,10 @@ func populateDetailedStats(source sourceData, result *dataset) {
 	}
 	result.Stats["post_likes"] = tableStat{SourceRows: len(result.PostLikes), TargetRows: len(result.PostLikes)}
 	result.Stats["comment_likes"] = tableStat{SourceRows: len(result.CommentLikes), TargetRows: len(result.CommentLikes)}
-	result.Stats["flavors"] = tableStat{SourceRows: len(source.Flavors), TargetRows: len(source.Flavors)}
+	result.Stats["cuisines"] = tableStat{SourceRows: len(result.Cuisines), TargetRows: len(result.Cuisines)}
+	result.Stats["flavors"] = tableStat{
+		SourceRows: len(source.Flavors) + len(result.Flavors), TargetRows: len(source.Flavors) + len(result.Flavors),
+	}
 }
 
 func validateDecisionCounts(source sourceData, result dataset) error {
@@ -688,9 +855,11 @@ func validateDecisionCounts(source sourceData, result dataset) error {
 	}
 	expectedEvents := map[string]int{
 		"unfinished_upload": 2, "placeholder_url": 8, "fake_avatar_to_null": 3,
-		"orphan_target": 15, "target_field_absent": 13, "companion_to_seeking": 1,
+		"orphan_target": 15, "target_field_absent": 11, "companion_to_seeking": 1,
 		"root_reply_to_post_author": 37, "reply_parent_inferred": 2, "reply_to_parent_fallback": 1,
-		"target_seed_order_authoritative": 16,
+		"target_seed_order_authoritative": 16, "cuisine_seed_alias": 1, "cuisine_to_other": 1,
+		"cuisine_historical_inactive": 3, "flavor_historical_inactive": 3,
+		"flavor_seed_match": 3, "flavor_seed_alias": 1,
 	}
 	actualEvents := map[string]int{}
 	for _, event := range result.Events {
@@ -703,7 +872,8 @@ func validateDecisionCounts(source sourceData, result dataset) error {
 	}
 	if len(result.Images) != 38 || len(result.PostImages) != 27 || len(result.PostLikes) != 51 ||
 		len(result.CommentLikes) != 45 || len(result.Notifications) != 384 || len(result.Follows) != 44 ||
-		len(result.Favorites) != 2 || len(result.Tags) != 9 {
+		len(result.Favorites) != 2 || len(result.Tags) != 9 || len(result.Cuisines) != 3 ||
+		len(result.Flavors) != 3 || len(result.PostFlavors) != 7 {
 		return rowFailure("target_count_unexpected", "decision_events", "count", "rows")
 	}
 	return nil

@@ -147,18 +147,17 @@ func prepareTarget(ctx context.Context, target *sql.DB) (dictionaries, error) {
 }
 
 func loadDictionaries(ctx context.Context, target *sql.DB) (dictionaries, error) {
-	result := dictionaries{Canteens: map[string]int64{}, Flavors: map[string]dictionaryFlavor{}}
+	result := dictionaries{
+		Canteens: map[string]int64{}, Cuisines: map[string]dictionaryItem{}, Flavors: map[string]dictionaryItem{},
+	}
 	if err := loadTargetCanteens(ctx, target, &result); err != nil {
 		return result, err
 	}
-	if err := target.QueryRowContext(ctx, `SELECT id FROM cuisines WHERE name='其他'`).Scan(&result.CuisineOther); err != nil {
-		return result, failure("target_dictionary_missing", "cuisines", err)
+	if err := loadTargetCuisines(ctx, target, &result); err != nil {
+		return result, err
 	}
 	if err := loadTargetFlavors(ctx, target, &result); err != nil {
 		return result, err
-	}
-	if result.FlavorOther == 0 {
-		return result, failure("target_dictionary_missing", "flavors", nil)
 	}
 	return result, nil
 }
@@ -183,6 +182,26 @@ func loadTargetCanteens(ctx context.Context, target *sql.DB, result *dictionarie
 	return nil
 }
 
+func loadTargetCuisines(ctx context.Context, target *sql.DB, result *dictionaries) error {
+	rows, err := target.QueryContext(ctx, `SELECT id, name, is_active, sort_order FROM cuisines ORDER BY id`)
+	if err != nil {
+		return failure("target_read_failed", "cuisines", err)
+	}
+	defer closeRows(rows)
+	for rows.Next() {
+		var name string
+		var value dictionaryItem
+		if err = rows.Scan(&value.ID, &name, &value.IsActive, &value.SortOrder); err != nil {
+			return failure("target_scan_failed", "cuisines", err)
+		}
+		result.Cuisines[name] = value
+	}
+	if err = rows.Err(); err != nil {
+		return failure("target_rows_failed", "cuisines", err)
+	}
+	return nil
+}
+
 func loadTargetFlavors(ctx context.Context, target *sql.DB, result *dictionaries) error {
 	rows, err := target.QueryContext(ctx, `SELECT id, name, is_active, sort_order FROM flavors ORDER BY id`)
 	if err != nil {
@@ -190,17 +209,12 @@ func loadTargetFlavors(ctx context.Context, target *sql.DB, result *dictionaries
 	}
 	defer closeRows(rows)
 	for rows.Next() {
-		var id int64
 		var name string
-		var value dictionaryFlavor
-		if err = rows.Scan(&id, &name, &value.IsActive, &value.SortOrder); err != nil {
+		var value dictionaryItem
+		if err = rows.Scan(&value.ID, &name, &value.IsActive, &value.SortOrder); err != nil {
 			return failure("target_scan_failed", "flavors", err)
 		}
-		value.ID = id
 		result.Flavors[name] = value
-		if name == "其他" {
-			result.FlavorOther = id
-		}
 	}
 	if err = rows.Err(); err != nil {
 		return failure("target_rows_failed", "flavors", err)

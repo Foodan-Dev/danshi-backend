@@ -23,7 +23,7 @@ func collectMismatches(ctx context.Context, target *sql.DB, expected dataset, di
 	if _, err = tx.ExecContext(ctx, `SET LOCAL statement_timeout='5min'`); err != nil {
 		return nil, failure("target_verify_setup_failed", "", err)
 	}
-	actual, err := loadTargetDataset(ctx, tx)
+	actual, err := loadTargetDataset(ctx, tx, expected)
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +41,11 @@ func collectMismatches(ctx context.Context, target *sql.DB, expected dataset, di
 	return issues, nil
 }
 
-func loadTargetDataset(ctx context.Context, tx *sql.Tx) (dataset, error) {
+func loadTargetDataset(ctx context.Context, tx *sql.Tx, expected dataset) (dataset, error) {
 	result := newDataset(sourceData{})
+	if err := loadTargetHistoricalDictionaries(ctx, tx, expected, &result); err != nil {
+		return dataset{}, err
+	}
 	loaders := []func(context.Context, *sql.Tx, *dataset) error{
 		loadTargetUsers, loadTargetRoles, loadTargetRoleRecords, loadTargetBanRecords,
 		loadTargetImages, loadTargetPosts, loadTargetTags, loadTargetPostTags,
@@ -55,6 +58,34 @@ func loadTargetDataset(ctx context.Context, tx *sql.Tx) (dataset, error) {
 		}
 	}
 	return result, nil
+}
+
+func loadTargetHistoricalDictionaries(ctx context.Context, tx *sql.Tx, expected dataset, actual *dataset) error {
+	for id := range expected.Cuisines {
+		var row dictionaryRow
+		err := tx.QueryRowContext(ctx, `
+			SELECT id,name,sort_order,is_active,created_at,updated_at FROM cuisines WHERE id=$1`, id).
+			Scan(&row.ID, &row.Name, &row.SortOrder, &row.IsActive, &row.CreatedAt, &row.UpdatedAt)
+		if err != nil && err != sql.ErrNoRows {
+			return failure("target_read_failed", "cuisines", err)
+		}
+		if err == nil {
+			actual.Cuisines[row.ID] = row
+		}
+	}
+	for id := range expected.Flavors {
+		var row dictionaryRow
+		err := tx.QueryRowContext(ctx, `
+			SELECT id,name,sort_order,is_active,created_at,updated_at FROM flavors WHERE id=$1`, id).
+			Scan(&row.ID, &row.Name, &row.SortOrder, &row.IsActive, &row.CreatedAt, &row.UpdatedAt)
+		if err != nil && err != sql.ErrNoRows {
+			return failure("target_read_failed", "flavors", err)
+		}
+		if err == nil {
+			actual.Flavors[row.ID] = row
+		}
+	}
+	return nil
 }
 
 func loadTargetUsers(ctx context.Context, tx *sql.Tx, data *dataset) error {
@@ -379,6 +410,8 @@ func compareDatasets(expected, actual dataset) []mismatch {
 	issues = append(issues, compareMap("user_role_records", expected.RoleRecords, actual.RoleRecords)...)
 	issues = append(issues, compareMap("user_ban_records", expected.BanRecords, actual.BanRecords)...)
 	issues = append(issues, compareMap("image_assets", expected.Images, actual.Images)...)
+	issues = append(issues, compareMap("cuisines", expected.Cuisines, actual.Cuisines)...)
+	issues = append(issues, compareMap("flavors", expected.Flavors, actual.Flavors)...)
 	issues = append(issues, compareMap("posts", expected.Posts, actual.Posts)...)
 	issues = append(issues, compareMap("tags", expected.Tags, actual.Tags)...)
 	issues = append(issues, compareMap("post_tags", expected.PostTags, actual.PostTags)...)

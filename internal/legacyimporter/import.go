@@ -26,7 +26,7 @@ func writeDataset(ctx context.Context, target *sql.DB, data dataset) (writeErr e
 		return failure("target_setup_failed", "", err)
 	}
 	writers := []func(context.Context, *sql.Tx, dataset) error{
-		writeUsers, writeRolesAndAudit, writeImages, writeUserAvatars, writePosts, writeTags,
+		writeUsers, writeRolesAndAudit, writeImages, writeUserAvatars, writeHistoricalDictionaries, writePosts, writeTags,
 		writePostRelations, writeComments, writeActions, writeNotifications, recountAll,
 	}
 	for _, writer := range writers {
@@ -125,6 +125,32 @@ func writeUserAvatars(ctx context.Context, tx *sql.Tx, data dataset) error {
 	for _, row := range sortedUsers(data.Users) {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET avatar_image_asset_id=$2 WHERE id=$1`, row.ID, row.AvatarImageAssetID); err != nil {
 			return failure("target_write_failed", "users", err)
+		}
+	}
+	return nil
+}
+
+func writeHistoricalDictionaries(ctx context.Context, tx *sql.Tx, data dataset) error {
+	for _, row := range sortedDictionaryRows(data.Cuisines) {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO cuisines (id,name,sort_order,is_active,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,sort_order=EXCLUDED.sort_order,
+			  is_active=EXCLUDED.is_active,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`,
+			row.ID, row.Name, row.SortOrder, row.IsActive, row.CreatedAt, row.UpdatedAt)
+		if err != nil {
+			return failure("target_write_failed", "cuisines", err)
+		}
+	}
+	for _, row := range sortedDictionaryRows(data.Flavors) {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO flavors (id,name,sort_order,is_active,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,sort_order=EXCLUDED.sort_order,
+			  is_active=EXCLUDED.is_active,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`,
+			row.ID, row.Name, row.SortOrder, row.IsActive, row.CreatedAt, row.UpdatedAt)
+		if err != nil {
+			return failure("target_write_failed", "flavors", err)
 		}
 	}
 	return nil
@@ -311,6 +337,12 @@ func mapValues[K comparable, V any](source map[K]V) []V {
 }
 
 func sortedUsers(source map[int64]userRow) []userRow {
+	rows := mapValues(source)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows
+}
+
+func sortedDictionaryRows(source map[int64]dictionaryRow) []dictionaryRow {
 	rows := mapValues(source)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows

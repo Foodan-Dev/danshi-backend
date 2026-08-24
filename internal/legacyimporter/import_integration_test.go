@@ -41,6 +41,7 @@ func TestImportAndVerifyFromDump(t *testing.T) {
 	require.NoError(t, Verify(ctx, sourceDSN, targetDSN, &firstVerify))
 	require.Contains(t, firstVerify.String(), "VERIFY_OK mismatches=0")
 	require.NotContains(t, firstVerify.String(), "MISMATCH")
+	assertHistoricalDictionaryMappings(ctx, t, targetDSN)
 
 	var secondImport bytes.Buffer
 	require.NoError(t, Import(ctx, sourceDSN, targetDSN, &secondImport))
@@ -48,12 +49,87 @@ func TestImportAndVerifyFromDump(t *testing.T) {
 	var secondVerify bytes.Buffer
 	require.NoError(t, Verify(ctx, sourceDSN, targetDSN, &secondVerify))
 	require.Equal(t, firstVerify.String(), secondVerify.String())
+	assertHistoricalDictionaryMappings(ctx, t, targetDSN)
 
 	corruptTargetForMismatchTest(ctx, t, targetDSN)
 	var failedVerify bytes.Buffer
 	require.Error(t, Verify(ctx, sourceDSN, targetDSN, &failedVerify))
 	require.Regexp(t, regexp.MustCompile(`MISMATCH table=posts source_id=[0-9a-f-]+ field=view_count code=value_mismatch`),
 		failedVerify.String())
+}
+
+func assertHistoricalDictionaryMappings(ctx context.Context, t *testing.T, dsn string) {
+	t.Helper()
+	database, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, database.Close()) }()
+
+	assertInactiveDictionaries(ctx, t, database,
+		`SELECT name,is_active,sort_order FROM cuisines WHERE name IN ($1,$2,$3) ORDER BY name`,
+		[]string{"云南菜", "台湾菜", "江西菜"}, 99)
+	assertInactiveDictionaries(ctx, t, database,
+		`SELECT name,is_active,sort_order FROM flavors WHERE name IN ($1,$2,$3) ORDER BY name`,
+		[]string{"咸", "辣", "酸甜"}, 999)
+
+	var unexpectedCuisineAliases int
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT count(*) FROM cuisines WHERE name IN ('西餐','快餐')`).Scan(&unexpectedCuisineAliases))
+	require.Zero(t, unexpectedCuisineAliases)
+
+	rows, err := database.QueryContext(ctx, `
+		SELECT f.name,pf.stance,count(*)
+		FROM post_flavors AS pf JOIN flavors AS f ON f.id=pf.flavor_id
+		WHERE f.name IN ('咸','辣','酸甜','清淡','麻辣','特辣')
+		GROUP BY f.name,pf.stance ORDER BY f.name,pf.stance`)
+	require.NoError(t, err)
+	defer closeRows(rows)
+	actual := map[string]int{}
+	for rows.Next() {
+		var name, stance string
+		var count int
+		require.NoError(t, rows.Scan(&name, &stance, &count))
+		actual[name+":"+stance] = count
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[string]int{
+		"咸:has": 1, "辣:has": 1, "酸甜:has": 1,
+		"清淡:prefer": 2, "麻辣:avoid": 1, "特辣:avoid": 1,
+	}, actual)
+
+	var invalidStances int
+	require.NoError(t, database.QueryRowContext(ctx, `
+		SELECT count(*) FROM post_flavors
+		WHERE (post_type='share') IS DISTINCT FROM (stance='has')`).Scan(&invalidStances))
+	require.Zero(t, invalidStances)
+}
+
+func assertInactiveDictionaries(
+	ctx context.Context,
+	t *testing.T,
+	database *sql.DB,
+	query string,
+	names []string,
+	seedMaxSortOrder int,
+) {
+	t.Helper()
+	rows, err := database.QueryContext(ctx, query, names[0], names[1], names[2])
+	require.NoError(t, err)
+	defer closeRows(rows)
+	found := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var active bool
+		var sortOrder int
+		require.NoError(t, rows.Scan(&name, &active, &sortOrder))
+		require.False(t, active)
+		require.Greater(t, sortOrder, seedMaxSortOrder)
+		found[name] = true
+	}
+	require.NoError(t, rows.Err())
+	require.Len(t, found, len(names))
+	for _, name := range names {
+		require.True(t, found[name])
+	}
 }
 
 func startPostgres(ctx context.Context, t *testing.T, database, password string) (testcontainers.Container, string) {

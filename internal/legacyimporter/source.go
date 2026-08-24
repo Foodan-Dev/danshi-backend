@@ -97,9 +97,9 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id::text, post_type, title, content, category, canteen,
 		       COALESCE(tags, '[]'::jsonb)::text, share_type, cuisine,
-		       COALESCE(flavors, '[]'::jsonb)::text, price::text,
+		       flavors::text, jsonb_typeof(flavors), price::text,
 		       COALESCE(images, '[]'::jsonb)::text, like_count, favorite_count,
-		       budget_range::text, preferences::text, author_id::text, status,
+		       budget_range::text, preferences::text, jsonb_typeof(preferences), author_id::text, status,
 		       comment_count, view_count, created_at, updated_at
 		FROM posts ORDER BY id`)
 	if err != nil {
@@ -108,11 +108,12 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 	defer closeRows(rows)
 	for rows.Next() {
 		var row sourcePost
-		var canteen, shareType, cuisine, price, budget, preferences sql.NullString
-		var tagsJSON, flavorsJSON, imagesJSON string
+		var canteen, shareType, cuisine, price, budget sql.NullString
+		var flavorsJSON, flavorsType, preferencesJSON, preferencesType sql.NullString
+		var tagsJSON, imagesJSON string
 		if err = rows.Scan(&row.ID, &row.PostType, &row.Title, &row.Content, &row.Category,
-			&canteen, &tagsJSON, &shareType, &cuisine, &flavorsJSON, &price, &imagesJSON,
-			&row.LikeCount, &row.FavoriteCount, &budget, &preferences, &row.AuthorID,
+			&canteen, &tagsJSON, &shareType, &cuisine, &flavorsJSON, &flavorsType, &price, &imagesJSON,
+			&row.LikeCount, &row.FavoriteCount, &budget, &preferencesJSON, &preferencesType, &row.AuthorID,
 			&row.Status, &row.CommentCount, &row.ViewCount, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return failure("source_scan_failed", "posts", err)
 		}
@@ -120,7 +121,7 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 		if err = decodeStringArray(tagsJSON, &row.Tags); err != nil {
 			return rowFailure("source_json_invalid", "posts", row.ID, "tags")
 		}
-		if err = decodeStringArray(flavorsJSON, &row.Flavors); err != nil {
+		if err = decodeNullableStringArray(flavorsJSON, flavorsType, &row.Flavors); err != nil {
 			return rowFailure("source_json_invalid", "posts", row.ID, "flavors")
 		}
 		if err = decodeStringArray(imagesJSON, &row.Images); err != nil {
@@ -136,12 +137,8 @@ func loadPosts(ctx context.Context, tx *sql.Tx, data *sourceData) error {
 			}
 			row.BudgetMin, row.BudgetMax = &value.Min, &value.Max
 		}
-		if preferences.Valid && preferences.String != "null" {
-			var value map[string]json.RawMessage
-			if err = json.Unmarshal([]byte(preferences.String), &value); err != nil {
-				return rowFailure("source_json_invalid", "posts", row.ID, "preferences")
-			}
-			row.HasPreferences = value != nil
+		if err = decodeNullablePreferences(preferencesJSON, preferencesType, &row.Preferences); err != nil {
+			return rowFailure("source_json_invalid", "posts", row.ID, "preferences")
 		}
 		data.Posts = append(data.Posts, row)
 	}
@@ -292,6 +289,43 @@ func decodeStringArray(raw string, target *[]string) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(raw), target)
+}
+
+func decodeNullableStringArray(raw, jsonType sql.NullString, target *[]string) error {
+	if !raw.Valid && !jsonType.Valid {
+		return nil
+	}
+	if !raw.Valid || !jsonType.Valid {
+		return errors.New("inconsistent JSONB value and type")
+	}
+	if jsonType.String == "null" {
+		return nil
+	}
+	if jsonType.String != "array" {
+		return errors.New("expected JSONB array or null")
+	}
+	return decodeStringArray(raw.String, target)
+}
+
+func decodeNullablePreferences(raw, jsonType sql.NullString, target **sourcePreferences) error {
+	if !raw.Valid && !jsonType.Valid {
+		return nil
+	}
+	if !raw.Valid || !jsonType.Valid {
+		return errors.New("inconsistent JSONB value and type")
+	}
+	if jsonType.String == "null" {
+		return nil
+	}
+	if jsonType.String != "object" {
+		return errors.New("expected JSONB object or null")
+	}
+	value := &sourcePreferences{}
+	if err := json.Unmarshal([]byte(raw.String), value); err != nil {
+		return errors.New("invalid preferences object")
+	}
+	*target = value
+	return nil
 }
 
 func nullString(value sql.NullString) *string {
