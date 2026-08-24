@@ -21,37 +21,57 @@ func ParseMode(args []string) (Mode, error) {
 
 // Run 对显式数据库连接执行只读勘察或计划；主要供隔离测试与受控编排调用。
 func Run(ctx context.Context, source, target *sql.DB, mode Mode) (Report, error) {
+	observation, err := inspectMigrationDatabases(ctx, source, target, mode)
+	return observation.report, err
+}
+
+type migrationObservation struct {
+	report                       Report
+	sourceDatabaseIdentitySHA256 string
+	targetDatabaseIdentitySHA256 string
+	sourceSnapshotSHA256         string
+}
+
+func inspectMigrationDatabases(
+	ctx context.Context,
+	source, target *sql.DB,
+	mode Mode,
+) (migrationObservation, error) {
 	if mode != ModeInspect && mode != ModePlan {
-		return Report{}, gateError("unsupported_mode", "只支持 inspect 或 plan；当前阶段不提供 apply")
+		return migrationObservation{}, gateError("unsupported_mode", "只支持 inspect 或 plan；当前阶段不提供 apply")
 	}
 	targetTx, targetTransaction, err := beginTargetInspection(ctx, target, mode == ModePlan)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	defer func() { _ = targetTx.Rollback() }()
 	targetInspection, err := inspectTarget(ctx, targetTx, targetTransaction)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	sourceTx, sourceTransaction, err := beginSourceSnapshot(ctx, source)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	defer func() { _ = sourceTx.Rollback() }()
 	sourceInspection, err := inspectSource(ctx, sourceTx, sourceTransaction)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	sourceIdentity, err := inspectDatabaseIdentity(ctx, sourceTx)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	targetIdentity, err := inspectDatabaseIdentity(ctx, targetTx)
 	if err != nil {
-		return Report{}, err
+		return migrationObservation{}, err
 	}
 	if sourceIdentity == targetIdentity {
-		return Report{}, gateError("source_target_database_identical", "来源与目标连接解析到了同一个实际数据库")
+		return migrationObservation{}, gateError("source_target_database_identical", "来源与目标连接解析到了同一个实际数据库")
+	}
+	sourceSnapshotSHA256, err := sourceDatasetSnapshotDigest(ctx, sourceTx)
+	if err != nil {
+		return migrationObservation{}, err
 	}
 	report := Report{
 		SchemaVersion:   ReportSchemaVersion,
@@ -65,12 +85,17 @@ func Run(ctx context.Context, source, target *sql.DB, mode Mode) (Report, error)
 		report.Plan = buildPlan(sourceInspection, targetInspection)
 	}
 	if err := sourceTx.Commit(); err != nil {
-		return Report{}, gateError("source_snapshot_commit_failed", "无法正常结束来源只读快照")
+		return migrationObservation{}, gateError("source_snapshot_commit_failed", "无法正常结束来源只读快照")
 	}
 	if err := targetTx.Commit(); err != nil {
-		return Report{}, gateError("target_snapshot_commit_failed", "无法正常结束目标只读快照")
+		return migrationObservation{}, gateError("target_snapshot_commit_failed", "无法正常结束目标只读快照")
 	}
-	return report, nil
+	return migrationObservation{
+		report:                       report,
+		sourceDatabaseIdentitySHA256: databaseIdentityDigest(sourceIdentity),
+		targetDatabaseIdentitySHA256: databaseIdentityDigest(targetIdentity),
+		sourceSnapshotSHA256:         sourceSnapshotSHA256,
+	}, nil
 }
 
 func buildPlan(source SourceInspection, target TargetInspection) *MigrationPlan {
@@ -95,6 +120,7 @@ func buildPlan(source SourceInspection, target TargetInspection) *MigrationPlan 
 			"target_repeatable_read_read_only",
 			"target_postgresql_18_goose_v11_seed_only",
 			"source_target_actual_database_identity_distinct",
+			"source_schema_fingerprint_and_primary_key_gate_not_implemented",
 			"full_manifest_and_dictionary_review_not_implemented",
 			"single_transaction_apply_not_implemented",
 			"no_sensitive_values_in_report",

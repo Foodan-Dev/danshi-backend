@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -59,6 +61,106 @@ func TestInspectAndPlanSafetyGatesAgainstPostgres(t *testing.T) {
 			t.Fatalf("plan 错误开放 apply：%+v", report.Plan)
 		}
 		assertRedacted(t, report)
+	})
+
+	t.Run("inspect and plan require independent artifact approvals", func(t *testing.T) {
+		artifactRoot := t.TempDir()
+		datasetPath := filepath.Join(artifactRoot, "dataset.json")
+		planPath := filepath.Join(artifactRoot, "plan.json")
+		manifestData := emptyManifestJSON()
+		manifestPath := writeManifest(t, manifestData, 0o600)
+		manifestDigest := ManifestDigest(sha256.Sum256(manifestData))
+		before := targetStateFingerprint(ctx, t, target)
+
+		inspectReport, err := Execute(ctx, source, target, Command{
+			Mode: ModeInspect, DatasetArtifactPath: datasetPath,
+		})
+		if err != nil {
+			t.Fatalf("Execute(inspect): %v", err)
+		}
+		datasetDigest, err := ParseArtifactDigest(inspectReport.DatasetArtifact.SHA256, "dataset_digest")
+		if err != nil {
+			t.Fatalf("ParseArtifactDigest: %v", err)
+		}
+		if inspectReport.ApplyEnabled || inspectReport.PlanArtifact != nil {
+			t.Fatalf("inspect 不得开放 plan/apply：%+v", inspectReport)
+		}
+		approvedDataset, approvedDatasetBytes, err := loadDatasetArtifact(datasetPath, datasetDigest)
+		if err != nil {
+			t.Fatalf("loadDatasetArtifact: %v", err)
+		}
+		approvalPath, _, approval := writeSignedPlanApproval(t, approvedDataset, datasetDigest, manifestDigest)
+
+		planCommand := Command{
+			Mode:                   ModePlan,
+			DatasetArtifactPath:    datasetPath,
+			ManifestPath:           manifestPath,
+			PlanArtifactPath:       planPath,
+			ApprovalReceiptPath:    approvalPath,
+			ApprovalPublicKeyPath:  "/root-owned/key-required",
+			ExpectedDatasetDigest:  datasetDigest,
+			ExpectedManifestDigest: manifestDigest,
+		}
+		planReport, err := executePlanWithVerifiedApproval(
+			ctx, source, target, planCommand, approvedDataset, approvedDatasetBytes, approval,
+		)
+		if err != nil {
+			t.Fatalf("Execute(plan): %v", err)
+		}
+		if planReport.PlanArtifact == nil || planReport.ApplyEnabled ||
+			planReport.Inspection.Plan == nil || planReport.Inspection.Plan.Executable {
+			t.Fatalf("plan 错误开放 apply：%+v", planReport)
+		}
+		planDigest, err := ParseArtifactDigest(planReport.PlanArtifact.SHA256, "plan_digest")
+		if err != nil {
+			t.Fatalf("ParseArtifactDigest(plan): %v", err)
+		}
+		if err := ValidateFutureApplyInputs(FutureApplyInputs{
+			DatasetArtifactPath:    datasetPath,
+			ManifestPath:           manifestPath,
+			PlanArtifactPath:       planPath,
+			ExpectedDatasetDigest:  datasetDigest,
+			ExpectedManifestDigest: manifestDigest,
+			ExpectedPlanDigest:     planDigest,
+		}); err == nil || err.Error() != "current_plan_not_executable" {
+			t.Fatalf("当前 coverage=false plan 必须永久拒绝 apply，实际 %v", err)
+		}
+		if after := targetStateFingerprint(ctx, t, target); before != after {
+			t.Fatalf("两阶段门禁改写了目标：before=%s after=%s", before, after)
+		}
+		assertRedacted(t, planReport.Inspection)
+		encoded, err := json.Marshal(planReport)
+		if err != nil {
+			t.Fatalf("json.Marshal execution report: %v", err)
+		}
+		for _, forbidden := range []string{
+			"private@example.invalid", "legacy-body-do-not-print", manifestPath, datasetPath, planPath,
+		} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("执行报告泄露敏感值或本地路径：%s", encoded)
+			}
+		}
+
+		if _, err := source.ExecContext(ctx, `UPDATE public.users SET name = 'changed-after-approval'
+WHERE id = '11111111-1111-1111-1111-111111111111'`); err != nil {
+			t.Fatalf("修改来源数据漂移探针: %v", err)
+		}
+		changedPlanPath := filepath.Join(artifactRoot, "changed-plan.json")
+		changedCommand := planCommand
+		changedCommand.PlanArtifactPath = changedPlanPath
+		_, planErr := executePlanWithVerifiedApproval(
+			ctx, source, target, changedCommand, approvedDataset, approvedDatasetBytes, approval,
+		)
+		if _, err := source.ExecContext(ctx, `UPDATE public.users SET name = 'name'
+WHERE id = '11111111-1111-1111-1111-111111111111'`); err != nil {
+			t.Fatalf("恢复来源数据漂移探针: %v", err)
+		}
+		if planErr == nil || planErr.Error() != "dataset_snapshot_changed" {
+			t.Fatalf("审批后来源漂移必须拒绝 plan，实际 %v", planErr)
+		}
+		if _, err := os.Stat(changedPlanPath); !os.IsNotExist(err) {
+			t.Fatalf("失败 plan 不得留下 artifact，实际 %v", err)
+		}
 	})
 
 	t.Run("target inspection transaction rejects writes", func(t *testing.T) {

@@ -404,23 +404,67 @@ md5(
 
 ### 9.1 第一阶段只读工具
 
-仓库提供 `cmd/danshi-legacy-migrate` 的第一阶段安全骨架，目前只支持：
+仓库提供 `cmd/danshi-legacy-migrate` 的两进程审批骨架，目前只支持：
 
 ```bash
 SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
-  go run ./cmd/danshi-legacy-migrate inspect
+  go run ./cmd/danshi-legacy-migrate inspect \
+  --dataset-artifact /private/review/dataset.json
+```
 
+`inspect` 完成后必须退出。审批者在独立终端、独立 CI job 或其他独立审批渠道中审阅
+脱敏报告和 dataset artifact，再提供 artifact 原始字节的 SHA-256。私有清洗 manifest 也必须
+由该独立渠道提供其原始字节 SHA-256。审批渠道还必须使用不在迁移主机上的 Ed25519 私钥，
+签发 canonical plan-approval receipt；迁移主机只安装 root 持有的公钥，执行进程必须是非 root。
+`plan` 不会从文件自行推导“获批摘要”，也不会持有签名能力：
+
+```bash
 SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
-  go run ./cmd/danshi-legacy-migrate plan
+  go run ./cmd/danshi-legacy-migrate plan \
+  --dataset-artifact /private/review/dataset.json \
+  --expected-dataset-sha256 <independently-approved-dataset-sha256> \
+  --manifest /private/review/manifest.json \
+  --expected-manifest-sha256 <independently-approved-manifest-sha256> \
+  --approval-receipt /private/review/plan-approval.json \
+  --approval-public-key /etc/danshi-migration/approval.ed25519.pub \
+  --plan-artifact /private/review/plan.json
 ```
 
 - 连接只能从上述两个环境变量读取，没有 DSN 命令行参数；
+- `inspect` 只接受一个 dataset 输出路径，不能接收 manifest、审批摘要或 plan 输出路径；
+- `plan` 必须显式接收外部获批的 dataset SHA-256、manifest SHA-256、签名 receipt 与可信公钥，
+  任一缺失、格式错误、不匹配、过期或文件变化都会 fail closed；不存在 inspect+plan 的
+  单进程自批准模式；裸 SHA-256 只负责内容完整性，独立审批来源由 Ed25519 签名证明；
+- 公钥文件及其最终父目录必须由 root 持有且 group/other 不可写，文件不得是 symlink；plan
+  进程拒绝以 root 运行。私钥不得出现在迁移主机、仓库、环境变量或命令行；
+- plan-approval receipt v1 使用无空白 canonical JSON，顶层为 `payload` 和 `signature`；payload
+  绑定 approval ID、签发时间、最长七天的签发有效期、dataset/manifest SHA-256、dataset content version、
+  来源/目标数据库身份摘要、来源快照、目标 schema fingerprint 与 goose 版本；signature 是
+  Ed25519 对 `danshi-legacy-plan-approval-v1\n` 加 canonical payload JSON 的标准 Base64 签名；
+  验签只容许五分钟时钟偏差，拒绝未来签发、过期、expiry 不晚于 issued-at、或签发有效期超过
+  七天的 receipt；approval ID 用于审计关联，不宣称是服务端一次性防重放 nonce；
+- dataset artifact 是无时间戳的 canonical JSON，绑定来源 cluster/database identity 的脱敏摘要、
+  所有实际迁移字段的同快照 SHA-256、聚合计数、目标 cluster/database identity 的脱敏摘要、
+  PostgreSQL 18/goose v11/schema fingerprint 与固定 seed；验证码和 session 不迁移，只绑定
+  表是否存在与行数，不读取或输出短期凭据值；
+- `plan` 会在新的来源只读快照中重新计算整个 dataset artifact，并要求与已批准 artifact
+  逐字节相同；审批后发生的任意迁移字段、聚合结果、数据库身份、目标 schema 或 seed 漂移
+  都会拒绝生成 plan；
+- plan artifact 也是无时间戳 canonical JSON，绑定 dataset artifact SHA-256、manifest SHA-256、
+  审批 receipt SHA-256、审批公钥 SHA-256、
+  来源身份与快照、目标身份/schema/goose、manifest 聚合摘要及固定迁移阶段，输出单独的
+  plan SHA-256，供未来再走一次独立 apply 审批；
+- artifact 只能写入当前用户持有且 group/other 不可写的非符号链接目录；文件使用
+  `O_EXCL|O_NOFOLLOW`、`0600` 创建并 fsync，禁止覆盖。读取 artifact 和 manifest 都按 fd
+  复核 owner、mode、regular-file、大小、inode/mtime/ctime，拒绝 symlink、FIFO 与加载期替换；
 - 来源事务固定为 `REPEATABLE READ READ ONLY DEFERRABLE`；
 - PostgreSQL 只在 `SERIALIZABLE READ ONLY` 下让 `DEFERRABLE` 产生冲突安全快照效果；
   这里保留该 GUC 是为了严格记录执行事务形态，一致性保证来自 `REPEATABLE READ`，
   不能把它宣称为 serializable safe snapshot；
 - 来源和目标事务都把 `search_path` 收紧为 `pg_catalog`；所有业务表显式限定为
   `public.<table>`，catalog、系统函数和 `information_schema` 也显式限定，避免同名对象 shadow；
+- 来源和目标事务还把 `TimeZone` 固定为 UTC，避免时间字段的 canonical dataset 摘要受 session
+  时区影响；
 - 来源与目标是否同库使用 PostgreSQL cluster `system_identifier` 与 database OID 的组合判断，
   不依赖 DSN、地址、数据库名或 session `TimeZone`；普通检查角色必须保留
   `EXECUTE ON FUNCTION pg_catalog.pg_control_system()`，权限缺失时工具 fail closed；
@@ -430,11 +474,20 @@ SOURCE_DATABASE_URL=... TARGET_DATABASE_URL=... \
   trigger 的所属表与函数绑定、应用函数定义、sequence、policy、view/type inventory；
 - `plan` 在目标事务的第一条查询获取 schema-qualified 固定 transaction-level advisory lock，
   随后才固定 `search_path`；目标事务始终为 `REPEATABLE READ READ ONLY`；
-- 输出只包含固定枚举与聚合计数，不包含数据库名、DSN、邮箱、正文、UUID 或 URL；
+- stdout 和 artifact 只包含固定枚举、聚合计数与整体 SHA-256，不包含本地路径、数据库名、
+  DSN、邮箱、正文、UUID、URL 或原始 manifest；所有错误只输出固定 code/message；
 - 报告的 `inspection_level=foundation_preflight`；基础 blocker 清零不代表显式清洗 manifest、
   词表映射与逐项人工审批已经完成；
-- `apply_enabled=false`、计划 `executable=false` 且 `full_source_review_complete=false`；
-  当前二进制没有任何业务数据写入实现。
+- 当前 plan 会严格解析和绑定 manifest，但来源逐项 coverage 适配器尚未接入执行层，因此 artifact
+  明确写入 `manifest_coverage_validated=false`；
+- 当前来源门禁只验证已知列存在，并未绑定完整 canonical source schema fingerprint、列类型、PK 与
+  UNIQUE 约束；虽然 dataset 层会把重复来源 UUID 作为 hard finding，这仍不足以宣称 schema contract
+  完整，因此 artifact 明确写入 `source_schema_contract_validated=false`；
+- `apply_enabled=false`、计划 `executable=false` 且 `full_source_review_complete=false`；当前 CLI
+  仍拒绝 `apply`。库内预留入口先强制要求外部 plan/dataset/manifest 三个 SHA-256；随后会把
+  当前 coverage 或 source schema contract 未完成的 v1 plan 固定拒绝为 `current_plan_not_executable`。
+  它不能被未来实现通过“替换最后一行”直接升级为写入入口；可执行 apply 必须使用新的 artifact
+  schema、完整 exact-set coverage 与针对 plan digest 的独立签名审批。当前没有任何业务数据写入实现。
 
 ## 10. 两个事务局部开关
 

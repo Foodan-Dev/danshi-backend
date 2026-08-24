@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	targetAdvisoryLockSQL = "SELECT pg_catalog.pg_try_advisory_xact_lock($1)"
-	setSafeSearchPathSQL  = "SET LOCAL search_path = pg_catalog"
+	targetAdvisoryLockSQL   = "SELECT pg_catalog.pg_try_advisory_xact_lock($1)"
+	setSafeSearchPathSQL    = "SET LOCAL search_path = pg_catalog"
+	setCanonicalTimeZoneSQL = "SET LOCAL TIME ZONE 'UTC'"
 )
 
 func beginSourceSnapshot(ctx context.Context, database *sql.DB) (*sql.Tx, TransactionInspection, error) {
@@ -25,6 +26,14 @@ func beginSourceSnapshot(ctx context.Context, database *sql.DB) (*sql.Tx, Transa
 	if _, err := tx.ExecContext(ctx, setSafeSearchPathSQL); err != nil {
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, gateError("source_search_path_failed", "无法固定来源事务 search_path")
+	}
+	if _, err := tx.ExecContext(ctx, setCanonicalTimeZoneSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, gateError("source_timezone_failed", "无法固定来源事务时区")
+	}
+	if err := verifyCanonicalTimeZone(ctx, tx, "source"); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, err
 	}
 	settings, err := inspectTransaction(ctx, tx)
 	if err != nil {
@@ -64,6 +73,14 @@ func beginTargetInspection(ctx context.Context, database *sql.DB, lock bool) (*s
 		_ = tx.Rollback()
 		return nil, TransactionInspection{}, gateError("target_search_path_failed", "无法固定目标事务 search_path")
 	}
+	if _, err := tx.ExecContext(ctx, setCanonicalTimeZoneSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, gateError("target_timezone_failed", "无法固定目标事务时区")
+	}
+	if err := verifyCanonicalTimeZone(ctx, tx, "target"); err != nil {
+		_ = tx.Rollback()
+		return nil, TransactionInspection{}, err
+	}
 	settings, err := inspectTransaction(ctx, tx)
 	if err != nil {
 		_ = tx.Rollback()
@@ -75,6 +92,17 @@ func beginTargetInspection(ctx context.Context, database *sql.DB, lock bool) (*s
 		return nil, TransactionInspection{}, gateError("target_snapshot_mode_mismatch", "目标事务未满足 REPEATABLE READ READ ONLY")
 	}
 	return tx, settings, nil
+}
+
+func verifyCanonicalTimeZone(ctx context.Context, tx *sql.Tx, side string) error {
+	var timezone string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('TimeZone')").Scan(&timezone); err != nil {
+		return gateError(side+"_timezone_inspection_failed", "无法核验事务时区")
+	}
+	if timezone != "UTC" {
+		return gateError(side+"_timezone_mismatch", "事务时区未固定为 UTC")
+	}
+	return nil
 }
 
 func inspectTransaction(ctx context.Context, tx *sql.Tx) (TransactionInspection, error) {

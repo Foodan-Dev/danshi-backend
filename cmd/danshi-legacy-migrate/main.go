@@ -1,7 +1,5 @@
-// Command danshi-legacy-migrate 提供旧 FastAPI 数据库迁入前的只读 inspect/plan 门禁。
-//
-// 当前版本不实现 apply，两个数据库连接只能来自 SOURCE_DATABASE_URL 与
-// TARGET_DATABASE_URL，报告只输出固定枚举与聚合计数。
+// Command danshi-legacy-migrate 提供旧 FastAPI 数据库迁入前的两进程 inspect/plan 门禁。
+// 当前版本不实现 apply；报告只输出固定枚举、摘要与聚合计数。
 package main
 
 import (
@@ -26,7 +24,7 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string, output io.Writer) error {
-	mode, err := legacymigration.ParseMode(args)
+	command, err := legacymigration.ParseCommand(args)
 	if err != nil {
 		return err
 	}
@@ -34,7 +32,7 @@ func run(args []string, getenv func(string) string, output io.Writer) error {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	report, err := legacymigration.RunFromEnvironment(ctx, getenv, mode)
+	report, err := legacymigration.ExecuteFromEnvironment(ctx, getenv, command)
 	if err != nil {
 		return err
 	}
