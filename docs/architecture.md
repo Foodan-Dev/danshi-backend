@@ -739,7 +739,7 @@ server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链�
 - 开发环境人类可读文本，生产环境 JSON；
 - 日志包含 service 和 profile，请求日志从 context 自动补充 `request_id`，启用 tracing 时同时补充 `trace_id` 与 `span_id`；
 - 统一 500 `error_id`；
-- 应用通过独立 Prometheus registry 在 `/metrics` 直出 HTTP、数据库连接池、Go runtime 与进程指标；
+- 应用通过独立 Prometheus registry 在 `/metrics` 直出 HTTP、数据库连接池、审核、验证码、Go runtime 与进程指标；
 - OTel trace provider 通过 OTLP/HTTP 推送到 `OTLP_ENDPOINT`，HTTP server span 使用路由模板命名；
 - GORM 操作创建 DB client span，记录有限的 operation/table 属性，不记录 SQL 文本或变量值；
 - 腾讯 COS、腾讯 CI、腾讯 SES 与飞书 webhook 的网络调用创建 external client span；名称和属性只使用
@@ -748,7 +748,6 @@ server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链�
 
 尚未完成：
 
-- 审核、验证码等业务指标；
 - Collector、Prometheus、Tempo 或 Grafana 的仓库内部署配置。
 
 指标与 trace 使用两条刻意独立的链路：指标始终由应用暴露、Prometheus 主动拉取，trace 才通过 OTLP 推送。Collector 不可用时不会影响 `/metrics` 抓取。仓库仍不提供空的 `deploy/otel` 或 `deploy/grafana` 目录；部署侧应连接现有可用的 Collector 和 Prometheus，而不是把占位配置误当成观测栈。
@@ -764,11 +763,21 @@ danshi_db_pool_open_connections
 danshi_db_pool_max_open_connections
 danshi_db_pool_wait_total
 danshi_db_pool_wait_duration_seconds_total
+danshi_moderation_submissions_total{provider,scene}
+danshi_moderation_provider_failures_total{provider,scene,reason}
+danshi_moderation_terminal_outcomes_total{provider,scene,outcome}
+danshi_moderation_callbacks_total{provider,outcome,reason}
+danshi_moderation_review_queue_items
+danshi_verification_events_total{provider,outcome,reason}
 go_*
 process_*
 ```
 
-`route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。DB trace 进一步省略整个 SQL 文本与变量值；外部调用 span 只使用 `external.system` 与 `external.operation` 两个固定枚举属性，失败只记录通用状态 `external call failed`，不记录供应商错误正文，防止邮箱、验证码、对象键、webhook token、用户内容或云端原始响应进入 telemetry。
+`route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。业务指标的 `provider`、`scene`、`outcome`、`reason` 也全部在代码中收敛为固定枚举，未知值统一降为 `unknown`，不会透传用户、对象、任务、邮箱、正文或错误文本。
+
+审核提交和供应商调用失败按真实调用即时计数。`pass`、`review`、`block` 与带 `provider_failed` 标签的失败终态，以及成功处理的回调和成功发信，只在当前 UoW 事务提交后计数；事务回滚不会制造业务成功。重复回调计入 `callbacks_total{outcome="processed",reason="duplicate"}`，但不会重复增加终态。待复核 gauge 每次 scrape 都通过短事务调用与管理端分页、积压告警相同的 `queue_items` 计数：同一帖子无论有多少正文/图片 review 流水只计一个条目，其他对象分别计数。数据库不可用或计数超时会让该 collector 显式失败，不沿用陈旧值冒充当前深度。
+
+DB trace 进一步省略整个 SQL 文本与变量值；外部调用 span 只使用 `external.system` 与 `external.operation` 两个固定枚举属性，失败只记录通用状态 `external call failed`，不记录供应商错误正文，防止邮箱、验证码、对象键、webhook token、用户内容或云端原始响应进入 telemetry。
 
 ## 21. 安全边界
 

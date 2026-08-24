@@ -172,6 +172,8 @@ make schema-test
 
 Prometheus 直接拉取 `GET /metrics`，不经过 Collector。该端点不鉴权且不进入请求级数据库事务；生产环境应在网关或网络策略层限制抓取来源。HTTP 指标和 server span 的路由维度使用 `/api/v2/posts/:post_id` 这类模板，不记录实际资源 ID。启用 tracing 后，请求日志会同时包含 `request_id`、`trace_id` 和 `span_id`；数据库 span 不记录 SQL 文本及变量值。腾讯 COS、CI、SES 与飞书 webhook 的 client span 只记录固定的供应商和操作枚举，不记录对象键、邮箱、验证码、webhook URL、用户内容或供应商错误正文。
 
+业务指标同样只使用固定枚举 label：审核提交、供应商失败、事务提交后的终态、回调鉴权/载荷/处理结果，以及验证码真实发信、供应商失败、邮箱配额限流和服务器在途拒绝。`danshi_moderation_review_queue_items` 在每次 scrape 时通过一个短数据库事务，复用管理端 `queue_items` 的真实分组口径实时计数；它不是后台任务上次运行结果。指标绝不记录用户 ID、图片对象键、供应商任务号、邮箱、验证码、正文或错误文本。预供应商阶段发生的验证码限流与在途拒绝固定使用 `provider="none"`。
+
 生产部署应通过密钥管理系统注入敏感值，不要提交 `.env`、token 或云访问密钥。
 
 待复核积压由外部 cron 或 Kubernetes CronJob 周期执行一次性命令检查：

@@ -18,6 +18,7 @@ func LimitInFlight(
 	maxInFlight int,
 	retryAfterSeconds int,
 	busyError error,
+	onReject ...func(context.Context),
 ) app.HandlerFunc {
 	methodBytes := []byte(method)
 	pathBytes := []byte(path)
@@ -35,6 +36,11 @@ func LimitInFlight(
 			defer func() { <-permits }()
 			c.Next(ctx)
 		default:
+			for _, observe := range onReject {
+				if observe != nil {
+					observe(ctx)
+				}
+			}
 			c.Header("Retry-After", retryAfter)
 			httpx.Fail(ctx, c, busyError)
 		}

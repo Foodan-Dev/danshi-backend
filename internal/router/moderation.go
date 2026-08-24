@@ -15,6 +15,7 @@ func registerModeration(api *route.RouterGroup, deps Deps) {
 			deps.Config.ModerationCallbackAuthFailureThreshold,
 			deps.Config.ModerationCallbackAuthFailureWindow(),
 		),
+		deps.BusinessMetrics,
 	)
 	moderation := api.Group("/moderation")
 
