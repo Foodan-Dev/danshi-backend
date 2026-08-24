@@ -22,6 +22,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
+	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 	"github.com/Foodan-Dev/danshi-backend/internal/router"
 
 	_ "time/tzdata" // 内置时区库：distroless 镜像里没有 /usr/share/zoneinfo
@@ -30,6 +31,8 @@ import (
 // version 由构建时 -ldflags "-X main.version=..." 注入；
 // 本地 go build 不注入时保持 dev。
 var version = "dev"
+
+const reviewQueueStatementTimeout = 2500 * time.Millisecond
 
 func main() {
 	if err := run(); err != nil {
@@ -79,7 +82,18 @@ func run() error {
 	}
 	log.Info("schema 版本核对通过", slog.Int64("version", db.ExpectedVersion),
 		slog.String("build", version))
-	metrics, err := obs.NewMetrics(sqlDB)
+	reviewQueue := repository.ModerationAlertRepository{}
+	metrics, err := obs.NewMetrics(sqlDB, obs.WithReviewQueueCounter(
+		func(counterCtx context.Context) (count int64, counterErr error) {
+			counterErr = database.RunInReadOnlyTx(
+				counterCtx, reviewQueueStatementTimeout, func(txCtx context.Context) error {
+					count, counterErr = reviewQueue.CountPendingReviewQueue(txCtx)
+					return counterErr
+				},
+			)
+			return count, counterErr
+		},
+	))
 	if err != nil {
 		return err
 	}
@@ -97,7 +111,9 @@ func run() error {
 		h.Use(tracing.Middleware())
 	}
 	metrics.Register(h)
-	router.Register(h, router.Deps{Config: cfg, DB: database, Log: log})
+	router.Register(h, router.Deps{
+		Config: cfg, DB: database, Log: log, BusinessMetrics: metrics,
+	})
 
 	go func() {
 		<-ctx.Done()

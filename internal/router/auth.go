@@ -12,7 +12,7 @@ import (
 func registerAuth(api *route.RouterGroup, deps Deps) {
 	sender := verificationEmailSender(deps)
 	authService := service.NewAuthService(deps.Config, sender)
-	authHandler := handler.NewAuth(authService)
+	authHandler := handler.NewAuth(authService, deps.BusinessMetrics)
 	auth := api.Group("/auth")
 
 	auth.POST("/email-verification-codes", authHandler.SendVerificationCode)
@@ -30,20 +30,26 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 
 func verificationEmailSender(deps Deps) service.VerificationEmailSender {
 	if deps.EmailSender != nil {
-		return deps.EmailSender
+		return observeVerificationSender(deps.EmailSender, "unknown", deps.BusinessMetrics)
 	}
 	if !deps.Config.IsProd() {
-		return service.NewLogVerificationEmailSender(deps.Log)
+		return observeVerificationSender(
+			service.NewLogVerificationEmailSender(deps.Log), "log", deps.BusinessMetrics,
+		)
 	}
 	if !deps.Config.TencentSESConfigured() {
-		return service.UnavailableVerificationEmailSender{}
+		return observeVerificationSender(
+			service.UnavailableVerificationEmailSender{}, "unknown", deps.BusinessMetrics,
+		)
 	}
 	sender, err := tencentcloud.NewSESVerificationEmailSender(deps.Config)
 	if err != nil {
 		if deps.Log != nil {
 			deps.Log.Error("腾讯云 SES 适配器初始化失败", "err", err)
 		}
-		return service.UnavailableVerificationEmailSender{}
+		return observeVerificationSender(
+			service.UnavailableVerificationEmailSender{}, "unknown", deps.BusinessMetrics,
+		)
 	}
-	return sender
+	return observeVerificationSender(sender, "tencent_ses", deps.BusinessMetrics)
 }

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
@@ -151,26 +153,149 @@ func TestProviderReviewAndSubmitImageWithoutNetwork(t *testing.T) {
 	require.Equal(t, "public-read", requests[3].header.Get("x-cos-acl"))
 }
 
-func TestCallbackDecoderMapsReviewAndRejectsFailedJob(t *testing.T) {
+func TestProviderExternalCallsCreateLowCardinalityClientSpans(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, parent := tracerProvider.Tracer("test-parent").Start(context.Background(), "request")
+	transport := &captureTencentTransport{}
+	provider, err := NewProvider(providerTestConfig(), &http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	_, err = provider.Review(ctx, service.ModerationRequest{
+		Target: service.ModerationTargetComment, Text: "PRIVATE-TEXT-MUST-NOT-BE-TRACED",
+	})
+	require.NoError(t, err)
+	_, err = provider.SubmitImage(ctx, service.ImageModerationRequest{
+		ImageAssetID: 88, ObjectKey: "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg",
+	})
+	require.NoError(t, err)
+	require.NoError(t, provider.SetObjectPublicAccess(
+		ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg", true,
+	))
+	meta, err := provider.HeadObject(ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg")
+	require.NoError(t, err)
+	require.True(t, meta.Exists)
+	require.EqualValues(t, 1234, meta.ContentLength)
+	require.NoError(t, provider.DeleteObject(ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg"))
+	parent.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 6)
+	require.Equal(t, []string{
+		"EXTERNAL tencent_ci ReviewText",
+		"EXTERNAL tencent_ci SubmitImage",
+		"EXTERNAL tencent_cos PutObjectACL",
+		"EXTERNAL tencent_cos HeadObject",
+		"EXTERNAL tencent_cos DeleteObject",
+		"request",
+	}, []string{
+		spans[0].Name(), spans[1].Name(), spans[2].Name(),
+		spans[3].Name(), spans[4].Name(), spans[5].Name(),
+	})
+	for _, span := range spans[:5] {
+		require.Equal(t, spans[5].SpanContext().SpanID(), span.Parent().SpanID())
+		require.NotContains(t, span.Name(), "PRIVATE")
+		for _, item := range span.Attributes() {
+			require.NotContains(t, item.Value.String(), "PRIVATE")
+		}
+	}
+}
+
+func TestCallbackDecoderMapsOfficialDetailCallbacks(t *testing.T) {
 	decoder := CallbackDecoder{}
-	callback, err := decoder.DecodeImageCallback([]byte(`{
+	t.Run("success", func(t *testing.T) {
+		body := []byte(`{
   "EventName":"ReviewImage",
   "JobsDetail":{
-    "JobId":"job-review","State":"Success","Object":"posts/1/a.jpg",
-    "DataId":"image_asset:1","Result":2,"Score":73,
-    "Label":"Ads","AdsInfo":{"HitFlag":1,"Category":"QR code"}
+    "JobId":"job-review","State":"Success","CreationTime":"2021-08-10T21:01:10+08:00",
+    "Object":"posts/1/a.jpg","DataId":"image_asset:1","Label":"Ads","Result":2,
+    "Score":73,"Category":"","SubLabel":"",
+    "PornInfo":{"HitFlag":0,"Score":0,"Label":"","Category":"","SubLabel":""},
+    "AdsInfo":{"HitFlag":1,"Score":73,"Label":"","Category":"QR code","SubLabel":""},
+    "BucketId":"bucket-1250000000","Region":"ap-shanghai","ForbidState":0
   }
-}`))
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), callback.ImageAssetID)
-	require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
-	require.Equal(t, []string{"ad", "ads", "qr code"}, callback.Labels)
+}`)
+		callback, err := decoder.DecodeImageCallback(body)
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), callback.ImageAssetID)
+		require.Equal(t, "job-review", callback.ProviderJobID)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"ad", "ads", "qr code"}, callback.Labels)
+		require.NotNil(t, callback.Score)
+		require.Equal(t, "73", callback.Score.String())
+		require.JSONEq(t, string(body), string(callback.RawResponse))
+	})
 
-	_, err = decoder.DecodeImageCallback([]byte(`{
+	t.Run("failed becomes terminal review", func(t *testing.T) {
+		body := []byte(`{
   "EventName":"ReviewImage",
-  "JobsDetail":{"JobId":"failed","State":"Failed","DataId":"image_asset:1"}
+  "JobsDetail":{
+    "Code":"InvalidImage","Message":"image width and height are too small",
+    "JobId":"job-failed","State":"Failed","Object":"posts/1/tiny.png",
+    "DataId":"image_asset:2"
+  }
+}`)
+		callback, err := decoder.DecodeImageCallback(body)
+		require.NoError(t, err)
+		require.Equal(t, uint64(2), callback.ImageAssetID)
+		require.Equal(t, "job-failed", callback.ProviderJobID)
+		require.Equal(t, "posts/1/tiny.png", callback.ObjectKey)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"provider_failed"}, callback.Labels)
+		require.Nil(t, callback.Score)
+		require.JSONEq(t, string(body), string(callback.RawResponse))
+	})
+
+	t.Run("non terminal state is rejected", func(t *testing.T) {
+		_, err := decoder.DecodeImageCallback([]byte(`{
+  "EventName":"ReviewImage",
+  "JobsDetail":{"JobId":"auditing","State":"Auditing","DataId":"image_asset:1"}
 }`))
-	require.Error(t, err)
+		require.ErrorContains(t, err, "状态无效")
+	})
+
+	t.Run("success without result is rejected", func(t *testing.T) {
+		_, err := decoder.DecodeImageCallback([]byte(`{
+  "EventName":"ReviewImage",
+  "JobsDetail":{"JobId":"missing-result","State":"Success","DataId":"image_asset:1"}
+}`))
+		require.ErrorContains(t, err, "缺少 Result")
+	})
+}
+
+func TestCallbackDecoderMapsOfficialSimpleCallbacks(t *testing.T) {
+	decoder := CallbackDecoder{}
+	t.Run("success", func(t *testing.T) {
+		callback, err := decoder.DecodeImageCallback([]byte(`{
+  "code":0,
+  "data":{
+    "event":"ReviewImage","result":1,"trace_id":"simple-block",
+    "data_id":"image_asset:3","url":"https://example.test/a.jpg",
+    "porn_info":{"hit_flag":1,"label":"Porn","score":99}
+  },
+  "message":"success"
+}`))
+		require.NoError(t, err)
+		require.Equal(t, uint64(3), callback.ImageAssetID)
+		require.Equal(t, "simple-block", callback.ProviderJobID)
+		require.Equal(t, model.ModerationVerdictBlock, callback.Verdict)
+		require.Equal(t, []string{"porn"}, callback.Labels)
+		require.Nil(t, callback.Score, "Simple 回调没有综合置信度字段")
+	})
+
+	t.Run("provider failure becomes terminal review", func(t *testing.T) {
+		callback, err := decoder.DecodeImageCallback([]byte(`{
+  "code":-1,
+  "data":{
+    "event":"ReviewImage","trace_id":"simple-failed","data_id":"image_asset:4"
+  },
+  "message":"failed"
+}`))
+		require.NoError(t, err)
+		require.Equal(t, uint64(4), callback.ImageAssetID)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"provider_failed"}, callback.Labels)
+	})
 }
 
 func TestProviderFailureIsFailClosed(t *testing.T) {
@@ -240,7 +365,7 @@ func (t *captureTencentTransport) RoundTrip(request *http.Request) (*http.Respon
 			`</JobsDetail><RequestId>request-1</RequestId></Response>`
 	}
 	return &http.Response{
-		StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Length": {"1234"}},
 		Body: io.NopCloser(strings.NewReader(responseBody)), Request: request,
 	}, nil
 }

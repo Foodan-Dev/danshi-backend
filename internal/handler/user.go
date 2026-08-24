@@ -190,12 +190,12 @@ func (h *User) followAction(ctx context.Context, c *app.RequestContext, follow b
 }
 
 func (h *User) followList(ctx context.Context, c *app.RequestContext, following bool) {
-	query, err := bindQuery[paginationQuery](c)
+	query, err := bindQuery[cursorPaginationQuery](c)
 	var userID uint64
 	var principal *service.Principal
-	var params pagination.Params
+	var params pagination.CursorRequest
 	if err == nil {
-		userID, principal, params, err = userListIdentity(c, query)
+		userID, principal, params, err = userFollowListIdentity(c, query)
 	}
 	var result *service.UserFollowList
 	if err == nil && following {
@@ -228,6 +228,18 @@ func userListIdentity(
 	userID, principal, err := userRequestIdentity(c)
 	if err != nil {
 		return 0, nil, pagination.Params{}, err
+	}
+	params, err := query.params()
+	return userID, principal, params, err
+}
+
+func userFollowListIdentity(
+	c *app.RequestContext,
+	query cursorPaginationQuery,
+) (uint64, *service.Principal, pagination.CursorRequest, error) {
+	userID, principal, err := userRequestIdentity(c)
+	if err != nil {
+		return 0, nil, pagination.CursorRequest{}, err
 	}
 	params, err := query.params()
 	return userID, principal, params, err

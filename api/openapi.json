@@ -2671,7 +2671,7 @@
       "UserFollowList": {
         "properties": {
           "pagination": {
-            "$ref": "#/components/schemas/Meta"
+            "$ref": "#/components/schemas/CursorMeta"
           },
           "users": {
             "items": {
@@ -22710,12 +22710,9 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "cursor",
             "schema": {
-              "default": 1,
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
+              "type": "string"
             }
           },
           {
@@ -22907,12 +22904,9 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "cursor",
             "schema": {
-              "default": 1,
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
+              "type": "string"
             }
           },
           {

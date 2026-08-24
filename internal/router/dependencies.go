@@ -63,6 +63,8 @@ func withDefaultDomainDeps(deps Deps) Deps {
 		}
 	}
 	deps.ModerationAlerter = alerting.AfterCommit(deps.ModerationAlerter)
+	deps.ContentModerator = observeContentModerator(deps.ContentModerator, deps.BusinessMetrics)
+	deps.ImageModerator = observeImageModerator(deps.ImageModerator, deps.BusinessMetrics)
 	return deps
 }
 

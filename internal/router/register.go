@@ -24,6 +24,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/middleware"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
@@ -40,6 +41,8 @@ type Deps struct {
 	Config config.Config
 	DB     *db.DB
 	Log    *slog.Logger
+	// BusinessMetrics 只接收固定枚举 label；nil 时业务行为完全不变。
+	BusinessMetrics obs.BusinessRecorder
 	// EmailSender 可由测试替换；nil 时 dev 使用日志实现，prod 按配置装配腾讯云 SES。
 	EmailSender service.VerificationEmailSender
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
@@ -80,6 +83,13 @@ func Register(h *server.Hertz, d Deps) {
 		verificationCodeMaxInFlight,
 		verificationCodeRetryAfterSeconds,
 		apierr.TooManyRequests(apierr.BizVerifyCodeBusy, "验证码发送服务繁忙，请稍后再试"),
+		func(ctx context.Context) {
+			if d.BusinessMetrics != nil {
+				d.BusinessMetrics.RecordVerification(
+					ctx, "none", "inflight_rejected", "inflight_rejected",
+				)
+			}
+		},
 	))
 
 	registerProbes(h, d)

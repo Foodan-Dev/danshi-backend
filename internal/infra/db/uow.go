@@ -2,7 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -41,4 +44,26 @@ func (d *DB) RunInTx(ctx context.Context, fn func(ctx context.Context) error) er
 		}
 		return err
 	})
+}
+
+// RunInReadOnlyTx 为后台读取或指标采集建立只读事务，并用事务局部
+// statement_timeout 约束单条 SQL。它复用应用连接池，不创建额外连接池。
+func (d *DB) RunInReadOnlyTx(
+	ctx context.Context,
+	statementTimeout time.Duration,
+	fn func(ctx context.Context) error,
+) error {
+	if statementTimeout <= 0 {
+		return errors.New("db: 只读事务 statement timeout 必须为正时长")
+	}
+	milliseconds := max(1, statementTimeout.Milliseconds())
+	return d.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(
+			"SELECT set_config('statement_timeout', ?, true)",
+			fmt.Sprintf("%dms", milliseconds),
+		).Error; err != nil {
+			return fmt.Errorf("设置事务语句超时: %w", err)
+		}
+		return fn(WithTx(ctx, tx))
+	}, &sql.TxOptions{ReadOnly: true})
 }

@@ -12,17 +12,19 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/httpx"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/envelope"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
 // Auth 处理 auth 域的 HTTP 请求。
 type Auth struct {
 	service *service.AuthService
+	metrics obs.BusinessRecorder
 }
 
 // NewAuth 创建 auth handler。
-func NewAuth(authService *service.AuthService) *Auth {
-	return &Auth{service: authService}
+func NewAuth(authService *service.AuthService, metrics obs.BusinessRecorder) *Auth {
+	return &Auth{service: authService, metrics: metrics}
 }
 
 type sendVerificationCodeRequest struct {
@@ -64,6 +66,10 @@ func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) 
 		return
 	}
 	if err := h.service.SendVerificationCode(ctx, request.Email); err != nil {
+		var rateLimit *service.RateLimitError
+		if h.metrics != nil && errors.As(err, &rateLimit) {
+			h.metrics.RecordVerification(ctx, "none", "rate_limited", "rate_limited")
+		}
 		failService(ctx, c, err)
 		return
 	}

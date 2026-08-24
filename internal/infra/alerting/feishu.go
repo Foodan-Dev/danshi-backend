@@ -11,10 +11,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
-const webhookTimeout = 5 * time.Second
+const (
+	webhookTimeout            = 5 * time.Second
+	feishuInstrumentationName = "github.com/Foodan-Dev/danshi-backend/internal/infra/alerting/feishu"
+)
 
 // FeishuWebhook 把非 pass 结论发送到飞书自定义机器人。
 type FeishuWebhook struct {
@@ -52,8 +56,13 @@ func (a *FeishuWebhook) Alert(ctx context.Context, alert service.ModerationAlert
 		return
 	}
 	request.Header.Set("Content-Type", "application/json")
+	callCtx, span := obs.StartExternalCall(
+		ctx, feishuInstrumentationName, "feishu", "SendWebhook",
+	)
+	request = request.WithContext(callCtx)
 	response, err := a.client.Do(request)
 	if err != nil {
+		obs.EndExternalCall(span, err)
 		a.logFailure(ctx, alert, err)
 		return
 	}
@@ -64,8 +73,12 @@ func (a *FeishuWebhook) Alert(ctx context.Context, alert service.ModerationAlert
 	}()
 	_, _ = io.Copy(io.Discard, response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		a.logFailure(ctx, alert, fmt.Errorf("飞书 webhook 返回 HTTP %d", response.StatusCode))
+		err = fmt.Errorf("飞书 webhook 返回 HTTP %d", response.StatusCode)
+		obs.EndExternalCall(span, err)
+		a.logFailure(ctx, alert, err)
+		return
 	}
+	obs.EndExternalCall(span, nil)
 }
 
 func alertText(alert service.ModerationAlert) string {

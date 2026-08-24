@@ -29,10 +29,31 @@ type Metrics struct {
 	requestTotal    *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
 	responseSize    *prometheus.HistogramVec
+	moderation      moderationMetrics
+	verification    verificationMetrics
+	reviewQueue     *reviewQueueCollector
+}
+
+type metricsOptions struct {
+	reviewQueueCounter ReviewQueueCounter
+}
+
+// MetricsOption 配置可选的应用指标 collector。
+type MetricsOption func(*metricsOptions)
+
+// WithReviewQueueCounter 注册与管理端待复核列表相同口径的实时计数函数。
+func WithReviewQueueCounter(counter ReviewQueueCounter) MetricsOption {
+	return func(options *metricsOptions) {
+		options.reviewQueueCounter = counter
+	}
 }
 
 // NewMetrics 创建 HTTP、Go、进程与可选数据库连接池指标。
-func NewMetrics(pool *sql.DB) (*Metrics, error) {
+func NewMetrics(pool *sql.DB, opts ...MetricsOption) (*Metrics, error) {
+	options := metricsOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
 	m := &Metrics{
 		registry: prometheus.NewRegistry(),
 		requestTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -55,17 +76,28 @@ func NewMetrics(pool *sql.DB) (*Metrics, error) {
 			Help:      "HTTP response size in bytes by route template.",
 			Buckets:   prometheus.ExponentialBuckets(128, 2, 16),
 		}, []string{"route", "method", "status"}),
+		moderation:   newModerationMetrics(),
+		verification: newVerificationMetrics(),
 	}
 
 	metricCollectors := []prometheus.Collector{
 		m.requestTotal,
 		m.requestDuration,
 		m.responseSize,
+		m.moderation.submissions,
+		m.moderation.providerFailures,
+		m.moderation.terminalOutcomes,
+		m.moderation.callbacks,
+		m.verification.events,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	}
 	if pool != nil {
 		metricCollectors = append(metricCollectors, newDBStatsCollector(pool))
+	}
+	if options.reviewQueueCounter != nil {
+		m.reviewQueue = newReviewQueueCollector(options.reviewQueueCounter)
+		metricCollectors = append(metricCollectors, m.reviewQueue)
 	}
 	for _, collector := range metricCollectors {
 		if err := m.registry.Register(collector); err != nil {
@@ -98,7 +130,10 @@ func (m *Metrics) Register(h *server.Hertz) {
 	h.GET(metricsPath, m.handle)
 }
 
-func (m *Metrics) handle(_ context.Context, c *app.RequestContext) {
+func (m *Metrics) handle(ctx context.Context, c *app.RequestContext) {
+	if m.reviewQueue != nil {
+		m.reviewQueue.Refresh(ctx)
+	}
 	families, err := m.registry.Gather()
 	if err != nil {
 		c.String(http.StatusInternalServerError, "metrics collection failed\n")

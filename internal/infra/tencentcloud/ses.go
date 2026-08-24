@@ -13,6 +13,7 @@ import (
 	ses "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses/v20201002"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
@@ -20,6 +21,7 @@ const (
 	sesEndpoint              = "ses.tencentcloudapi.com"
 	sesRequestTimeoutSeconds = 2
 	registrationEmailSubject = "旦食注册验证码"
+	sesInstrumentationName   = "github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud/ses"
 )
 
 type sesClient interface {
@@ -75,7 +77,7 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	ctx context.Context,
 	email string,
 	code string,
-) error {
+) (err error) {
 	templateData, err := json.Marshal(map[string]string{"code": code})
 	if err != nil {
 		return fmt.Errorf("编码腾讯云 SES 模板参数: %w", err)
@@ -89,6 +91,11 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 		TemplateData: common.StringPtr(string(templateData)),
 	}
 	request.TriggerType = common.Uint64Ptr(1)
+
+	ctx, span := obs.StartExternalCall(
+		ctx, sesInstrumentationName, "tencent_ses", "SendEmail",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
 
 	response, err := s.client.SendEmailWithContext(ctx, request)
 	if err != nil {
