@@ -369,30 +369,137 @@ func cleanLabels(values []string) []string {
 // CallbackDecoder 是不依赖腾讯云凭证的图片审核回调解码器。
 type CallbackDecoder struct{}
 
-// DecodeImageCallback 把腾讯 CI Detail JSON 回调转换为供应商无关结论。
+// DecodeImageCallback 把腾讯 CI Detail/Simple JSON 回调转换为供应商无关结论。
 func (CallbackDecoder) DecodeImageCallback(body []byte) (service.ImageModerationCallback, error) {
-	var callback tencentImageCallback
-	if err := json.Unmarshal(body, &callback); err != nil {
+	var envelope struct {
+		EventName  string          `json:"EventName"`
+		JobsDetail json.RawMessage `json:"JobsDetail"`
+		Code       *int            `json:"code"`
+		Data       json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		return service.ImageModerationCallback{}, fmt.Errorf("解析腾讯 CI 图片回调: %w", err)
 	}
-	if callback.EventName != "ReviewImage" || callback.JobsDetail.State != "Success" {
-		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片回调事件或状态无效")
+	if envelope.EventName != "" || len(envelope.JobsDetail) > 0 {
+		return decodeDetailImageCallback(body, envelope.EventName, envelope.JobsDetail)
 	}
-	imageAssetID, err := parseImageDataID(callback.JobsDetail.DataID)
+	if envelope.Code != nil || len(envelope.Data) > 0 {
+		return decodeSimpleImageCallback(body, envelope.Code, envelope.Data)
+	}
+	return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片回调格式无效")
+}
+
+func decodeDetailImageCallback(
+	body []byte,
+	eventName string,
+	rawDetail json.RawMessage,
+) (service.ImageModerationCallback, error) {
+	if eventName != "ReviewImage" || len(rawDetail) == 0 {
+		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片回调事件无效")
+	}
+	var detail tencentImageCallbackDetail
+	if err := json.Unmarshal(rawDetail, &detail); err != nil {
+		return service.ImageModerationCallback{}, fmt.Errorf("解析腾讯 CI 图片详细回调: %w", err)
+	}
+	imageAssetID, err := parseImageDataID(detail.DataID)
 	if err != nil {
 		return service.ImageModerationCallback{}, err
 	}
-	verdict, err := verdictFromResult(callback.JobsDetail.Result)
-	if err != nil {
-		return service.ImageModerationCallback{}, err
+	if strings.TrimSpace(detail.JobID) == "" {
+		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片回调缺少 JobId")
 	}
-	score := decimal.NewFromInt(int64(callback.JobsDetail.Score))
+
+	var (
+		verdict model.ModerationVerdict
+		labels  []string
+		score   *decimal.Decimal
+	)
+	switch detail.State {
+	case "Success":
+		if detail.Result == nil {
+			return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片回调缺少 Result")
+		}
+		verdict, err = verdictFromResult(*detail.Result)
+		if err != nil {
+			return service.ImageModerationCallback{}, err
+		}
+		labels = imageLabels(detail)
+		score = decimalPointer(detail.Score)
+	case "Failed":
+		// 供应商失败不能视为内容通过；收敛为 review 让资产结束 pending，
+		// 同时复用既有人工复核与告警链路。错误详情只保留在审核流水中。
+		verdict = model.ModerationVerdictReview
+		labels = []string{"provider_failed"}
+	default:
+		return service.ImageModerationCallback{}, fmt.Errorf(
+			"腾讯 CI 图片回调状态无效: %s", detail.State,
+		)
+	}
 	return service.ImageModerationCallback{
-		ImageAssetID: imageAssetID, ObjectKey: callback.JobsDetail.Object,
-		Provider: model.ModerationProviderTencentCI, ProviderJobID: callback.JobsDetail.JobID,
-		Verdict: verdict, Labels: imageLabels(callback.JobsDetail), Score: &score,
+		ImageAssetID: imageAssetID, ObjectKey: detail.Object,
+		Provider: model.ModerationProviderTencentCI, ProviderJobID: detail.JobID,
+		Verdict: verdict, Labels: labels, Score: score,
 		RawResponse: append(json.RawMessage(nil), body...),
 	}, nil
+}
+
+func decodeSimpleImageCallback(
+	body []byte,
+	code *int,
+	rawData json.RawMessage,
+) (service.ImageModerationCallback, error) {
+	if code == nil || len(rawData) == 0 {
+		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片 Simple 回调缺少必要字段")
+	}
+	var data tencentSimpleImageCallbackData
+	if err := json.Unmarshal(rawData, &data); err != nil {
+		return service.ImageModerationCallback{}, fmt.Errorf(
+			"解析腾讯 CI 图片 Simple 回调: %w", err,
+		)
+	}
+	if data.Event != "ReviewImage" {
+		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片 Simple 回调事件无效")
+	}
+	imageAssetID, err := parseImageDataID(data.DataID)
+	if err != nil {
+		return service.ImageModerationCallback{}, err
+	}
+	if strings.TrimSpace(data.TraceID) == "" {
+		return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片 Simple 回调缺少 trace_id")
+	}
+
+	var (
+		verdict model.ModerationVerdict
+		labels  []string
+	)
+	if *code == 0 {
+		if data.Result == nil {
+			return service.ImageModerationCallback{}, errors.New("腾讯 CI 图片 Simple 回调缺少 result")
+		}
+		verdict, err = verdictFromResult(*data.Result)
+		if err != nil {
+			return service.ImageModerationCallback{}, err
+		}
+		labels = simpleImageLabels(data)
+	} else {
+		verdict = model.ModerationVerdictReview
+		labels = []string{"provider_failed"}
+	}
+
+	return service.ImageModerationCallback{
+		ImageAssetID: imageAssetID, ObjectKey: data.Object,
+		Provider: model.ModerationProviderTencentCI, ProviderJobID: data.TraceID,
+		Verdict: verdict, Labels: labels,
+		RawResponse: append(json.RawMessage(nil), body...),
+	}, nil
+}
+
+func decimalPointer(value *int) *decimal.Decimal {
+	if value == nil {
+		return nil
+	}
+	result := decimal.NewFromInt(int64(*value))
+	return &result
 }
 
 // DecodeImageCallback 让共享供应商实例也能直接作为回调解码端口注入。
@@ -400,25 +507,39 @@ func (*Provider) DecodeImageCallback(body []byte) (service.ImageModerationCallba
 	return CallbackDecoder{}.DecodeImageCallback(body)
 }
 
-type tencentImageCallback struct {
-	EventName  string                     `json:"EventName"`
-	JobsDetail tencentImageCallbackDetail `json:"JobsDetail"`
-}
-
 type tencentImageCallbackDetail struct {
 	JobID        string                   `json:"JobId"`
 	State        string                   `json:"State"`
+	Code         string                   `json:"Code"`
+	Message      string                   `json:"Message"`
 	Object       string                   `json:"Object"`
 	DataID       string                   `json:"DataId"`
 	Label        string                   `json:"Label"`
 	Category     string                   `json:"Category"`
 	SubLabel     string                   `json:"SubLabel"`
-	Result       int                      `json:"Result"`
-	Score        int                      `json:"Score"`
+	Result       *int                     `json:"Result"`
+	Score        *int                     `json:"Score"`
 	PornInfo     *tencentImageSceneResult `json:"PornInfo"`
 	AdsInfo      *tencentImageSceneResult `json:"AdsInfo"`
 	IllegalInfo  *tencentImageSceneResult `json:"IllegalInfo"`
 	PoliticsInfo *tencentImageSceneResult `json:"PoliticsInfo"`
+}
+
+type tencentSimpleImageCallbackData struct {
+	Event        string                         `json:"event"`
+	TraceID      string                         `json:"trace_id"`
+	DataID       string                         `json:"data_id"`
+	Object       string                         `json:"object"`
+	Result       *int                           `json:"result"`
+	PornInfo     *tencentSimpleImageSceneResult `json:"porn_info"`
+	AdsInfo      *tencentSimpleImageSceneResult `json:"ads_info"`
+	IllegalInfo  *tencentSimpleImageSceneResult `json:"illegal_info"`
+	PoliticsInfo *tencentSimpleImageSceneResult `json:"politics_info"`
+}
+
+type tencentSimpleImageSceneResult struct {
+	HitFlag int    `json:"hit_flag"`
+	Label   string `json:"label"`
 }
 
 type tencentImageSceneResult struct {
@@ -456,6 +577,26 @@ func imageLabels(detail tencentImageCallbackDetail) []string {
 			continue
 		}
 		labels = append(labels, item.name, item.info.Label, item.info.Category, item.info.SubLabel)
+	}
+	return cleanLabels(labels)
+}
+
+func simpleImageLabels(detail tencentSimpleImageCallbackData) []string {
+	labels := make([]string, 0, 8)
+	infos := []struct {
+		name string
+		info *tencentSimpleImageSceneResult
+	}{
+		{"porn", detail.PornInfo},
+		{"ad", detail.AdsInfo},
+		{"illegal", detail.IllegalInfo},
+		{"politics", detail.PoliticsInfo},
+	}
+	for _, item := range infos {
+		if item.info == nil || item.info.HitFlag == 0 {
+			continue
+		}
+		labels = append(labels, item.name, item.info.Label)
 	}
 	return cleanLabels(labels)
 }

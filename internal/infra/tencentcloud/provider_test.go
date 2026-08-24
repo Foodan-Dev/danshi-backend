@@ -201,26 +201,101 @@ func TestProviderExternalCallsCreateLowCardinalityClientSpans(t *testing.T) {
 	}
 }
 
-func TestCallbackDecoderMapsReviewAndRejectsFailedJob(t *testing.T) {
+func TestCallbackDecoderMapsOfficialDetailCallbacks(t *testing.T) {
 	decoder := CallbackDecoder{}
-	callback, err := decoder.DecodeImageCallback([]byte(`{
+	t.Run("success", func(t *testing.T) {
+		body := []byte(`{
   "EventName":"ReviewImage",
   "JobsDetail":{
-    "JobId":"job-review","State":"Success","Object":"posts/1/a.jpg",
-    "DataId":"image_asset:1","Result":2,"Score":73,
-    "Label":"Ads","AdsInfo":{"HitFlag":1,"Category":"QR code"}
+    "JobId":"job-review","State":"Success","CreationTime":"2021-08-10T21:01:10+08:00",
+    "Object":"posts/1/a.jpg","DataId":"image_asset:1","Label":"Ads","Result":2,
+    "Score":73,"Category":"","SubLabel":"",
+    "PornInfo":{"HitFlag":0,"Score":0,"Label":"","Category":"","SubLabel":""},
+    "AdsInfo":{"HitFlag":1,"Score":73,"Label":"","Category":"QR code","SubLabel":""},
+    "BucketId":"bucket-1250000000","Region":"ap-shanghai","ForbidState":0
   }
-}`))
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), callback.ImageAssetID)
-	require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
-	require.Equal(t, []string{"ad", "ads", "qr code"}, callback.Labels)
+}`)
+		callback, err := decoder.DecodeImageCallback(body)
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), callback.ImageAssetID)
+		require.Equal(t, "job-review", callback.ProviderJobID)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"ad", "ads", "qr code"}, callback.Labels)
+		require.NotNil(t, callback.Score)
+		require.Equal(t, "73", callback.Score.String())
+		require.JSONEq(t, string(body), string(callback.RawResponse))
+	})
 
-	_, err = decoder.DecodeImageCallback([]byte(`{
+	t.Run("failed becomes terminal review", func(t *testing.T) {
+		body := []byte(`{
   "EventName":"ReviewImage",
-  "JobsDetail":{"JobId":"failed","State":"Failed","DataId":"image_asset:1"}
+  "JobsDetail":{
+    "Code":"InvalidImage","Message":"image width and height are too small",
+    "JobId":"job-failed","State":"Failed","Object":"posts/1/tiny.png",
+    "DataId":"image_asset:2"
+  }
+}`)
+		callback, err := decoder.DecodeImageCallback(body)
+		require.NoError(t, err)
+		require.Equal(t, uint64(2), callback.ImageAssetID)
+		require.Equal(t, "job-failed", callback.ProviderJobID)
+		require.Equal(t, "posts/1/tiny.png", callback.ObjectKey)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"provider_failed"}, callback.Labels)
+		require.Nil(t, callback.Score)
+		require.JSONEq(t, string(body), string(callback.RawResponse))
+	})
+
+	t.Run("non terminal state is rejected", func(t *testing.T) {
+		_, err := decoder.DecodeImageCallback([]byte(`{
+  "EventName":"ReviewImage",
+  "JobsDetail":{"JobId":"auditing","State":"Auditing","DataId":"image_asset:1"}
 }`))
-	require.Error(t, err)
+		require.ErrorContains(t, err, "状态无效")
+	})
+
+	t.Run("success without result is rejected", func(t *testing.T) {
+		_, err := decoder.DecodeImageCallback([]byte(`{
+  "EventName":"ReviewImage",
+  "JobsDetail":{"JobId":"missing-result","State":"Success","DataId":"image_asset:1"}
+}`))
+		require.ErrorContains(t, err, "缺少 Result")
+	})
+}
+
+func TestCallbackDecoderMapsOfficialSimpleCallbacks(t *testing.T) {
+	decoder := CallbackDecoder{}
+	t.Run("success", func(t *testing.T) {
+		callback, err := decoder.DecodeImageCallback([]byte(`{
+  "code":0,
+  "data":{
+    "event":"ReviewImage","result":1,"trace_id":"simple-block",
+    "data_id":"image_asset:3","url":"https://example.test/a.jpg",
+    "porn_info":{"hit_flag":1,"label":"Porn","score":99}
+  },
+  "message":"success"
+}`))
+		require.NoError(t, err)
+		require.Equal(t, uint64(3), callback.ImageAssetID)
+		require.Equal(t, "simple-block", callback.ProviderJobID)
+		require.Equal(t, model.ModerationVerdictBlock, callback.Verdict)
+		require.Equal(t, []string{"porn"}, callback.Labels)
+		require.Nil(t, callback.Score, "Simple 回调没有综合置信度字段")
+	})
+
+	t.Run("provider failure becomes terminal review", func(t *testing.T) {
+		callback, err := decoder.DecodeImageCallback([]byte(`{
+  "code":-1,
+  "data":{
+    "event":"ReviewImage","trace_id":"simple-failed","data_id":"image_asset:4"
+  },
+  "message":"failed"
+}`))
+		require.NoError(t, err)
+		require.Equal(t, uint64(4), callback.ImageAssetID)
+		require.Equal(t, model.ModerationVerdictReview, callback.Verdict)
+		require.Equal(t, []string{"provider_failed"}, callback.Labels)
+	})
 }
 
 func TestProviderFailureIsFailClosed(t *testing.T) {

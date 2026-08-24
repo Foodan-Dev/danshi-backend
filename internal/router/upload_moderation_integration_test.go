@@ -141,6 +141,61 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	})
 }
 
+func TestFailedTencentImageCallbackAgainstPostgres(t *testing.T) {
+	gdb, database := openAuthPostgres(t)
+	storage := newFakeImageStorage()
+	sender := newCaptureEmailSender()
+	engine := uploadModerationEngine(
+		uploadModerationTestConfig(), database, sender, storage,
+		fixedAsyncImageModerator("unused-job"),
+	)
+	asset := createModerationAsset(t, gdb, nil, "provider-failed")
+	callbackBody := map[string]any{
+		"EventName": "ReviewImage",
+		"JobsDetail": map[string]any{
+			"Code": "InvalidImage", "Message": "image width and height are too small",
+			"JobId": "ci-provider-failed-job", "State": "Failed",
+			"Object": asset.ObjectKey, "DataId": fmt.Sprintf("image_asset:%d", asset.ID),
+		},
+	}
+	callbackPath := "/api/v2/moderation/tencent-ci/callback?token=" +
+		url.QueryEscape(moderationCallbackToken)
+
+	status, response, _ := performJSON(
+		t, engine, http.MethodPost, callbackPath, callbackBody, "",
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var applied service.ImageModerationApplyResult
+	decodeData(t, response, &applied)
+	require.False(t, applied.Duplicate)
+
+	require.NoError(t, gdb.First(&asset, asset.ID).Error)
+	require.Equal(t, model.ModerationStatusReview, asset.Moderation,
+		"腾讯 CI 失败回调必须结束 pending 并进入人工复核")
+	var record model.ModerationRecord
+	require.NoError(t, gdb.Where(
+		"provider = ? AND provider_job_id = ?",
+		model.ModerationProviderTencentCI, "ci-provider-failed-job",
+	).First(&record).Error)
+	require.Equal(t, model.ModerationVerdictReview, record.Verdict)
+	require.Equal(t, pq.StringArray{"provider_failed"}, record.Labels)
+	require.JSONEq(t, `{
+  "EventName":"ReviewImage",
+  "JobsDetail":{
+    "Code":"InvalidImage","Message":"image width and height are too small",
+    "JobId":"ci-provider-failed-job","State":"Failed",
+    "Object":"`+asset.ObjectKey+`","DataId":"image_asset:`+fmt.Sprint(asset.ID)+`"
+  }
+}`, string(record.RawResponse))
+
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, callbackPath, callbackBody, "",
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	decodeData(t, response, &applied)
+	require.True(t, applied.Duplicate, "腾讯重试失败回调时必须幂等")
+}
+
 func testPostLevelUnifiedModeration(
 	t *testing.T,
 	engine *server.Hertz,
