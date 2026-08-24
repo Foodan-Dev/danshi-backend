@@ -13,7 +13,11 @@ func registerUser(api *route.RouterGroup, deps Deps) {
 	if alerter == nil {
 		alerter = service.GenericUserModerationAlerter{Alerter: deps.ModerationAlerter}
 	}
-	userHandler := handler.NewUser(service.NewUserService(deps.ContentModerator, alerter))
+	userHandler := handler.NewUser(service.NewUserServiceWithCursorSecret(
+		deps.ContentModerator,
+		alerter,
+		deps.Config.JWTSecretKey,
+	))
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
 	users := api.Group("/users")

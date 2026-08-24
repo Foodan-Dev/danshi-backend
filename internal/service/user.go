@@ -81,8 +81,8 @@ type UserListItem struct {
 
 // UserFollowList 是关注/粉丝列表及分页信息。
 type UserFollowList struct {
-	Users      []UserListItem  `json:"users"`
-	Pagination pagination.Meta `json:"pagination"`
+	Users      []UserListItem        `json:"users"`
+	Pagination pagination.CursorMeta `json:"pagination"`
 }
 
 // UserService 实现用户资料、个人列表与关注关系。
@@ -93,17 +93,50 @@ type UserService struct {
 	posts         repository.PostRepository
 	notifications repository.NotificationRepository
 	sessions      repository.SessionRepository
+	following     *pagination.CursorCodec
+	followers     *pagination.CursorCodec
 }
 
 // NewUserService 创建用户服务。
 func NewUserService(moderator ContentModerator, alerter UserModerationAlerter) *UserService {
+	return newUserService(
+		moderator,
+		alerter,
+		pagination.NewEphemeralCursorCodec("users.following"),
+		pagination.NewEphemeralCursorCodec("users.followers"),
+	)
+}
+
+// NewUserServiceWithCursorSecret 创建跨实例可互认关注列表游标的用户服务。
+func NewUserServiceWithCursorSecret(
+	moderator ContentModerator,
+	alerter UserModerationAlerter,
+	cursorSecret string,
+) *UserService {
+	return newUserService(
+		moderator,
+		alerter,
+		pagination.NewCursorCodec(cursorSecret, "users.following"),
+		pagination.NewCursorCodec(cursorSecret, "users.followers"),
+	)
+}
+
+func newUserService(
+	moderator ContentModerator,
+	alerter UserModerationAlerter,
+	following *pagination.CursorCodec,
+	followers *pagination.CursorCodec,
+) *UserService {
 	if moderator == nil {
 		moderator = UnavailableContentModerator{}
 	}
 	if alerter == nil {
 		alerter = DiscardUserModerationAlerter{}
 	}
-	return &UserService{moderator: moderator, alerter: alerter}
+	return &UserService{
+		moderator: moderator, alerter: alerter,
+		following: following, followers: followers,
+	}
 }
 
 // Delete 只允许本人软注销账号，并在同一事务撤销全部会话。
@@ -283,13 +316,18 @@ func (s *UserService) Unfollow(
 func (s *UserService) Following(
 	ctx context.Context,
 	userID uint64,
-	params pagination.Params,
+	request pagination.CursorRequest,
 	currentUserID uint64,
 ) (*UserFollowList, error) {
 	if err := s.ensureUser(ctx, userID); err != nil {
 		return nil, err
 	}
-	rows, meta, err := s.users.FindFollowingPage(ctx, userID, currentUserID, params)
+	params, err := s.following.DecodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := s.users.FindFollowingPage(ctx, userID, currentUserID, params)
+	meta, err := userFollowCursorMeta(s.following, rows, params.Limit, hasMore, err)
 	return userFollowList(rows, meta, err)
 }
 
@@ -297,13 +335,18 @@ func (s *UserService) Following(
 func (s *UserService) Followers(
 	ctx context.Context,
 	userID uint64,
-	params pagination.Params,
+	request pagination.CursorRequest,
 	currentUserID uint64,
 ) (*UserFollowList, error) {
 	if err := s.ensureUser(ctx, userID); err != nil {
 		return nil, err
 	}
-	rows, meta, err := s.users.FindFollowersPage(ctx, userID, currentUserID, params)
+	params, err := s.followers.DecodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	rows, hasMore, err := s.users.FindFollowersPage(ctx, userID, currentUserID, params)
+	meta, err := userFollowCursorMeta(s.followers, rows, params.Limit, hasMore, err)
 	return userFollowList(rows, meta, err)
 }
 
@@ -496,7 +539,7 @@ func (s *UserService) followResult(
 
 func userFollowList(
 	rows []repository.UserListRecord,
-	meta pagination.Meta,
+	meta pagination.CursorMeta,
 	err error,
 ) (*UserFollowList, error) {
 	if err != nil {
@@ -512,6 +555,29 @@ func userFollowList(
 		})
 	}
 	return &UserFollowList{Users: items, Pagination: meta}, nil
+}
+
+func userFollowCursorMeta(
+	codec *pagination.CursorCodec,
+	rows []repository.UserListRecord,
+	limit int,
+	hasMore bool,
+	err error,
+) (pagination.CursorMeta, error) {
+	if err != nil {
+		return pagination.CursorMeta{}, err
+	}
+	meta := pagination.CursorMeta{Limit: limit, HasMore: hasMore}
+	if !hasMore || len(rows) == 0 {
+		return meta, nil
+	}
+	last := rows[len(rows)-1]
+	token, err := codec.Encode(pagination.Cursor{CreatedAt: last.FollowCreatedAt, ID: last.ID})
+	if err != nil {
+		return pagination.CursorMeta{}, apierr.Internal(err)
+	}
+	meta.NextCursor = &token
+	return meta, nil
 }
 
 func buildUserProfile(record *repository.UserProfileRecord) UserProfile {

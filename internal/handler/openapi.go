@@ -47,8 +47,8 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 			http.StatusBadRequest),
 		binding(http.MethodDelete, "/api/v2/users/:user_id/follow", nil, service.FollowActionResult{},
 			http.StatusBadRequest),
-		getBinding("/api/v2/users/:user_id/following", paginationQuery{}, service.UserFollowList{}),
-		getBinding("/api/v2/users/:user_id/followers", paginationQuery{}, service.UserFollowList{}),
+		getBinding("/api/v2/users/:user_id/following", cursorPaginationQuery{}, service.UserFollowList{}),
+		getBinding("/api/v2/users/:user_id/followers", cursorPaginationQuery{}, service.UserFollowList{}),
 	}
 }
 

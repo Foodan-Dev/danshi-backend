@@ -25,16 +25,17 @@ type UserProfileRecord struct {
 
 // UserListRecord 是关注/粉丝列表的一行公开用户信息。
 type UserListRecord struct {
-	ID             uint64
-	Name           string
-	AvatarURL      *string `gorm:"column:avatar_url"`
-	Bio            *string
-	PostCount      int64
-	LikeCount      int64
-	FavoriteCount  int64
-	FollowerCount  int64
-	FollowingCount int64
-	IsFollowing    bool
+	ID              uint64
+	Name            string
+	AvatarURL       *string `gorm:"column:avatar_url"`
+	Bio             *string
+	FollowCreatedAt time.Time `gorm:"column:follow_created_at"`
+	PostCount       int64
+	LikeCount       int64
+	FavoriteCount   int64
+	FollowerCount   int64
+	FollowingCount  int64
+	IsFollowing     bool
 }
 
 // SearchPage 按昵称关键词分页返回当前可用用户。
@@ -171,8 +172,8 @@ func (UserRepository) FindFollowingPage(
 	ctx context.Context,
 	userID uint64,
 	currentUserID uint64,
-	params pagination.Params,
-) ([]UserListRecord, pagination.Meta, error) {
+	params pagination.CursorParams,
+) ([]UserListRecord, bool, error) {
 	return findFollowPage(ctx, userID, currentUserID, params, true)
 }
 
@@ -181,8 +182,8 @@ func (UserRepository) FindFollowersPage(
 	ctx context.Context,
 	userID uint64,
 	currentUserID uint64,
-	params pagination.Params,
-) ([]UserListRecord, pagination.Meta, error) {
+	params pagination.CursorParams,
+) ([]UserListRecord, bool, error) {
 	return findFollowPage(ctx, userID, currentUserID, params, false)
 }
 
@@ -190,28 +191,42 @@ func findFollowPage(
 	ctx context.Context,
 	userID uint64,
 	currentUserID uint64,
-	params pagination.Params,
+	params pagination.CursorParams,
 	following bool,
-) ([]UserListRecord, pagination.Meta, error) {
-	join, predicate := "JOIN users AS u ON u.id = f.follower_id", "f.following_id = ?"
+) ([]UserListRecord, bool, error) {
+	join := "JOIN users AS u ON u.id = f.follower_id"
+	predicate, oppositeColumn := "f.following_id = ?", "f.follower_id"
 	if following {
-		join, predicate = "JOIN users AS u ON u.id = f.following_id", "f.follower_id = ?"
+		join = "JOIN users AS u ON u.id = f.following_id"
+		predicate, oppositeColumn = "f.follower_id = ?", "f.following_id"
 	}
 	base := db.FromContext(ctx).Table("follows AS f").Joins(join).
 		Where(predicate+" AND u.deleted_at IS NULL", userID)
-	var total int64
-	if err := base.Count(&total).Error; err != nil {
-		return nil, pagination.Meta{}, err
+	if params.After != nil {
+		base = base.Where(
+			"(f.created_at, "+oppositeColumn+") < (?, ?)",
+			params.After.CreatedAt,
+			params.After.ID,
+		)
 	}
 
-	rows := make([]UserListRecord, 0, params.Limit)
-	query := base.Select(userListColumns, currentUserID, currentUserID, currentUserID).
+	rows := make([]UserListRecord, 0, params.Limit+1)
+	query := base.Select(
+		userListColumns+", f.created_at AS follow_created_at",
+		currentUserID,
+		currentUserID,
+		currentUserID,
+	).
 		Joins("LEFT JOIN image_assets AS avatar ON avatar.id = u.avatar_image_asset_id").
-		Order("f.created_at DESC, u.id DESC").Offset(params.Offset()).Limit(params.Limit)
+		Order("f.created_at DESC, " + oppositeColumn + " DESC").Limit(params.Limit + 1)
 	if err := query.Scan(&rows).Error; err != nil {
-		return nil, pagination.Meta{}, err
+		return nil, false, err
 	}
-	return rows, pagination.NewMeta(params, total), nil
+	hasMore := len(rows) > params.Limit
+	if hasMore {
+		rows = rows[:params.Limit]
+	}
+	return rows, hasMore, nil
 }
 
 const userProfileSQL = `

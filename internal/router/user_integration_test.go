@@ -733,8 +733,10 @@ func testUserFollowConcurrencyAndDeletion(
 	var following service.UserFollowList
 	decodeData(t, response, &following)
 	require.Len(t, following.Users, 1)
-	require.EqualValues(t, 1, following.Pagination.Total,
-		"活跃用户的关注统计与列表总数必须一致")
+	require.False(t, following.Pagination.HasMore)
+	require.Nil(t, following.Pagination.NextCursor)
+	require.EqualValues(t, targetProfile.Stats.FollowerCount, len(following.Users),
+		"活跃用户的关注统计与完整列表条数必须一致")
 
 	historicalFollower := fixtures.CreateActor(cfg)
 	deletedTarget := fixtures.CreateActor(cfg)
@@ -750,7 +752,8 @@ func testUserFollowConcurrencyAndDeletion(
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &following)
 	require.Empty(t, following.Users)
-	require.Zero(t, following.Pagination.Total, "关注列表必须隐藏已注销目标")
+	require.False(t, following.Pagination.HasMore, "关注列表必须隐藏已注销目标")
+	require.Nil(t, following.Pagination.NextCursor)
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		userPath(historicalFollower.User.ID), nil, historicalFollower.Token)
 	require.Equal(t, http.StatusOK, status)
@@ -776,7 +779,8 @@ func testUserFollowConcurrencyAndDeletion(
 	var followers service.UserFollowList
 	decodeData(t, response, &followers)
 	require.Empty(t, followers.Users)
-	require.Zero(t, followers.Pagination.Total, "粉丝列表必须隐藏已注销关注者")
+	require.False(t, followers.Pagination.HasMore, "粉丝列表必须隐藏已注销关注者")
+	require.Nil(t, followers.Pagination.NextCursor)
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		userPath(visibleTarget.User.ID), nil, visibleTarget.Token)
 	require.Equal(t, http.StatusOK, status)
@@ -797,7 +801,8 @@ func testUserFollowConcurrencyAndDeletion(
 	var embeddedStats service.UserFollowList
 	decodeData(t, response, &embeddedStats)
 	require.Len(t, embeddedStats.Users, 2)
-	require.EqualValues(t, 2, embeddedStats.Pagination.Total)
+	require.False(t, embeddedStats.Pagination.HasMore)
+	require.Nil(t, embeddedStats.Pagination.NextCursor)
 	for _, item := range embeddedStats.Users {
 		switch item.ID {
 		case visibleTarget.User.ID:

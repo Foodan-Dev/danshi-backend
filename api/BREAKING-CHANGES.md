@@ -4,7 +4,7 @@
 “**破坏性**”重新计数，原重写计划共 **12 项**；后续产品批次确认的破坏性变更继续编号。
 新增端点、附加字段和非破坏行为变更另列在文末。
 
-## 破坏性变更（18 项）
+## 破坏性变更（19 项）
 
 ### BC-001 / §4.3：分页参数改为严格校验
 
@@ -393,6 +393,28 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - [ ] 使用 `moderation` 向作者展示审核中或违规状态；其他用户的评论卡片只会收到 `pass`。
 - [ ] 根评论从结果集消失时一并移除本地整层楼，不继续单独展示已缓存回复。
 
+### BC-019 / 关注与粉丝列表改为关注时间游标分页
+
+**动机**：关注关系会在翻页期间新增或取消。offset 会在新关系插入到前页时重复边界用户，
+也会在前页关系取消后跳过尚未读取的用户；以关注时间和对侧用户 id 组成全序后，连续翻页不受
+前页位移影响。
+
+| 端点或项目 | 旧契约 | 新契约 |
+|---|---|---|
+| `GET /api/v2/users/{user_id}/following` 请求 | `page`、`limit` | `cursor`、`limit`；按 `(follows.created_at DESC, following_id DESC)` |
+| `GET /api/v2/users/{user_id}/followers` 请求 | `page`、`limit` | `cursor`、`limit`；按 `(follows.created_at DESC, follower_id DESC)` |
+| 两个端点的响应 `pagination` | `{page,limit,total,total_pages}` | `{limit,next_cursor,has_more}` |
+
+两个端点分别绑定游标作用域，游标不能交叉使用；令牌无效或被篡改时返回 422，字段为
+`cursor`、代码为 `invalid_format`。最后一页 `next_cursor=null` 且 `has_more=false`。
+列表和资料统计继续排除已注销用户，软删除不会物理删除历史关注动作行。
+
+**前端影响清单**：
+
+- [ ] 删除关注与粉丝列表的 `page`、`total` 和 `total_pages` 依赖。
+- [ ] 按 `has_more` 续取并原样回传 `next_cursor`；刷新或切换用户、列表方向时清空 cursor。
+- [ ] 不解析游标，也不在 following 与 followers 之间复用游标。
+
 ## 新增、勘误与行为变更（不计入上述破坏性变更）
 
 ### 社交关系：关注统计与列表统一排除已注销用户
@@ -400,9 +422,9 @@ Python v1/旧库与 Go v2/新库并行隔离。
 - **类别**：一致性勘误，非破坏。
 - **影响端点**：`GET /api/v2/users/{user_id}`、`GET /api/v2/users/{user_id}/following`、
   `GET /api/v2/users/{user_id}/followers`。
-- **新口径**：`follower_count`、`following_count`、列表 `pagination.total` 与实际返回条数均只
-  统计未注销用户；软删除不会物理删除历史关注动作行。
-- **分页边界**：关注和粉丝列表继续使用 offset 分页，本项不改变分页协议。
+- **新口径**：`follower_count`、`following_count` 与游标遍历得到的实际列表条数均只统计
+  未注销用户；软删除不会物理删除历史关注动作行。
+- **分页边界**：关注和粉丝列表随后由 BC-019 改为游标分页；本项只定义可见性口径。
 
 ### 账号资料：注册补齐 `gender=other`
 
