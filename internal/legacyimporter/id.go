@@ -14,12 +14,17 @@ func isUUID(raw string) bool {
 		if index == 8 || index == 13 || index == 18 || index == 23 {
 			continue
 		}
-		if !((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
-			(value >= 'A' && value <= 'F')) {
+		if !isHexDigit(value) {
 			return false
 		}
 	}
 	return true
+}
+
+func isHexDigit(value rune) bool {
+	return (value >= '0' && value <= '9') ||
+		(value >= 'a' && value <= 'f') ||
+		(value >= 'A' && value <= 'F')
 }
 
 func relationKey(values ...string) string {
