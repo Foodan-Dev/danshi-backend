@@ -1,7 +1,9 @@
 package legacymigration
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +11,9 @@ import (
 )
 
 func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
-	path := writeManifest(t, emptyManifestJSON(), 0o400)
-	manifest, err := LoadManifest(path)
+	data := emptyManifestJSON()
+	path := writeManifest(t, data, 0o400)
+	manifest, digest, err := LoadManifest(path)
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
@@ -20,6 +23,9 @@ func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
 	}
 	if len(summary.Sections) != len(requiredManifestSections) {
 		t.Fatalf("固定 section code 数量错误：%+v", summary.Sections)
+	}
+	if digest != ManifestDigest(sha256.Sum256(data)) || len(digest.String()) != sha256.Size*2 {
+		t.Fatalf("manifest digest 与获批原始字节不一致：%s", digest.String())
 	}
 	for index, section := range summary.Sections {
 		if section.Code != requiredManifestSections[index] || section.Count != 0 {
@@ -31,48 +37,48 @@ func TestLoadManifestAcceptsExplicitEmptySections(t *testing.T) {
 func TestLoadManifestAcceptsValidatedNonEmptyDecisions(t *testing.T) {
 	document := emptyManifestDocument()
 	document["excluded_users"] = []any{
-		map[string]any{"user_id": "user-excluded", "action": "exclude"},
+		map[string]any{"user_id": syntheticUUID(1), "action": "exclude"},
 	}
 	document["excluded_content"] = []any{
-		map[string]any{"content_type": "post", "content_id": "post-excluded", "action": "exclude"},
-		map[string]any{"content_type": "comment", "content_id": "comment-excluded", "action": "exclude"},
+		map[string]any{"content_type": "post", "content_id": syntheticUUID(2), "action": "exclude"},
+		map[string]any{"content_type": "comment", "content_id": syntheticUUID(3), "action": "exclude"},
 	}
 	document["email_rewrites"] = []any{
-		map[string]any{"user_id": "user-email", "action": "rewrite", "new_email": "rewritten@example.invalid"},
+		map[string]any{"user_id": syntheticUUID(4), "action": "rewrite", "new_email": "rewritten@example.invalid"},
 	}
 	document["post_type_resolutions"] = []any{
-		map[string]any{"post_id": "post-type", "action": "set_type", "target_type": "share"},
+		map[string]any{"post_id": syntheticUUID(5), "action": "set_type", "target_type": "share"},
 	}
 	document["dictionary_mappings"] = []any{
 		map[string]any{"dictionary": "cuisine", "source": "source-cuisine", "action": "map", "target": "target-cuisine"},
 	}
 	document["post_image_resolutions"] = []any{
 		map[string]any{
-			"post_id": "post-image", "source_reference": "source-image", "action": "map",
-			"target_image_asset_id": "asset-keep",
+			"post_id": syntheticUUID(6), "source_reference": "source-image", "action": "map",
+			"target_image_asset_id": syntheticUUID(7),
 		},
 	}
 	document["avatar_resolutions"] = []any{
-		map[string]any{"user_id": "user-avatar", "action": "replace", "target_image_asset_id": "asset-keep"},
+		map[string]any{"user_id": syntheticUUID(8), "action": "replace", "target_image_asset_id": syntheticUUID(7)},
 	}
 	document["duplicate_image_asset_resolutions"] = []any{
-		map[string]any{"group_key": "duplicate-group", "image_asset_id": "asset-keep", "action": "keep"},
-		map[string]any{"group_key": "duplicate-group", "image_asset_id": "asset-drop", "action": "exclude"},
+		map[string]any{"group_key": "duplicate-group", "image_asset_id": syntheticUUID(7), "action": "keep"},
+		map[string]any{"group_key": "duplicate-group", "image_asset_id": syntheticUUID(9), "action": "exclude"},
 	}
 	document["comment_reparent_resolutions"] = []any{
 		map[string]any{
-			"comment_id": "comment-reparent", "action": "set_reply_to",
-			"target_reply_to_user_id": "user-reply",
+			"comment_id": syntheticUUID(10), "action": "set_reply_to",
+			"target_reply_to_user_id": syntheticUUID(11),
 		},
 	}
 	document["orphan_like_exclusions"] = []any{
-		map[string]any{"like_id": "like-orphan", "action": "exclude"},
+		map[string]any{"like_id": syntheticUUID(12), "action": "exclude"},
 	}
 	document["orphan_notification_exclusions"] = []any{
-		map[string]any{"notification_id": "notification-orphan", "action": "exclude"},
+		map[string]any{"notification_id": syntheticUUID(13), "action": "exclude"},
 	}
 
-	manifest, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600))
+	manifest, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600))
 	if err != nil {
 		t.Fatalf("LoadManifest: %v", err)
 	}
@@ -101,7 +107,7 @@ func TestLoadManifestRejectsUnknownFields(t *testing.T) {
 
 	document = emptyManifestDocument()
 	document["excluded_users"] = []any{
-		map[string]any{"user_id": "user-a", "action": "exclude", "unexpected": true},
+		map[string]any{"user_id": syntheticUUID(1), "action": "exclude", "unexpected": true},
 	}
 	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_schema_invalid")
 }
@@ -118,10 +124,47 @@ func TestLoadManifestRejectsDuplicateJSONKeysAtAnyDepth(t *testing.T) {
 	nested := strings.Replace(
 		string(emptyManifestJSON()),
 		`"excluded_users":[]`,
-		`"excluded_users":[{"user_id":"user-a","user_id":"user-b","action":"exclude"}]`,
+		`"excluded_users":[{"user_id":"10000000-0000-4000-8000-000000000001","user_id":"10000000-0000-4000-8000-000000000002","action":"exclude"}]`,
 		1,
 	)
 	assertManifestCode(t, writeManifest(t, []byte(nested), 0o600), "manifest_duplicate_key")
+
+	caseFoldedTopLevel := strings.Replace(
+		string(emptyManifestJSON()),
+		`"excluded_users":[]`,
+		`"excluded_users":[],"EXCLUDED_USERS":[]`,
+		1,
+	)
+	assertManifestCode(t, writeManifest(t, []byte(caseFoldedTopLevel), 0o600), "manifest_duplicate_key")
+
+	caseFoldedNested := strings.Replace(
+		string(emptyManifestJSON()),
+		`"excluded_users":[]`,
+		`"excluded_users":[{"user_id":"10000000-0000-4000-8000-000000000001","USER_ID":"10000000-0000-4000-8000-000000000002","action":"exclude"}]`,
+		1,
+	)
+	assertManifestCode(t, writeManifest(t, []byte(caseFoldedNested), 0o600), "manifest_duplicate_key")
+
+	unicodeFolded := strings.Replace(
+		string(emptyManifestJSON()),
+		`"excluded_users":[]`,
+		`"excluded_users":[],"K":[],"K":[]`,
+		1,
+	)
+	assertManifestCode(t, writeManifest(t, []byte(unicodeFolded), 0o600), "manifest_duplicate_key")
+}
+
+func TestLoadManifestRequiresExactFieldCase(t *testing.T) {
+	topLevel := strings.Replace(string(emptyManifestJSON()), `"excluded_users":[]`, `"EXCLUDED_USERS":[]`, 1)
+	assertManifestCode(t, writeManifest(t, []byte(topLevel), 0o600), "manifest_schema_invalid")
+
+	nested := strings.Replace(
+		string(emptyManifestJSON()),
+		`"excluded_users":[]`,
+		`"excluded_users":[{"USER_ID":"10000000-0000-4000-8000-000000000001","action":"exclude"}]`,
+		1,
+	)
+	assertManifestCode(t, writeManifest(t, []byte(nested), 0o600), "manifest_schema_invalid")
 }
 
 func TestLoadManifestRejectsInsecureOrNonRegularFiles(t *testing.T) {
@@ -139,11 +182,49 @@ func TestLoadManifestRejectsInsecureOrNonRegularFiles(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 	assertManifestCode(t, symlink, "manifest_not_regular")
+
+	writableParent := t.TempDir()
+	if err := os.Chmod(writableParent, 0o770); err != nil {
+		t.Fatalf("Chmod parent: %v", err)
+	}
+	manifestPath := filepath.Join(writableParent, "manifest.json")
+	if err := os.WriteFile(manifestPath, emptyManifestJSON(), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	assertManifestCode(t, manifestPath, "manifest_parent_permissions_too_open")
 }
 
 func TestLoadManifestRejectsOversizedFile(t *testing.T) {
 	data := make([]byte, int(MaxManifestBytes)+1)
 	assertManifestCode(t, writeManifest(t, data, 0o600), "manifest_too_large")
+}
+
+func TestLoadManifestRejectsInvalidUTF8AndIsolatedSurrogate(t *testing.T) {
+	invalidUTF8 := append([]byte(nil), emptyManifestJSON()...)
+	invalidUTF8[len(invalidUTF8)-1] = 0xff
+	assertManifestCode(t, writeManifest(t, invalidUTF8, 0o600), "manifest_invalid_json")
+
+	isolatedSurrogate := strings.Replace(
+		string(emptyManifestJSON()),
+		`"dictionary_mappings":[]`,
+		`"dictionary_mappings":[{"dictionary":"cuisine","source":"\ud800","action":"map","target":"target-value"}]`,
+		1,
+	)
+	assertManifestCode(t, writeManifest(t, []byte(isolatedSurrogate), 0o600), "manifest_invalid_json")
+
+	validUnicode := strings.Replace(
+		string(emptyManifestJSON()),
+		`"dictionary_mappings":[]`,
+		`"dictionary_mappings":[{"dictionary":"cuisine","source":"\ufffd","action":"map","target":"\ud83d\ude00"}]`,
+		1,
+	)
+	manifest, _, err := LoadManifest(writeManifest(t, []byte(validUnicode), 0o600))
+	if err != nil {
+		t.Fatalf("合法 replacement rune 与配对 surrogate 不应被拒绝：%v", err)
+	}
+	if manifest.DictionaryMappings[0].Source != "�" || manifest.DictionaryMappings[0].Target != "😀" {
+		t.Fatalf("合法 Unicode 解码错误：%+v", manifest.DictionaryMappings[0])
+	}
 }
 
 func TestLoadManifestRejectsEmptyIdentifiersUnknownActionsDuplicatesAndConflicts(t *testing.T) {
@@ -162,14 +243,14 @@ func TestLoadManifestRejectsEmptyIdentifiersUnknownActionsDuplicatesAndConflicts
 		{
 			name: "unknown action",
 			mutate: func(document map[string]any) {
-				document["orphan_like_exclusions"] = []any{map[string]any{"like_id": "like-a", "action": "ignore"}}
+				document["orphan_like_exclusions"] = []any{map[string]any{"like_id": syntheticUUID(1), "action": "ignore"}}
 			},
 			code: "manifest_action_unknown",
 		},
 		{
 			name: "duplicate decision",
 			mutate: func(document map[string]any) {
-				decision := map[string]any{"notification_id": "notification-a", "action": "exclude"}
+				decision := map[string]any{"notification_id": syntheticUUID(1), "action": "exclude"}
 				document["orphan_notification_exclusions"] = []any{decision, decision}
 			},
 			code: "manifest_entry_duplicate",
@@ -177,9 +258,9 @@ func TestLoadManifestRejectsEmptyIdentifiersUnknownActionsDuplicatesAndConflicts
 		{
 			name: "cross section conflict",
 			mutate: func(document map[string]any) {
-				document["excluded_users"] = []any{map[string]any{"user_id": "user-a", "action": "exclude"}}
+				document["excluded_users"] = []any{map[string]any{"user_id": syntheticUUID(1), "action": "exclude"}}
 				document["email_rewrites"] = []any{
-					map[string]any{"user_id": "user-a", "action": "rewrite", "new_email": "rewritten@example.invalid"},
+					map[string]any{"user_id": syntheticUUID(1), "action": "rewrite", "new_email": "rewritten@example.invalid"},
 				}
 			},
 			code: "manifest_decision_conflict",
@@ -188,8 +269,8 @@ func TestLoadManifestRejectsEmptyIdentifiersUnknownActionsDuplicatesAndConflicts
 			name: "duplicate asset group without unique keep",
 			mutate: func(document map[string]any) {
 				document["duplicate_image_asset_resolutions"] = []any{
-					map[string]any{"group_key": "group-a", "image_asset_id": "asset-a", "action": "exclude"},
-					map[string]any{"group_key": "group-a", "image_asset_id": "asset-b", "action": "exclude"},
+					map[string]any{"group_key": "group-a", "image_asset_id": syntheticUUID(1), "action": "exclude"},
+					map[string]any{"group_key": "group-a", "image_asset_id": syntheticUUID(2), "action": "exclude"},
 				}
 			},
 			code: "manifest_decision_conflict",
@@ -204,10 +285,191 @@ func TestLoadManifestRejectsEmptyIdentifiersUnknownActionsDuplicatesAndConflicts
 	}
 }
 
+func TestLoadManifestCanonicalizesUUIDsBeforeIdentityChecks(t *testing.T) {
+	canonical := syntheticUUID(1)
+	variant := "{" + strings.ToUpper(canonical) + "}"
+	compact := strings.ReplaceAll(canonical, "-", "")
+	document := emptyManifestDocument()
+	document["excluded_users"] = []any{map[string]any{"user_id": variant, "action": "exclude"}}
+	manifest, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600))
+	if err != nil {
+		t.Fatalf("LoadManifest variant UUID: %v", err)
+	}
+	if manifest.ExcludedUsers[0].UserID != canonical {
+		t.Fatalf("UUID 未 canonicalize：%q", manifest.ExcludedUsers[0].UserID)
+	}
+
+	document["excluded_users"] = []any{
+		map[string]any{"user_id": canonical, "action": "exclude"},
+		map[string]any{"user_id": compact, "action": "exclude"},
+	}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_entry_duplicate")
+
+	document = emptyManifestDocument()
+	document["excluded_users"] = []any{map[string]any{"user_id": "not-a-uuid", "action": "exclude"}}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_uuid_invalid")
+}
+
+func TestLoadManifestRejectsCanonicalEmailAndTargetImageDuplicates(t *testing.T) {
+	document := emptyManifestDocument()
+	document["email_rewrites"] = []any{
+		map[string]any{"user_id": syntheticUUID(1), "action": "rewrite", "new_email": "Same@Example.invalid"},
+		map[string]any{"user_id": syntheticUUID(2), "action": "rewrite", "new_email": "same@example.invalid"},
+	}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_email_target_duplicate")
+
+	document = emptyManifestDocument()
+	document["post_image_resolutions"] = []any{
+		map[string]any{
+			"post_id": syntheticUUID(1), "source_reference": "source-a", "action": "map",
+			"target_image_asset_id": syntheticUUID(2),
+		},
+		map[string]any{
+			"post_id": syntheticUUID(1), "source_reference": "source-b", "action": "map",
+			"target_image_asset_id": syntheticUUID(2),
+		},
+	}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_entry_duplicate")
+}
+
+func TestLoadManifestRejectsReparentReferencesToExcludedEntities(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "excluded parent comment",
+			mutate: func(document map[string]any) {
+				document["excluded_content"] = []any{
+					map[string]any{"content_type": "comment", "content_id": syntheticUUID(2), "action": "exclude"},
+				}
+				document["comment_reparent_resolutions"] = []any{
+					map[string]any{
+						"comment_id": syntheticUUID(1), "action": "set_parent", "target_parent_id": syntheticUUID(2),
+					},
+				}
+			},
+		},
+		{
+			name: "excluded reply user",
+			mutate: func(document map[string]any) {
+				document["excluded_users"] = []any{
+					map[string]any{"user_id": syntheticUUID(2), "action": "exclude"},
+				}
+				document["comment_reparent_resolutions"] = []any{
+					map[string]any{
+						"comment_id": syntheticUUID(1), "action": "set_reply_to",
+						"target_reply_to_user_id": syntheticUUID(2),
+					},
+				}
+			},
+		},
+		{
+			name: "self parent",
+			mutate: func(document map[string]any) {
+				document["comment_reparent_resolutions"] = []any{
+					map[string]any{
+						"comment_id": syntheticUUID(1), "action": "set_parent", "target_parent_id": syntheticUUID(1),
+					},
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := emptyManifestDocument()
+			test.mutate(document)
+			assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_decision_conflict")
+		})
+	}
+}
+
+func TestLoadManifestRejectsAmbiguousOrCyclicReparentActions(t *testing.T) {
+	document := emptyManifestDocument()
+	document["comment_reparent_resolutions"] = []any{
+		map[string]any{
+			"comment_id": syntheticUUID(1), "action": "set_parent",
+			"target_parent_id": syntheticUUID(2), "target_reply_to_user_id": syntheticUUID(3),
+		},
+	}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_action_fields_invalid")
+
+	document = emptyManifestDocument()
+	document["comment_reparent_resolutions"] = []any{
+		map[string]any{
+			"comment_id": syntheticUUID(1), "action": "set_parent", "target_parent_id": syntheticUUID(2),
+		},
+		map[string]any{
+			"comment_id": syntheticUUID(2), "action": "set_parent", "target_parent_id": syntheticUUID(1),
+		},
+	}
+	assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_decision_conflict")
+
+	document = emptyManifestDocument()
+	document["comment_reparent_resolutions"] = []any{
+		map[string]any{
+			"comment_id": syntheticUUID(1), "action": "set_parent_and_reply_to",
+			"target_parent_id": syntheticUUID(2), "target_reply_to_user_id": syntheticUUID(3),
+		},
+	}
+	if _, _, err := LoadManifest(writeManifest(t, mustJSON(t, document), 0o600)); err != nil {
+		t.Fatalf("显式组合 action 应被接受：%v", err)
+	}
+}
+
+func TestLoadManifestRejectsReferencesToOtherExcludedEntities(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "post type for excluded post",
+			mutate: func(document map[string]any) {
+				document["excluded_content"] = []any{
+					map[string]any{"content_type": "post", "content_id": syntheticUUID(1), "action": "exclude"},
+				}
+				document["post_type_resolutions"] = []any{
+					map[string]any{"post_id": syntheticUUID(1), "action": "set_type", "target_type": "share"},
+				}
+			},
+		},
+		{
+			name: "post image targets excluded asset",
+			mutate: func(document map[string]any) {
+				document["post_image_resolutions"] = []any{
+					map[string]any{
+						"post_id": syntheticUUID(1), "source_reference": "source-a", "action": "map",
+						"target_image_asset_id": syntheticUUID(2),
+					},
+				}
+				document["duplicate_image_asset_resolutions"] = duplicateAssetGroup(syntheticUUID(3), syntheticUUID(2))
+			},
+		},
+		{
+			name: "avatar targets excluded asset",
+			mutate: func(document map[string]any) {
+				document["avatar_resolutions"] = []any{
+					map[string]any{
+						"user_id": syntheticUUID(1), "action": "replace", "target_image_asset_id": syntheticUUID(2),
+					},
+				}
+				document["duplicate_image_asset_resolutions"] = duplicateAssetGroup(syntheticUUID(3), syntheticUUID(2))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := emptyManifestDocument()
+			test.mutate(document)
+			assertManifestCode(t, writeManifest(t, mustJSON(t, document), 0o600), "manifest_decision_conflict")
+		})
+	}
+}
+
 func TestLoadManifestErrorsNeverEchoPathValuesOrParserDetails(t *testing.T) {
 	privateValue := "private-manifest-value-do-not-print"
 	path := writeManifest(t, []byte(`{"schema_version":1,"excluded_users":["`+privateValue+`"`), 0o600)
-	_, err := LoadManifest(path)
+	_, _, err := LoadManifest(path)
 	if err == nil {
 		t.Fatal("非法 JSON 应被拒绝")
 	}
@@ -222,7 +484,7 @@ func TestLoadManifestErrorsNeverEchoPathValuesOrParserDetails(t *testing.T) {
 	}
 
 	missingPath := filepath.Join(t.TempDir(), privateValue+".json")
-	_, err = LoadManifest(missingPath)
+	_, _, err = LoadManifest(missingPath)
 	if err == nil || strings.Contains(err.Error(), privateValue) {
 		t.Fatalf("文件错误泄露私有路径或没有失败：%v", err)
 	}
@@ -272,8 +534,19 @@ func writeManifest(t *testing.T, data []byte, mode os.FileMode) string {
 
 func assertManifestCode(t *testing.T, path, code string) {
 	t.Helper()
-	_, err := LoadManifest(path)
+	_, _, err := LoadManifest(path)
 	if err == nil || err.Error() != code {
 		t.Fatalf("期望 %s，实际 %v", code, err)
+	}
+}
+
+func syntheticUUID(index int) string {
+	return fmt.Sprintf("10000000-0000-4000-8000-%012d", index)
+}
+
+func duplicateAssetGroup(keepID, excludeID string) []any {
+	return []any{
+		map[string]any{"group_key": "duplicate-group", "image_asset_id": keepID, "action": "keep"},
+		map[string]any{"group_key": "duplicate-group", "image_asset_id": excludeID, "action": "exclude"},
 	}
 }

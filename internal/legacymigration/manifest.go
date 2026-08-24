@@ -5,15 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
+	"net/mail"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 const (
 	// ManifestSchemaVersion 是私有清洗决议文件当前唯一支持的结构版本。
 	ManifestSchemaVersion = 1
-	// MaxManifestBytes 限制清洗决议文件大小，避免错误路径或异常文件耗尽内存。
-	MaxManifestBytes int64 = 1 << 20
 )
 
 var (
@@ -31,6 +33,21 @@ var (
 		"orphan_like_exclusions",
 		"orphan_notification_exclusions",
 	}
+	manifestSectionFields = map[string][]string{
+		"excluded_users":                    {"user_id", "action"},
+		"excluded_content":                  {"content_type", "content_id", "action"},
+		"email_rewrites":                    {"user_id", "action", "new_email"},
+		"post_type_resolutions":             {"post_id", "action", "target_type"},
+		"dictionary_mappings":               {"dictionary", "source", "action", "target"},
+		"post_image_resolutions":            {"post_id", "source_reference", "action", "target_image_asset_id"},
+		"avatar_resolutions":                {"user_id", "action", "target_image_asset_id"},
+		"duplicate_image_asset_resolutions": {"group_key", "image_asset_id", "action"},
+		"comment_reparent_resolutions": {
+			"comment_id", "action", "target_parent_id", "target_reply_to_user_id",
+		},
+		"orphan_like_exclusions":         {"like_id", "action"},
+		"orphan_notification_exclusions": {"notification_id", "action"},
+	}
 )
 
 // Manifest 是受权限保护的旧库清洗决议。它可以包含私有来源标识，禁止直接写入日志或公开报告。
@@ -47,6 +64,7 @@ type Manifest struct {
 	CommentReparentResolutions     []CommentReparentResolution     `json:"comment_reparent_resolutions"`
 	OrphanLikeExclusions           []OrphanLikeExclusion           `json:"orphan_like_exclusions"`
 	OrphanNotificationExclusions   []OrphanNotificationExclusion   `json:"orphan_notification_exclusions"`
+	validated                      bool
 }
 
 // ExcludedUserDecision 显式排除一个来源用户。
@@ -160,56 +178,27 @@ func (manifest Manifest) Summary() ManifestSummary {
 	return result
 }
 
-// LoadManifest 从权限受限的普通文件加载并严格验证私有清洗决议。
-// 返回错误只包含固定 code，不包含路径、manifest 值或底层系统/JSON 错误。
-func LoadManifest(path string) (Manifest, error) {
-	if strings.TrimSpace(path) == "" {
-		return Manifest{}, gateError("manifest_path_missing", "必须提供私有清洗 manifest 路径")
-	}
-	pathInfo, err := os.Lstat(path)
+// LoadManifest 从权限受限的普通文件加载并严格验证私有清洗决议，同时返回内容摘要。
+// ManifestDigest 必须由后续 plan/apply 原样绑定；返回错误不会包含路径、manifest 值或底层错误。
+func LoadManifest(path string) (Manifest, ManifestDigest, error) {
+	data, digest, err := readManifestFile(path)
 	if err != nil {
-		return Manifest{}, gateError("manifest_stat_failed", "无法核验私有清洗 manifest")
+		return Manifest{}, ManifestDigest{}, err
 	}
-	if !pathInfo.Mode().IsRegular() {
-		return Manifest{}, gateError("manifest_not_regular", "私有清洗 manifest 必须是普通文件")
-	}
-	if pathInfo.Mode().Perm()&0o077 != 0 {
-		return Manifest{}, gateError("manifest_permissions_too_open", "私有清洗 manifest 不得向 group 或 other 开放权限")
-	}
-	if pathInfo.Size() > MaxManifestBytes {
-		return Manifest{}, gateError("manifest_too_large", "私有清洗 manifest 超过大小上限")
-	}
-
-	file, err := os.Open(path)
+	manifest, err := decodeManifest(data)
 	if err != nil {
-		return Manifest{}, gateError("manifest_read_failed", "无法读取私有清洗 manifest")
+		return Manifest{}, ManifestDigest{}, err
 	}
-	defer func() { _ = file.Close() }()
-	openInfo, err := file.Stat()
-	if err != nil {
-		return Manifest{}, gateError("manifest_read_failed", "无法读取私有清洗 manifest")
-	}
-	if !openInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openInfo) {
-		return Manifest{}, gateError("manifest_file_changed", "私有清洗 manifest 在加载期间发生变化")
-	}
-	if openInfo.Mode().Perm()&0o077 != 0 {
-		return Manifest{}, gateError("manifest_permissions_too_open", "私有清洗 manifest 不得向 group 或 other 开放权限")
-	}
-	if openInfo.Size() > MaxManifestBytes {
-		return Manifest{}, gateError("manifest_too_large", "私有清洗 manifest 超过大小上限")
-	}
-
-	data, err := io.ReadAll(io.LimitReader(file, MaxManifestBytes+1))
-	if err != nil {
-		return Manifest{}, gateError("manifest_read_failed", "无法读取私有清洗 manifest")
-	}
-	if int64(len(data)) > MaxManifestBytes {
-		return Manifest{}, gateError("manifest_too_large", "私有清洗 manifest 超过大小上限")
-	}
-	return decodeManifest(data)
+	return manifest, digest, nil
 }
 
 func decodeManifest(data []byte) (Manifest, error) {
+	if !utf8.Valid(data) {
+		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 必须是合法 UTF-8 JSON")
+	}
+	if err := validateJSONSurrogatePairs(data); err != nil {
+		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 含未配对的 UTF-16 surrogate")
+	}
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		if errors.Is(err, errDuplicateManifestKey) {
 			return Manifest{}, gateError("manifest_duplicate_key", "私有清洗 manifest 含重复 JSON key")
@@ -220,6 +209,9 @@ func decodeManifest(data []byte) (Manifest, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return Manifest{}, gateError("manifest_invalid_json", "私有清洗 manifest 顶层必须是 JSON object")
+	}
+	if err := validateExactManifestFields(fields); err != nil {
+		return Manifest{}, err
 	}
 	if _, exists := fields["schema_version"]; !exists {
 		return Manifest{}, gateError("manifest_schema_version_missing", "私有清洗 manifest 缺少 schema_version")
@@ -243,10 +235,52 @@ func decodeManifest(data []byte) (Manifest, error) {
 	if manifest.SchemaVersion != ManifestSchemaVersion {
 		return Manifest{}, gateError("manifest_schema_version_unsupported", "私有清洗 manifest schema_version 不受支持")
 	}
+	if err := manifest.canonicalize(); err != nil {
+		return Manifest{}, err
+	}
 	if err := manifest.validate(); err != nil {
 		return Manifest{}, err
 	}
+	manifest.validated = true
 	return manifest, nil
+}
+
+func validateExactManifestFields(fields map[string]json.RawMessage) error {
+	allowedTopLevel := make(map[string]struct{}, len(requiredManifestSections)+1)
+	allowedTopLevel["schema_version"] = struct{}{}
+	for _, section := range requiredManifestSections {
+		allowedTopLevel[section] = struct{}{}
+	}
+	for field := range fields {
+		if _, allowed := allowedTopLevel[field]; !allowed {
+			return gateError("manifest_schema_invalid", "私有清洗 manifest 含大小写不精确或未知字段")
+		}
+	}
+	for section, allowedNames := range manifestSectionFields {
+		raw, exists := fields[section]
+		if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue
+		}
+		var entries []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return gateError("manifest_schema_invalid", "私有清洗 manifest section 必须是 object array")
+		}
+		allowed := make(map[string]struct{}, len(allowedNames))
+		for _, name := range allowedNames {
+			allowed[name] = struct{}{}
+		}
+		for _, entry := range entries {
+			if entry == nil {
+				return gateError("manifest_schema_invalid", "私有清洗 manifest section 不能包含 null")
+			}
+			for field := range entry {
+				if _, exists := allowed[field]; !exists {
+					return gateError("manifest_schema_invalid", "私有清洗 manifest 含大小写不精确或未知字段")
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -278,10 +312,11 @@ func scanJSONValue(decoder *json.Decoder) error {
 			if !ok {
 				return errors.New("object key is not a string")
 			}
-			if _, exists := seen[key]; exists {
+			folded := foldManifestKey(key)
+			if _, exists := seen[folded]; exists {
 				return errDuplicateManifestKey
 			}
-			seen[key] = struct{}{}
+			seen[folded] = struct{}{}
 			if err := scanJSONValue(decoder); err != nil {
 				return err
 			}
@@ -299,6 +334,80 @@ func scanJSONValue(decoder *json.Decoder) error {
 	return err
 }
 
+func validateJSONSurrogatePairs(data []byte) error {
+	insideString := false
+	for index := 0; index < len(data); index++ {
+		switch data[index] {
+		case '"':
+			insideString = !insideString
+		case '\\':
+			if !insideString {
+				continue
+			}
+			index++
+			if index >= len(data) || data[index] != 'u' {
+				continue
+			}
+			value, ok := decodeJSONHex4(data, index+1)
+			if !ok {
+				return errors.New("invalid unicode escape")
+			}
+			index += 4
+			if value >= 0xdc00 && value <= 0xdfff {
+				return errors.New("unpaired low surrogate")
+			}
+			if value < 0xd800 || value > 0xdbff {
+				continue
+			}
+			if index+6 >= len(data) || data[index+1] != '\\' || data[index+2] != 'u' {
+				return errors.New("unpaired high surrogate")
+			}
+			low, validLow := decodeJSONHex4(data, index+3)
+			if !validLow || low < 0xdc00 || low > 0xdfff {
+				return errors.New("unpaired high surrogate")
+			}
+			index += 6
+		}
+	}
+	return nil
+}
+
+func decodeJSONHex4(data []byte, start int) (uint16, bool) {
+	if start+4 > len(data) {
+		return 0, false
+	}
+	var value uint16
+	for _, digit := range data[start : start+4] {
+		value <<= 4
+		switch {
+		case digit >= '0' && digit <= '9':
+			value |= uint16(digit - '0')
+		case digit >= 'a' && digit <= 'f':
+			value |= uint16(digit-'a') + 10
+		case digit >= 'A' && digit <= 'F':
+			value |= uint16(digit-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
+func foldManifestKey(value string) string {
+	var folded strings.Builder
+	folded.Grow(len(value))
+	for _, current := range value {
+		minimum := current
+		for next := unicode.SimpleFold(current); next != current; next = unicode.SimpleFold(next) {
+			if next < minimum {
+				minimum = next
+			}
+		}
+		folded.WriteRune(minimum)
+	}
+	return folded.String()
+}
+
 func ensureJSONEOF(decoder *json.Decoder) error {
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		if err != nil {
@@ -307,6 +416,137 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 		return errors.New("trailing JSON value")
 	}
 	return nil
+}
+
+func (manifest *Manifest) canonicalize() error {
+	if err := manifest.canonicalizeUsers(); err != nil {
+		return err
+	}
+	if err := manifest.canonicalizePostsAndContent(); err != nil {
+		return err
+	}
+	if err := manifest.canonicalizeImages(); err != nil {
+		return err
+	}
+	if err := manifest.canonicalizeComments(); err != nil {
+		return err
+	}
+	for index := range manifest.OrphanLikeExclusions {
+		if err := canonicalizeUUID(&manifest.OrphanLikeExclusions[index].LikeID, false); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.OrphanNotificationExclusions {
+		if err := canonicalizeUUID(&manifest.OrphanNotificationExclusions[index].NotificationID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manifest *Manifest) canonicalizeUsers() error {
+	for index := range manifest.ExcludedUsers {
+		if err := canonicalizeUUID(&manifest.ExcludedUsers[index].UserID, false); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.EmailRewrites {
+		decision := &manifest.EmailRewrites[index]
+		if err := canonicalizeUUID(&decision.UserID, false); err != nil {
+			return err
+		}
+		email, err := canonicalEmail(decision.NewEmail)
+		if err != nil {
+			return err
+		}
+		decision.NewEmail = email
+	}
+	for index := range manifest.AvatarResolutions {
+		if err := canonicalizeUUID(&manifest.AvatarResolutions[index].UserID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manifest *Manifest) canonicalizePostsAndContent() error {
+	for index := range manifest.ExcludedContent {
+		if err := canonicalizeUUID(&manifest.ExcludedContent[index].ContentID, false); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.PostTypeResolutions {
+		if err := canonicalizeUUID(&manifest.PostTypeResolutions[index].PostID, false); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.PostImageResolutions {
+		if err := canonicalizeUUID(&manifest.PostImageResolutions[index].PostID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manifest *Manifest) canonicalizeImages() error {
+	for index := range manifest.PostImageResolutions {
+		if err := canonicalizeUUID(&manifest.PostImageResolutions[index].TargetImageAssetID, true); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.AvatarResolutions {
+		if err := canonicalizeUUID(&manifest.AvatarResolutions[index].TargetImageAssetID, true); err != nil {
+			return err
+		}
+	}
+	for index := range manifest.DuplicateImageAssetResolutions {
+		if err := canonicalizeUUID(&manifest.DuplicateImageAssetResolutions[index].ImageAssetID, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manifest *Manifest) canonicalizeComments() error {
+	for index := range manifest.CommentReparentResolutions {
+		decision := &manifest.CommentReparentResolutions[index]
+		if err := canonicalizeUUID(&decision.CommentID, false); err != nil {
+			return err
+		}
+		if err := canonicalizeUUID(&decision.TargetParentID, true); err != nil {
+			return err
+		}
+		if err := canonicalizeUUID(&decision.TargetReplyToUserID, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalizeUUID(value *string, optional bool) error {
+	if optional && *value == "" {
+		return nil
+	}
+	if strings.TrimSpace(*value) != *value || *value == "" {
+		return gateError("manifest_identifier_empty", "私有清洗 manifest 含空标识或标识首尾空白")
+	}
+	parsed, err := uuid.Parse(*value)
+	if err != nil || parsed == uuid.Nil {
+		return gateError("manifest_uuid_invalid", "私有清洗 manifest 含无法解析的来源 UUID")
+	}
+	*value = parsed.String()
+	return nil
+}
+
+func canonicalEmail(value string) (string, error) {
+	if !isIdentifier(value) {
+		return "", gateError("manifest_identifier_empty", "私有清洗 manifest 含空值或值首尾空白")
+	}
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Name != "" || parsed.Address != value {
+		return "", gateError("manifest_email_invalid", "私有清洗 manifest 含无效目标邮箱")
+	}
+	return strings.ToLower(value), nil
 }
 
 func (manifest Manifest) validate() error {
@@ -392,6 +632,7 @@ func (validation *manifestValidation) validateExcludedContent(decisions []Exclud
 
 func (validation manifestValidation) validateEmailRewrites(decisions []EmailRewriteDecision) error {
 	emailUsers := make(map[string]struct{}, len(decisions))
+	targetEmails := make(map[string]struct{}, len(decisions))
 	for _, decision := range decisions {
 		if err := requireIdentifiers(decision.UserID, decision.NewEmail); err != nil {
 			return err
@@ -402,6 +643,10 @@ func (validation manifestValidation) validateEmailRewrites(decisions []EmailRewr
 		if err := addUnique(emailUsers, decision.UserID); err != nil {
 			return err
 		}
+		if _, duplicate := targetEmails[decision.NewEmail]; duplicate {
+			return gateError("manifest_email_target_duplicate", "私有清洗 manifest 含重复目标邮箱")
+		}
+		targetEmails[decision.NewEmail] = struct{}{}
 		if _, conflict := validation.excludedUsers[decision.UserID]; conflict {
 			return manifestConflict()
 		}
@@ -452,6 +697,7 @@ func validateDictionaryMappings(decisions []DictionaryMapping) error {
 
 func (validation manifestValidation) validatePostImages(decisions []PostImageResolution) error {
 	postImages := make(map[[2]string]struct{}, len(decisions))
+	postTargets := make(map[[2]string]struct{}, len(decisions))
 	for _, decision := range decisions {
 		if err := requireIdentifiers(decision.PostID, decision.SourceReference); err != nil {
 			return err
@@ -464,6 +710,11 @@ func (validation manifestValidation) validatePostImages(decisions []PostImageRes
 		}
 		if err := addUnique(postImages, [2]string{decision.PostID, decision.SourceReference}); err != nil {
 			return err
+		}
+		if decision.Action == "map" {
+			if err := addUnique(postTargets, [2]string{decision.PostID, decision.TargetImageAssetID}); err != nil {
+				return err
+			}
 		}
 		if _, conflict := validation.excludedContent[[2]string{"post", decision.PostID}]; conflict {
 			return manifestConflict()
@@ -544,7 +795,10 @@ func (validation manifestValidation) validateCommentReparents(decisions []Commen
 		if err := requireIdentifiers(decision.CommentID); err != nil {
 			return err
 		}
-		if err := requireAction(decision.Action, "set_parent", "clear_parent", "set_reply_to", "clear_reply_to"); err != nil {
+		if err := requireAction(
+			decision.Action,
+			"set_parent", "set_parent_and_reply_to", "clear_parent", "set_reply_to", "clear_reply_to",
+		); err != nil {
 			return err
 		}
 		if !validCommentResolutionFields(decision) {
@@ -554,6 +808,50 @@ func (validation manifestValidation) validateCommentReparents(decisions []Commen
 			return err
 		}
 		if _, conflict := validation.excludedContent[[2]string{"comment", decision.CommentID}]; conflict {
+			return manifestConflict()
+		}
+		if decision.TargetParentID == decision.CommentID {
+			return manifestConflict()
+		}
+		if _, conflict := validation.excludedContent[[2]string{"comment", decision.TargetParentID}]; conflict {
+			return manifestConflict()
+		}
+		if _, conflict := validation.excludedUsers[decision.TargetReplyToUserID]; conflict {
+			return manifestConflict()
+		}
+	}
+	return validateCommentParentCycles(decisions)
+}
+
+func validateCommentParentCycles(decisions []CommentReparentResolution) error {
+	edges := make(map[string]string, len(decisions))
+	for _, decision := range decisions {
+		if decision.Action == "set_parent" || decision.Action == "set_parent_and_reply_to" {
+			edges[decision.CommentID] = decision.TargetParentID
+		}
+	}
+	states := make(map[string]uint8, len(edges))
+	var visit func(string) bool
+	visit = func(commentID string) bool {
+		switch states[commentID] {
+		case 1:
+			return true
+		case 2:
+			return false
+		}
+		parentID, exists := edges[commentID]
+		if !exists {
+			return false
+		}
+		states[commentID] = 1
+		if visit(parentID) {
+			return true
+		}
+		states[commentID] = 2
+		return false
+	}
+	for commentID := range edges {
+		if visit(commentID) {
 			return manifestConflict()
 		}
 	}
@@ -597,7 +895,9 @@ func validCommentResolutionFields(decision CommentReparentResolution) bool {
 	replyTo := isIdentifier(decision.TargetReplyToUserID)
 	switch decision.Action {
 	case "set_parent":
-		return parent
+		return parent && !replyTo
+	case "set_parent_and_reply_to":
+		return parent && replyTo
 	case "clear_parent":
 		return !parent && !replyTo
 	case "set_reply_to":
@@ -618,6 +918,8 @@ func requireIdentifiers(values ...string) error {
 	return nil
 }
 
+// 非 UUID 的来源 URL、词表值与重复组 key 都作为精确 opaque value 比较：
+// 不做 trim、大小写折叠或 URL 重写，首尾空白直接拒绝，避免改变来源快照中的 anomaly identity。
 func isIdentifier(value string) bool {
 	return value != "" && strings.TrimSpace(value) == value
 }
