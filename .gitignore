@@ -15,3 +15,6 @@ coverage.out
 
 # AI 协作过程记录，不进公开仓库
 .codex/
+
+# 测试环境部署资产：含服务器 IP 与内网拓扑，不进公开仓库
+deploy/test/
