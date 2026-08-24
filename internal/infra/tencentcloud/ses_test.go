@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	ses "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ses/v20201002"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
 )
@@ -65,6 +67,28 @@ func TestSESVerificationEmailSenderFailsClosed(t *testing.T) {
 	sender = newSESVerificationEmailSender(sesTestConfig(), &fakeSESClient{})
 	err = sender.SendRegistrationCode(context.Background(), "student@fdueat.com", "123456")
 	require.ErrorContains(t, err, "MessageId")
+}
+
+func TestSESVerificationEmailSenderCreatesSanitizedClientSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, parent := provider.Tracer("test-parent").Start(context.Background(), "request")
+	response := ses.NewSendEmailResponse()
+	response.Response = &ses.SendEmailResponseParams{MessageId: common.StringPtr("message-1")}
+	client := &fakeSESClient{response: response}
+	sender := newSESVerificationEmailSender(sesTestConfig(), client)
+
+	require.NoError(t, sender.SendRegistrationCode(ctx, "private@fdueat.com", "123456"))
+	parent.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+	require.Equal(t, "EXTERNAL tencent_ses SendEmail", spans[0].Name())
+	require.Equal(t, spans[1].SpanContext().SpanID(), spans[0].Parent().SpanID())
+	for _, item := range spans[0].Attributes() {
+		require.NotContains(t, item.Value.String(), "private@fdueat.com")
+		require.NotContains(t, item.Value.String(), "123456")
+	}
 }
 
 func sesTestConfig() config.Config {

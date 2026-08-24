@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
@@ -115,6 +119,31 @@ func TestFeishuWebhookAlertPayloadShape(t *testing.T) {
 	}
 	if payload.Content.Text == "" {
 		t.Fatal("content.text 不得为空")
+	}
+}
+
+func TestFeishuWebhookCreatesSanitizedClientSpan(t *testing.T) {
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhookServer.Close()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, parent := provider.Tracer("test-parent").Start(context.Background(), "request")
+
+	NewFeishuWebhook(webhookServer.URL+"/PRIVATE-WEBHOOK-TOKEN", webhookServer.Client(), nil).
+		Alert(ctx, service.ModerationAlert{
+			Target: service.ModerationTargetComment, TargetID: 7,
+			Provider: model.ModerationProviderTencentCI, Verdict: model.ModerationVerdictReview,
+		})
+	parent.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+	require.Equal(t, "EXTERNAL feishu SendWebhook", spans[0].Name())
+	require.Equal(t, spans[1].SpanContext().SpanID(), spans[0].Parent().SpanID())
+	for _, item := range spans[0].Attributes() {
+		require.NotContains(t, item.Value.String(), "PRIVATE-WEBHOOK-TOKEN")
 	}
 }
 

@@ -742,11 +742,12 @@ server 阈值包含 Prometheus client、OTel SDK 与 OTLP exporter 的静态链�
 - 应用通过独立 Prometheus registry 在 `/metrics` 直出 HTTP、数据库连接池、Go runtime 与进程指标；
 - OTel trace provider 通过 OTLP/HTTP 推送到 `OTLP_ENDPOINT`，HTTP server span 使用路由模板命名；
 - GORM 操作创建 DB client span，记录有限的 operation/table 属性，不记录 SQL 文本或变量值；
+- 腾讯 COS、腾讯 CI、腾讯 SES 与飞书 webhook 的网络调用创建 external client span；名称和属性只使用
+  固定的供应商与操作枚举，不记录对象键、邮箱、验证码、webhook URL、用户内容或供应商原始错误；
 - `OTLP_ENDPOINT` 为空时不创建 exporter、provider、后台 processor、HTTP tracing 中间件或 DB tracing callback。
 
 尚未完成：
 
-- COS、SES 等外部调用 span；
 - 审核、验证码等业务指标；
 - Collector、Prometheus、Tempo 或 Grafana 的仓库内部署配置。
 
@@ -767,7 +768,7 @@ go_*
 process_*
 ```
 
-`route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。DB trace 进一步省略整个 SQL 文本与变量值，防止邮箱、token、密码或任意用户输入进入 telemetry。
+`route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。DB trace 进一步省略整个 SQL 文本与变量值；外部调用 span 只使用 `external.system` 与 `external.operation` 两个固定枚举属性，失败只记录通用状态 `external call failed`，不记录供应商错误正文，防止邮箱、验证码、对象键、webhook token、用户内容或云端原始响应进入 telemetry。
 
 ## 21. 安全边界
 

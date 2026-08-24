@@ -20,10 +20,14 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/obs"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
-const providerRequestTimeout = 15 * time.Second
+const (
+	providerRequestTimeout      = 15 * time.Second
+	providerInstrumentationName = "github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud/provider"
+)
 
 // Provider 同时实现 COS 存储、同步文本审核、异步图片送审和回调解码。
 type Provider struct {
@@ -152,7 +156,15 @@ func PresignCOSGet(
 }
 
 // HeadObject 校验对象是否存在并返回实际大小。
-func (p *Provider) HeadObject(ctx context.Context, objectKey string) (service.StorageObjectMeta, error) {
+func (p *Provider) HeadObject(
+	ctx context.Context,
+	objectKey string,
+) (result service.StorageObjectMeta, err error) {
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_cos", "HeadObject",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
+
 	response, err := p.client.Object.Head(ctx, objectKey, nil)
 	if err != nil {
 		if cos.IsNotFoundError(err) {
@@ -168,8 +180,13 @@ func (p *Provider) HeadObject(ctx context.Context, objectKey string) (service.St
 }
 
 // DeleteObject 幂等删除对象。
-func (p *Provider) DeleteObject(ctx context.Context, objectKey string) error {
-	_, err := p.client.Object.Delete(ctx, objectKey)
+func (p *Provider) DeleteObject(ctx context.Context, objectKey string) (err error) {
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_cos", "DeleteObject",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
+
+	_, err = p.client.Object.Delete(ctx, objectKey)
 	if err != nil && cos.IsNotFoundError(err) {
 		return nil
 	}
@@ -177,12 +194,21 @@ func (p *Provider) DeleteObject(ctx context.Context, objectKey string) error {
 }
 
 // SetObjectPublicAccess 通过对象级 ACL 幂等切换公开读；private 可逆且不删除原对象。
-func (p *Provider) SetObjectPublicAccess(ctx context.Context, objectKey string, public bool) error {
+func (p *Provider) SetObjectPublicAccess(
+	ctx context.Context,
+	objectKey string,
+	public bool,
+) (err error) {
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_cos", "PutObjectACL",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
+
 	acl := "private"
 	if public {
 		acl = "public-read"
 	}
-	_, err := p.client.Object.PutACL(ctx, objectKey, &cos.ObjectPutACLOptions{
+	_, err = p.client.Object.PutACL(ctx, objectKey, &cos.ObjectPutACLOptions{
 		Header: &cos.ACLHeaderOptions{XCosACL: acl},
 	})
 	return err
@@ -202,7 +228,12 @@ func (p *Provider) PublicURL(objectKey string) (string, error) {
 func (p *Provider) Review(
 	ctx context.Context,
 	request service.ModerationRequest,
-) (service.ModerationResult, error) {
+) (result service.ModerationResult, err error) {
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_ci", "ReviewText",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
+
 	response, _, err := p.client.CI.PutTextAuditingJob(ctx, &cos.PutTextAuditingJobOptions{
 		InputContent: base64.StdEncoding.EncodeToString([]byte(request.Text)),
 		Conf:         &cos.TextAuditingJobConf{BizType: p.cfg.TencentCIBizType},
@@ -238,11 +269,16 @@ func (p *Provider) Review(
 func (p *Provider) SubmitImage(
 	ctx context.Context,
 	request service.ImageModerationRequest,
-) (service.ImageModerationSubmission, error) {
+) (result service.ImageModerationSubmission, err error) {
 	callbackURL, err := p.callbackURL()
 	if err != nil {
 		return service.ImageModerationSubmission{}, unavailableModeration(err)
 	}
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_ci", "SubmitImage",
+	)
+	defer func() { obs.EndExternalCall(span, err) }()
+
 	response, _, err := p.client.CI.ImageAuditing(ctx, request.ObjectKey, &cos.ImageRecognitionOptions{
 		CIProcess: "sensitive-content-recognition", Async: 1,
 		BizType: p.cfg.TencentCIBizType, Callback: callbackURL,

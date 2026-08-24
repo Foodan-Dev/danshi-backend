@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
@@ -151,6 +153,54 @@ func TestProviderReviewAndSubmitImageWithoutNetwork(t *testing.T) {
 	require.Equal(t, "public-read", requests[3].header.Get("x-cos-acl"))
 }
 
+func TestProviderExternalCallsCreateLowCardinalityClientSpans(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, parent := tracerProvider.Tracer("test-parent").Start(context.Background(), "request")
+	transport := &captureTencentTransport{}
+	provider, err := NewProvider(providerTestConfig(), &http.Client{Transport: transport})
+	require.NoError(t, err)
+
+	_, err = provider.Review(ctx, service.ModerationRequest{
+		Target: service.ModerationTargetComment, Text: "PRIVATE-TEXT-MUST-NOT-BE-TRACED",
+	})
+	require.NoError(t, err)
+	_, err = provider.SubmitImage(ctx, service.ImageModerationRequest{
+		ImageAssetID: 88, ObjectKey: "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg",
+	})
+	require.NoError(t, err)
+	require.NoError(t, provider.SetObjectPublicAccess(
+		ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg", true,
+	))
+	meta, err := provider.HeadObject(ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg")
+	require.NoError(t, err)
+	require.True(t, meta.Exists)
+	require.EqualValues(t, 1234, meta.ContentLength)
+	require.NoError(t, provider.DeleteObject(ctx, "PRIVATE-OBJECT-KEY-MUST-NOT-BE-TRACED.jpg"))
+	parent.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 6)
+	require.Equal(t, []string{
+		"EXTERNAL tencent_ci ReviewText",
+		"EXTERNAL tencent_ci SubmitImage",
+		"EXTERNAL tencent_cos PutObjectACL",
+		"EXTERNAL tencent_cos HeadObject",
+		"EXTERNAL tencent_cos DeleteObject",
+		"request",
+	}, []string{
+		spans[0].Name(), spans[1].Name(), spans[2].Name(),
+		spans[3].Name(), spans[4].Name(), spans[5].Name(),
+	})
+	for _, span := range spans[:5] {
+		require.Equal(t, spans[5].SpanContext().SpanID(), span.Parent().SpanID())
+		require.NotContains(t, span.Name(), "PRIVATE")
+		for _, item := range span.Attributes() {
+			require.NotContains(t, item.Value.String(), "PRIVATE")
+		}
+	}
+}
+
 func TestCallbackDecoderMapsReviewAndRejectsFailedJob(t *testing.T) {
 	decoder := CallbackDecoder{}
 	callback, err := decoder.DecodeImageCallback([]byte(`{
@@ -240,7 +290,7 @@ func (t *captureTencentTransport) RoundTrip(request *http.Request) (*http.Respon
 			`</JobsDetail><RequestId>request-1</RequestId></Response>`
 	}
 	return &http.Response{
-		StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Length": {"1234"}},
 		Body: io.NopCloser(strings.NewReader(responseBody)), Request: request,
 	}, nil
 }
