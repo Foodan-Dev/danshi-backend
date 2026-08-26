@@ -12,7 +12,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-// DeletePost 以管理员来源软删除帖子，并收紧已无公开帖子引用的附图访问状态。
+// DeletePost 以管理员来源软删除帖子，并收紧已无其他未软删帖子引用的附图访问状态。
 func (s *AdminService) DeletePost(
 	ctx context.Context,
 	postID uint64,
@@ -37,7 +37,7 @@ func (s *AdminService) DeletePost(
 	if err := s.admin.SoftDeletePost(ctx, postID, actorID, now); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	privateImageIDs, err := s.posts.ImageIDsWithoutPublicPostReferences(ctx, imageIDs)
+	imageIDsToBlock, err := s.posts.ImageIDsWithoutUndeletedPostReferences(ctx, imageIDs)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -45,7 +45,7 @@ func (s *AdminService) DeletePost(
 	for index := range assets {
 		assetsByID[assets[index].ID] = &assets[index]
 	}
-	for _, imageID := range privateImageIDs {
+	for _, imageID := range imageIDsToBlock {
 		if err := s.moderation.applyAdminPostDeleteImage(
 			ctx, postID, actorID, assetsByID[imageID], now,
 		); err != nil {

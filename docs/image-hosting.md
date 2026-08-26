@@ -142,11 +142,11 @@ URL，公开列表与详情仍返回 `PublicURL`，不改变既有内容可见�
 图片审核回调携带资产 ID，服务端按供应商任务号幂等写入审核记录，并重新评估引用该图片的待审帖子。审核终态和一条 `image_access_intents` 在同一个 UoW 事务中提交；outbox 写入失败会让审核事务整体回滚，不会出现“数据库已经 block、访问状态意图却丢失”。`image_assets.moderation` 仍是审核真源，`image_access_deliveries` 只投影最新期望并保存交付进度。
 
 管理员下架帖子也复用同一 durable 访问收敛链路。服务端先锁帖子，再按资产 ID 升序锁定全部
-附图，软删除后以公开信息流/详情的统一条件（`deleted_at IS NULL AND status='approved'`）检查
-反向引用。仍有其他公开帖子引用的共享图保持公开；已无公开帖子引用的图片追加
+附图，软删除后按“帖子未软删除”的有效引用口径检查反向引用，不要求引用帖已经审核通过。
+仍有其他未软删除帖子（包括待审核帖子）引用的共享图保持公开；已无未软删除帖子引用的图片追加
 `provider=admin_post_delete`、`verdict=block` 的独立审核流水（记录 reviewer，不设置
 `supersedes_id`），写回当前审核状态，并在同一事务写入 `desired_public=false`、
-`purge_required=true` 的 intent。这样共享图不会被误伤，最后一条公开引用消失后也不会漏收紧。
+`purge_required=true` 的 intent。这样共享图不会被误伤，最后一条未软删除引用消失后也不会漏收紧。
 
 每条 intent 以 `source_moderation_record_id` 幂等，每张图片只有一条 delivery。新的审核事实即使目标状态相同也会提升 generation、从 ACL 重新校准；同一供应商任务的重复回调不提升 generation，避免重放攻击不断重置 worker。反向状态通过 generation fencing 覆盖旧意图，旧 worker 的 finalize 会影响 0 行并释放旧 lease，随后新代际收敛。delivery 的 `purge_required` 由审核前状态决定：转私有以及从 `review`/`block` 恢复公开时为 true，首次 `pending`→`pass` 为 false；intent 无论是否需要刷新都必须写入。
 
@@ -186,7 +186,7 @@ URL 表示对象已经验证。回收已删除对象时，原公开 URL 会替�
 引用变化前，service 必须锁定涉及的 `image_assets` 行。多资产操作按 ID 升序锁定，所有发帖、编辑、删帖、恢复和头像换绑路径使用同一顺序。
 
 管理员下架与作者删除的关联处理不同：作者删除会解除图片关联并由上述触发器处理资产状态；
-管理员下架保留关联供审计，只通过公开帖子反向引用判断是否需要把图片访问收紧。管理员下架使用
+管理员下架保留关联供审计，只通过未软删除帖子反向引用判断是否需要把图片访问收紧。管理员下架使用
 `deleted_reason=admin`，不属于现有只允许 `deleted_reason=moderation` 的误杀恢复范围。
 
 没有这个服务层协议时，“删除最后引用”和“并发新增引用”可能各自基于不同事务快照，最终出现仍有引用但资产已退役。

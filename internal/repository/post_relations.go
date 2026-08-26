@@ -159,10 +159,10 @@ func (PostRepository) PostImageIDs(ctx context.Context, postID uint64) ([]uint64
 	return ids, err
 }
 
-// ImageIDsWithoutPublicPostReferences 返回已不再被公开帖子引用的目标图片。
-// 公开口径与信息流和详情一致：帖子未删除且 status=approved。
+// ImageIDsWithoutUndeletedPostReferences 返回已不再被任何未软删帖子引用的目标图片。
+// 帖子状态不影响引用有效性；pending 等未软删帖子同样会阻止图片访问状态被收紧。
 // 调用方必须先按 id 升序锁定全部目标资产，避免并发引用、编辑或下架漏掉状态收敛。
-func (PostRepository) ImageIDsWithoutPublicPostReferences(
+func (PostRepository) ImageIDsWithoutUndeletedPostReferences(
 	ctx context.Context,
 	imageIDs []uint64,
 ) ([]uint64, error) {
@@ -179,8 +179,7 @@ func (PostRepository) ImageIDsWithoutPublicPostReferences(
 			JOIN posts AS p ON p.id = pi.post_id
 			WHERE pi.image_asset_id = image.id
 			  AND p.deleted_at IS NULL
-			  AND p.status = ?
-		)`, model.PostStatusApproved).
+		)`).
 		Order("image.id").Pluck("image.id", &ids).Error
 	return ids, err
 }

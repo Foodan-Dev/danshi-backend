@@ -602,7 +602,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 - 标签：block 下架，保留帖子关联；
 - 用户字段：违规时通知管理员，由管理员重置或封禁；
 - 图片：block 后不支持帖子进入公开状态；同事务写 durable 访问意图，后台 worker 把 COS ACL 收敛为私有并确认 EdgeOne 精确刷新终态，人工改判可恢复公开 ACL。
-- 管理员下架帖子：按信息流/详情的同一公开口径（`deleted_at IS NULL AND status='approved'`）检查每张附图。仍被其他公开帖子引用的图片保持原状；已无公开帖子引用的图片在下架事务内追加 `provider=admin_post_delete`、`verdict=block`、带 reviewer 且无 `supersedes_id` 的独立流水，写回 `image_assets.moderation=block`，并写入 `desired_public=false`、`purge_required=true` 的访问意图。外部 COS/EdgeOne 调用仍只由事务外 worker 执行。
+- 管理员下架帖子：按“帖子未软删除”的有效引用口径检查每张附图，不要求引用帖已经审核通过。仍被其他未软删除帖子（包括待审核帖子）引用的图片保持原状；已无未软删除帖子引用的图片在下架事务内追加 `provider=admin_post_delete`、`verdict=block`、带 reviewer 且无 `supersedes_id` 的独立流水，写回 `image_assets.moderation=block`，并写入 `desired_public=false`、`purge_required=true` 的访问意图。外部 COS/EdgeOne 调用仍只由事务外 worker 执行。
 
 系统不根据单条机器 verdict 自动封禁用户。
 

@@ -99,6 +99,10 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 		testAdminPostDeleteImageAccess(t, engine, gdb, actors, fixture)
 	})
 
+	t.Run("pending post reference keeps shared image public", func(t *testing.T) {
+		testAdminPostDeleteKeepsImageReferencedByPendingPost(t, engine, gdb, actors, fixture)
+	})
+
 	t.Run("post restore audits and rejects unapproved images", func(t *testing.T) {
 		testAdminPostRestore(t, engine, gdb, actors, fixture)
 	})
@@ -767,6 +771,49 @@ func testAdminPostDeleteImageAccess(
 	assertAdminPostDeleteImageAccess(t, gdb, restoredAsset.ID, restored.ID, actors.Admin.User.ID)
 	require.EqualValues(t, 1, adminPostDeleteImageRecordCount(t, gdb, restoredAsset.ID),
 		"恢复后再删除只应产生本次下架的一条图片流水")
+}
+
+func testAdminPostDeleteKeepsImageReferencedByPendingPost(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	shared := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-pending-reference")
+
+	approvedPayload := sharePostPayload(fixture, "待审引用共享图的已发布帖", []string{"已发布引用"})
+	approvedPayload["images"] = []string{shared.PublicURL}
+	approved := createPost(t, engine, actors.Author.Token, approvedPayload)
+
+	pendingPayload := sharePostPayload(fixture, "共享图仍有待审引用", []string{"待审引用"})
+	pendingPayload["images"] = []string{shared.PublicURL}
+	pending := createPost(t, engine, actors.Author.Token, pendingPayload)
+	require.NoError(t, gdb.Model(&model.Post{}).Where("id = ?", pending.ID).
+		UpdateColumn("status", model.PostStatusPending).Error)
+	assertStoredPostStatus(t, gdb, approved.ID, model.PostStatusApproved)
+	assertStoredPostStatus(t, gdb, pending.ID, model.PostStatusPending)
+
+	status, response, _ := performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", approved.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, shared.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, asset.Moderation,
+		"仍被待审核帖子引用的图片必须保持公开")
+	require.Zero(t, adminPostDeleteImageRecordCount(t, gdb, shared.ID),
+		"待审核引用仍有效时不得追加 block 流水")
+	var intentCount int64
+	require.NoError(t, gdb.Model(&model.ImageAccessIntent{}).
+		Where("image_asset_id = ? AND desired_public = ?", shared.ID, false).
+		Count(&intentCount).Error)
+	require.Zero(t, intentCount, "待审核引用仍有效时不得生成转私有意图")
+	var deliveryCount int64
+	require.NoError(t, gdb.Model(&model.ImageAccessDelivery{}).
+		Where("image_asset_id = ?", shared.ID).Count(&deliveryCount).Error)
+	require.Zero(t, deliveryCount, "待审核引用仍有效时不得生成转私有交付")
 }
 
 func assertAdminPostDeleteImageAccess(
