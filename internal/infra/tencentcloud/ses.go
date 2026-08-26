@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
+	"unicode"
 
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
@@ -20,7 +21,6 @@ import (
 const (
 	sesEndpoint              = "ses.tencentcloudapi.com"
 	sesRequestTimeoutSeconds = 2
-	registrationEmailSubject = "旦食注册验证码"
 	sesInstrumentationName   = "github.com/Foodan-Dev/danshi-backend/internal/infra/tencentcloud/ses"
 )
 
@@ -35,6 +35,7 @@ type sesClient interface {
 type SESVerificationEmailSender struct {
 	client           sesClient
 	fromEmailAddress string
+	subject          string
 	templateID       uint64
 }
 
@@ -68,6 +69,7 @@ func newSESVerificationEmailSender(
 			strings.TrimSpace(cfg.TencentSESFromName),
 			strings.TrimSpace(cfg.TencentSESFromEmail),
 		),
+		subject:    strings.TrimSpace(cfg.TencentSESSubject),
 		templateID: cfg.TencentSESTemplateID,
 	}
 }
@@ -84,7 +86,7 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	}
 	request := ses.NewSendEmailRequest()
 	request.FromEmailAddress = common.StringPtr(s.fromEmailAddress)
-	request.Subject = common.StringPtr(registrationEmailSubject)
+	request.Subject = common.StringPtr(s.subject)
 	request.Destination = common.StringPtrs([]string{email})
 	request.Template = &ses.Template{
 		TemplateID:   common.Uint64Ptr(s.templateID),
@@ -119,6 +121,10 @@ func validateSESConfig(cfg config.Config) error {
 	}
 	if strings.Contains(cfg.TencentSESFromName, ":") {
 		return errors.New("TENCENT_SES_FROM_NAME 不能包含冒号")
+	}
+	if strings.TrimSpace(cfg.TencentSESSubject) == "" ||
+		strings.ContainsFunc(cfg.TencentSESSubject, unicode.IsControl) {
+		return errors.New("TENCENT_SES_SUBJECT 不能为空且不能包含控制字符")
 	}
 	return nil
 }

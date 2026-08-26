@@ -24,6 +24,8 @@ type Profile string
 const (
 	ProfileDev  Profile = "dev"
 	ProfileProd Profile = "prod"
+
+	defaultTencentSESSubject = "旦食注册验证码"
 )
 
 // Config 是启动后注入各层的完整应用配置。
@@ -52,6 +54,7 @@ type Config struct {
 	TencentRegion        string `mapstructure:"TENCENT_CLOUD_REGION"`
 	TencentSESFromEmail  string `mapstructure:"TENCENT_SES_FROM_EMAIL"`
 	TencentSESFromName   string `mapstructure:"TENCENT_SES_FROM_NAME"`
+	TencentSESSubject    string `mapstructure:"TENCENT_SES_SUBJECT"`
 	TencentSESTemplateID uint64 `mapstructure:"TENCENT_SES_TEMPLATE_ID"`
 	COSBucket            string `mapstructure:"COS_BUCKET"`
 	COSRegion            string `mapstructure:"COS_REGION"`
@@ -133,7 +136,8 @@ func (c Config) EdgeOneConfigured() bool {
 func (c Config) TencentSESConfigured() bool {
 	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
 		c.TencentRegion != "" && c.TencentSESFromEmail != "" &&
-		c.TencentSESFromName != "" && c.TencentSESTemplateID > 0
+		c.TencentSESFromName != "" && c.TencentSESSubject != "" &&
+		c.TencentSESTemplateID > 0
 }
 
 // EmailDomains 把逗号分隔的白名单拆开并小写化。
@@ -180,6 +184,7 @@ var bindings = map[string]any{
 	"TENCENT_CLOUD_REGION":        "ap-guangzhou",
 	"TENCENT_SES_FROM_EMAIL":      "",
 	"TENCENT_SES_FROM_NAME":       "旦食",
+	"TENCENT_SES_SUBJECT":         defaultTencentSESSubject,
 	"TENCENT_SES_TEMPLATE_ID":     uint64(0),
 	"COS_BUCKET":                  "",
 	"COS_REGION":                  "ap-shanghai",

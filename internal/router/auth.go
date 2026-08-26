@@ -32,14 +32,14 @@ func verificationEmailSender(deps Deps) service.VerificationEmailSender {
 	if deps.EmailSender != nil {
 		return observeVerificationSender(deps.EmailSender, "unknown", deps.BusinessMetrics)
 	}
-	if !deps.Config.IsProd() {
-		return observeVerificationSender(
-			service.NewLogVerificationEmailSender(deps.Log), "log", deps.BusinessMetrics,
-		)
-	}
 	if !deps.Config.TencentSESConfigured() {
+		if !deps.Config.IsProd() {
+			return observeVerificationSender(
+				service.NewLogVerificationEmailSender(deps.Log), "log", deps.BusinessMetrics,
+			)
+		}
 		return observeVerificationSender(
-			service.UnavailableVerificationEmailSender{}, "unknown", deps.BusinessMetrics,
+			service.UnavailableVerificationEmailSender{}, "none", deps.BusinessMetrics,
 		)
 	}
 	sender, err := tencentcloud.NewSESVerificationEmailSender(deps.Config)
@@ -48,7 +48,7 @@ func verificationEmailSender(deps Deps) service.VerificationEmailSender {
 			deps.Log.Error("腾讯云 SES 适配器初始化失败", "err", err)
 		}
 		return observeVerificationSender(
-			service.UnavailableVerificationEmailSender{}, "unknown", deps.BusinessMetrics,
+			service.UnavailableVerificationEmailSender{}, "none", deps.BusinessMetrics,
 		)
 	}
 	return observeVerificationSender(sender, "tencent_ses", deps.BusinessMetrics)

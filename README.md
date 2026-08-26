@@ -147,6 +147,7 @@ make schema-test
 | `TENCENT_CLOUD_REGION` | `ap-guangzhou` | SES 区域 |
 | `TENCENT_SES_FROM_EMAIL` | `no-reply@danshi.fdueat.com` | SES 发件邮箱 |
 | `TENCENT_SES_FROM_NAME` | `旦食` | SES 发件人名称 |
+| `TENCENT_SES_SUBJECT` | `旦食注册验证码` | 注册验证码邮件主题；不得包含控制字符 |
 | `TENCENT_SES_TEMPLATE_ID` | `0` | SES 模板 ID；生产环境启用邮箱验证时必须为正数 |
 | `COS_BUCKET` | 无 | COS bucket 名称；生产环境必填 |
 | `COS_REGION` | `ap-shanghai` | COS 区域 |

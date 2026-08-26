@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // 弱密钥黑名单。Python 侧同样有这层检查——历史上真的有人把示例值直接带上线。
@@ -79,6 +80,7 @@ func (c Config) Validate() error {
 			add("%v", err)
 		}
 	}
+	validateSESSubject(c, add)
 
 	// --- CORS：通配来源 + 携带凭据是明确的安全错误，浏览器也会拒绝 ---
 	origins := c.CORSOrigins()
@@ -205,10 +207,23 @@ func validateProdSES(c Config, add func(string, ...any)) {
 	}
 }
 
+func validateSESSubject(c Config, add func(string, ...any)) {
+	if !validEmailHeaderValue(c.TencentSESSubject) {
+		add("TENCENT_SES_SUBJECT 不能为空且不能包含控制字符")
+	}
+}
+
 func validBareEmail(value string) bool {
 	value = strings.TrimSpace(value)
 	address, err := mail.ParseAddress(value)
 	return err == nil && address.Address == value
+}
+
+func validEmailHeaderValue(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	return !strings.ContainsFunc(value, unicode.IsControl)
 }
 
 func validateHTTPSURL(name, value string) error {
