@@ -67,25 +67,40 @@ func TestModerationAlertsRunAfterCommit(t *testing.T) {
 }
 
 func TestVerificationEmailSenderSelection(t *testing.T) {
-	t.Run("development logs", func(t *testing.T) {
-		sender := verificationEmailSender(Deps{Config: config.Config{Profile: config.ProfileDev}})
-		require.IsType(t, &service.LogVerificationEmailSender{}, sender)
+	t.Run("development complete config uses real adapter", func(t *testing.T) {
+		assertVerificationSenderChoice(
+			t,
+			completeSESConfig(config.ProfileDev),
+			&tencentcloud.SESVerificationEmailSender{},
+			"tencent_ses",
+		)
+	})
+
+	t.Run("development missing config logs", func(t *testing.T) {
+		assertVerificationSenderChoice(
+			t,
+			config.Config{Profile: config.ProfileDev},
+			&service.LogVerificationEmailSender{},
+			"log",
+		)
 	})
 
 	t.Run("production missing config fails closed", func(t *testing.T) {
-		sender := verificationEmailSender(Deps{Config: config.Config{Profile: config.ProfileProd}})
-		require.IsType(t, service.UnavailableVerificationEmailSender{}, sender)
+		assertVerificationSenderChoice(
+			t,
+			config.Config{Profile: config.ProfileProd},
+			service.UnavailableVerificationEmailSender{},
+			"none",
+		)
 	})
 
 	t.Run("production complete config uses real adapter", func(t *testing.T) {
-		cfg := config.Config{
-			Profile:         config.ProfileProd,
-			TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
-			TencentRegion: "ap-guangzhou", TencentSESFromEmail: "sender@example.com",
-			TencentSESFromName: "旦食", TencentSESTemplateID: 123,
-		}
-		sender := verificationEmailSender(Deps{Config: cfg})
-		require.IsType(t, &tencentcloud.SESVerificationEmailSender{}, sender)
+		assertVerificationSenderChoice(
+			t,
+			completeSESConfig(config.ProfileProd),
+			&tencentcloud.SESVerificationEmailSender{},
+			"tencent_ses",
+		)
 	})
 
 	t.Run("injected fake wins", func(t *testing.T) {
@@ -95,4 +110,30 @@ func TestVerificationEmailSenderSelection(t *testing.T) {
 		})
 		require.Same(t, injected, sender)
 	})
+}
+
+func completeSESConfig(profile config.Profile) config.Config {
+	return config.Config{
+		Profile:         profile,
+		TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
+		TencentRegion: "ap-guangzhou", TencentSESFromEmail: "sender@example.com",
+		TencentSESFromName: "旦食", TencentSESSubject: "旦食注册验证码",
+		TencentSESTemplateID: 123,
+	}
+}
+
+func assertVerificationSenderChoice(
+	t *testing.T,
+	cfg config.Config,
+	wantSender service.VerificationEmailSender,
+	wantProvider string,
+) {
+	t.Helper()
+	sender := verificationEmailSender(Deps{
+		Config: cfg, BusinessMetrics: &businessMetricCapture{},
+	})
+	observed, ok := sender.(observedVerificationSender)
+	require.True(t, ok)
+	require.IsType(t, wantSender, observed.next)
+	require.Equal(t, wantProvider, observed.provider)
 }

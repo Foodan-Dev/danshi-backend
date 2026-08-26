@@ -18,6 +18,7 @@ func base() config.Config {
 		JWTSecretKey: goodSecret, JWTExpireMinutes: 60, JWTRefreshExpireDay: 30,
 		EmailVerificationRequired: true, EmailVerificationSecret: goodSecret,
 		AllowedEmailDomains: "fdueat.com,m.fudan.edu.cn",
+		TencentSESSubject:   "旦食注册验证码",
 		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600, COSPresignGetTTLS: 3600,
 		ModerationCallbackAuthFailureThreshold: 5,
 		ModerationCallbackAuthFailureWindowS:   60,
@@ -61,6 +62,10 @@ func TestRejectsBadConfig(t *testing.T) {
 			c.CORSAllowOrigins = "*"
 		}, "不能包含 *"},
 		{"开了验证码却没配密钥", func(c *config.Config) { c.EmailVerificationSecret = "" }, "EMAIL_VERIFICATION_SECRET"},
+		{"SES 主题为空", func(c *config.Config) { c.TencentSESSubject = "" }, "TENCENT_SES_SUBJECT"},
+		{"SES 主题含 CRLF", func(c *config.Config) {
+			c.TencentSESSubject = "旦食注册验证码\r\nBcc: attacker@example.com"
+		}, "TENCENT_SES_SUBJECT"},
 		{"图片上限非正", func(c *config.Config) { c.COSMaxImageBytes = 0 }, "COS_MAX_IMAGE_BYTES"},
 		{"签名时效非正", func(c *config.Config) { c.COSPresignTTLS = 0 }, "COS_PRESIGN_TTL_SECONDS"},
 		{"读取签名时效非正", func(c *config.Config) { c.COSPresignGetTTLS = 0 }, "COS_PRESIGN_GET_TTL_SECONDS"},
@@ -135,6 +140,7 @@ func TestProdExtraConstraints(t *testing.T) {
 			cfg.TencentRegion = "ap-guangzhou"
 			cfg.TencentSESFromEmail = "sender@example.com"
 			cfg.TencentSESFromName = "旦食"
+			cfg.TencentSESSubject = "旦食注册验证码"
 			cfg.TencentSESTemplateID = 123
 			cfg.COSBucket, cfg.COSRegion = "b", "r"
 			cfg.COSImageDomain = "https://img.example.com"
@@ -158,6 +164,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("TENCENT_CLOUD_REGION", "ap-hongkong")
 	t.Setenv("TENCENT_SES_FROM_EMAIL", "sender@example.com")
 	t.Setenv("TENCENT_SES_FROM_NAME", "测试发件人")
+	t.Setenv("TENCENT_SES_SUBJECT", "")
 	t.Setenv("TENCENT_SES_TEMPLATE_ID", "456")
 	t.Setenv("COS_IMG_DOMAIN", "https://img.example.com")
 	t.Setenv("EDGEONE_ZONE_ID", "zone-example123")
@@ -180,7 +187,8 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.TencentSecretID != "env-secret-id" || cfg.TencentSecretKey != "env-secret-key" ||
 		cfg.TencentRegion != "ap-hongkong" || cfg.TencentSESFromEmail != "sender@example.com" ||
-		cfg.TencentSESFromName != "测试发件人" || cfg.TencentSESTemplateID != 456 {
+		cfg.TencentSESFromName != "测试发件人" || cfg.TencentSESSubject != "旦食注册验证码" ||
+		cfg.TencentSESTemplateID != 456 {
 		t.Fatalf("腾讯云 SES 环境变量未完整加载: %+v", cfg)
 	}
 	if cfg.EdgeOneZoneID != "zone-example123" {
@@ -191,5 +199,20 @@ func TestLoadFromEnv(t *testing.T) {
 		cfg.ModerationReviewBacklogThreshold != 250 ||
 		cfg.ModerationReviewBacklogCooldown() != 2*time.Hour {
 		t.Fatalf("审核告警环境变量未完整加载: %+v", cfg)
+	}
+}
+
+func TestLoadCustomSESSubject(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@h:5432/danshi?TimeZone=UTC")
+	t.Setenv("JWT_SECRET_KEY", goodSecret)
+	t.Setenv("EMAIL_VERIFICATION_SECRET", goodSecret)
+	t.Setenv("TENCENT_SES_SUBJECT", "[测试] 旦食注册验证码")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TencentSESSubject != "[测试] 旦食注册验证码" {
+		t.Fatalf("TENCENT_SES_SUBJECT 未生效: %q", cfg.TencentSESSubject)
 	}
 }
