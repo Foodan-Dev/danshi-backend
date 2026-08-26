@@ -571,6 +571,28 @@ DO $$ BEGIN
     ARRAY['23001','23514'], '恢复不是人工复核，不得 supersede 机审行');
 END $$;
 
+-- 管理员下架使图片失去最后一条公开帖子引用时，追加独立 block 流水并要求转私有、刷新缓存。
+INSERT INTO moderation_records
+  (id,image_asset_id,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
+VALUES
+  (606,102,'image','admin_post_delete','block','{}',
+   '{"action":"admin_delete_post","post_id":1001}',3,now());
+UPDATE image_assets SET moderation='block' WHERE id=102;
+INSERT INTO image_access_intents
+  (id,image_asset_id,source_moderation_record_id,desired_public)
+VALUES (702,102,606,false);
+INSERT INTO image_access_deliveries
+  (image_asset_id,desired_intent_id,desired_public,purge_required,state,next_attempt_at)
+VALUES (102,702,false,true,'pending_acl',now());
+DO $$ BEGIN
+  PERFORM _assert((SELECT count(*) FROM moderation_records
+                    WHERE id=606 AND reviewer_id=3 AND supersedes_id IS NULL)=1,
+                  '管理员下架图片流水可按操作人检索且不 supersede 机审');
+  PERFORM _assert((SELECT desired_public=false AND purge_required
+                     FROM image_access_deliveries WHERE image_asset_id=102),
+                  '管理员下架图片必须转私有并刷新 CDN');
+END $$;
+
 \echo ''
 \echo '########## 1d-5. 编辑历史快照 ##########'
 INSERT INTO comment_histories (id,comment_id,revision,edited_by,content) VALUES (1,2001,1,2,'楼主评论（编辑前）');

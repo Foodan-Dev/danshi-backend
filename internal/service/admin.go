@@ -12,7 +12,10 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-const adminRestoreProvider model.ModerationProvider = "admin_restore"
+const (
+	adminRestoreProvider    model.ModerationProvider = "admin_restore"
+	adminPostDeleteProvider model.ModerationProvider = "admin_post_delete"
+)
 
 // AdminAuthorView 是管理端可见的作者信息。
 type AdminAuthorView struct {

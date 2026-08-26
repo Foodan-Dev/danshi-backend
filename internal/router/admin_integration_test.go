@@ -95,6 +95,14 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 		testAdminListsAndDeletion(t, engine, gdb, actors, fixture)
 	})
 
+	t.Run("admin post deletion reconciles unshared image access", func(t *testing.T) {
+		testAdminPostDeleteImageAccess(t, engine, gdb, actors, fixture)
+	})
+
+	t.Run("pending post reference keeps shared image public", func(t *testing.T) {
+		testAdminPostDeleteKeepsImageReferencedByPendingPost(t, engine, gdb, actors, fixture)
+	})
+
 	t.Run("post restore audits and rejects unapproved images", func(t *testing.T) {
 		testAdminPostRestore(t, engine, gdb, actors, fixture)
 	})
@@ -684,6 +692,178 @@ func testAdminListsAndDeletion(
 	}
 	require.NotContains(t, publicIDs, postIDs[0])
 	require.NotContains(t, publicIDs, postIDs[1])
+}
+
+func testAdminPostDeleteImageAccess(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	unique := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-unique")
+	sharedVisible := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-visible")
+	sharedDeleted := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-deleted")
+
+	targetPayload := sharePostPayload(fixture, "管理员下架图片混合场景", []string{"图片下架"})
+	targetPayload["images"] = []string{unique.PublicURL, sharedVisible.PublicURL, sharedDeleted.PublicURL}
+	target := createPost(t, engine, actors.Author.Token, targetPayload)
+
+	visiblePayload := sharePostPayload(fixture, "共享图片仍公开", []string{"共享公开"})
+	visiblePayload["images"] = []string{sharedVisible.PublicURL}
+	visible := createPost(t, engine, actors.Author.Token, visiblePayload)
+
+	deletedPayload := sharePostPayload(fixture, "共享图片引用已删除", []string{"共享已删"})
+	deletedPayload["images"] = []string{sharedDeleted.PublicURL}
+	deleted := createPost(t, engine, actors.Author.Token, deletedPayload)
+	status, response, _ := performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", deleted.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	require.Zero(t, adminPostDeleteImageRecordCount(t, gdb, sharedDeleted.ID),
+		"目标帖仍公开时，先删除另一篇共享帖不得收紧图片")
+
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", target.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	assertAdminPostDeleteImageAccess(t, gdb, unique.ID, target.ID, actors.Admin.User.ID)
+	assertAdminPostDeleteImageAccess(t, gdb, sharedDeleted.ID, target.ID, actors.Admin.User.ID)
+
+	var stillPublic model.ImageAsset
+	require.NoError(t, gdb.First(&stillPublic, sharedVisible.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, stillPublic.Moderation)
+	require.Zero(t, adminPostDeleteImageRecordCount(t, gdb, sharedVisible.ID),
+		"仍被公开帖子引用的共享图片不得新增 block 流水")
+	var sharedDeliveryCount int64
+	require.NoError(t, gdb.Model(&model.ImageAccessDelivery{}).
+		Where("image_asset_id = ?", sharedVisible.ID).Count(&sharedDeliveryCount).Error)
+	require.Zero(t, sharedDeliveryCount, "仍公开的共享图片不得生成转私有交付")
+
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", target.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	require.EqualValues(t, 1, adminPostDeleteImageRecordCount(t, gdb, unique.ID))
+	require.EqualValues(t, 1, adminPostDeleteImageRecordCount(t, gdb, sharedDeleted.ID))
+
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/restore", target.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentNotRestorable, response.ErrorCode,
+		"deleted_reason=admin 的主动下架不得走机审误杀恢复")
+
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", visible.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	assertAdminPostDeleteImageAccess(t, gdb, sharedVisible.ID, visible.ID, actors.Admin.User.ID)
+
+	restoredAsset := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-after-restore")
+	restoredPayload := sharePostPayload(fixture, "机审恢复后管理员下架", []string{"恢复后下架"})
+	restoredPayload["images"] = []string{restoredAsset.PublicURL}
+	restored := createPost(t, engine, actors.Author.Token, restoredPayload)
+	markPostModerationDeleted(t, gdb, restored.ID)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/posts/%d/restore", restored.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", restored.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	assertAdminPostDeleteImageAccess(t, gdb, restoredAsset.ID, restored.ID, actors.Admin.User.ID)
+	require.EqualValues(t, 1, adminPostDeleteImageRecordCount(t, gdb, restoredAsset.ID),
+		"恢复后再删除只应产生本次下架的一条图片流水")
+}
+
+func testAdminPostDeleteKeepsImageReferencedByPendingPost(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	shared := createPostAsset(t, gdb, actors.Author.User.ID, "admin-delete-pending-reference")
+
+	approvedPayload := sharePostPayload(fixture, "待审引用共享图的已发布帖", []string{"已发布引用"})
+	approvedPayload["images"] = []string{shared.PublicURL}
+	approved := createPost(t, engine, actors.Author.Token, approvedPayload)
+
+	pendingPayload := sharePostPayload(fixture, "共享图仍有待审引用", []string{"待审引用"})
+	pendingPayload["images"] = []string{shared.PublicURL}
+	pending := createPost(t, engine, actors.Author.Token, pendingPayload)
+	require.NoError(t, gdb.Model(&model.Post{}).Where("id = ?", pending.ID).
+		UpdateColumn("status", model.PostStatusPending).Error)
+	assertStoredPostStatus(t, gdb, approved.ID, model.PostStatusApproved)
+	assertStoredPostStatus(t, gdb, pending.ID, model.PostStatusPending)
+
+	status, response, _ := performJSON(t, engine, http.MethodDelete,
+		fmt.Sprintf("/api/v2/admin/posts/%d", approved.ID), nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, shared.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, asset.Moderation,
+		"仍被待审核帖子引用的图片必须保持公开")
+	require.Zero(t, adminPostDeleteImageRecordCount(t, gdb, shared.ID),
+		"待审核引用仍有效时不得追加 block 流水")
+	var intentCount int64
+	require.NoError(t, gdb.Model(&model.ImageAccessIntent{}).
+		Where("image_asset_id = ? AND desired_public = ?", shared.ID, false).
+		Count(&intentCount).Error)
+	require.Zero(t, intentCount, "待审核引用仍有效时不得生成转私有意图")
+	var deliveryCount int64
+	require.NoError(t, gdb.Model(&model.ImageAccessDelivery{}).
+		Where("image_asset_id = ?", shared.ID).Count(&deliveryCount).Error)
+	require.Zero(t, deliveryCount, "待审核引用仍有效时不得生成转私有交付")
+}
+
+func assertAdminPostDeleteImageAccess(
+	t *testing.T,
+	gdb *gorm.DB,
+	imageAssetID uint64,
+	postID uint64,
+	reviewerID uint64,
+) {
+	t.Helper()
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, imageAssetID).Error)
+	require.Equal(t, model.ModerationStatusBlock, asset.Moderation)
+
+	var record model.ModerationRecord
+	require.NoError(t, gdb.Where(
+		"image_asset_id = ? AND provider = ?", imageAssetID, "admin_post_delete",
+	).First(&record).Error)
+	require.Equal(t, model.ModerationSceneImage, record.Scene)
+	require.Equal(t, model.ModerationVerdictBlock, record.Verdict)
+	require.Equal(t, reviewerID, *record.ReviewerID)
+	require.NotNil(t, record.ReviewedAt)
+	require.Nil(t, record.SupersedesID, "管理员主动下架不是对机器 review 的人工复核")
+	var raw struct {
+		Action string `json:"action"`
+		PostID uint64 `json:"post_id"`
+	}
+	require.NoError(t, json.Unmarshal(record.RawResponse, &raw))
+	require.Equal(t, "admin_delete_post", raw.Action)
+	require.Equal(t, postID, raw.PostID)
+
+	var intent model.ImageAccessIntent
+	require.NoError(t, gdb.Where("source_moderation_record_id = ?", record.ID).First(&intent).Error)
+	require.Equal(t, imageAssetID, intent.ImageAssetID)
+	require.False(t, intent.DesiredPublic)
+	var delivery model.ImageAccessDelivery
+	require.NoError(t, gdb.First(&delivery, imageAssetID).Error)
+	require.Equal(t, intent.ID, delivery.DesiredIntentID)
+	require.False(t, delivery.DesiredPublic)
+	require.True(t, delivery.PurgeRequired)
+	require.Equal(t, model.ImageAccessPendingACL, delivery.State)
+}
+
+func adminPostDeleteImageRecordCount(t *testing.T, gdb *gorm.DB, imageAssetID uint64) int64 {
+	t.Helper()
+	var count int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
+		"image_asset_id = ? AND provider = ?", imageAssetID, "admin_post_delete",
+	).Count(&count).Error)
+	return count
 }
 
 func testAdminPostRestore(

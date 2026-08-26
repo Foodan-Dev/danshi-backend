@@ -15,9 +15,13 @@ func TestImageAccessOutboxMigrationGrandfathersTerminalAssets(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	version, err := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, err)
+	for version > 11 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	require.EqualValues(t, 11, version)
 
 	require.NoError(t, database.GORM.Exec(`
@@ -112,7 +116,13 @@ WHERE image_asset_id = 9201
 `).Error
 	require.ErrorContains(t, err, "fk_image_access_delivery_intent")
 
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+	version, err = dbinfra.Version(ctx, database.SQL)
+	require.NoError(t, err)
+	for version > 11 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	require.NoError(t, dbinfra.Up(ctx, database.SQL), "grandfather 迁移必须可 down/up 重放")
 	var replayed int64
 	require.NoError(t, database.GORM.Model(&model.ImageAccessDelivery{}).Count(&replayed).Error)

@@ -421,7 +421,7 @@ SET LOCAL danshi.allow_counter_write = 'on';
 
 ### 11.1 实体和动作的边界
 
-有独立生命周期、需要恢复或审计的实体采用软删除：用户、帖子、评论、标签。数据库触发器直接拒绝这些表的普通 `DELETE`。
+有独立生命周期、需要恢复或审计的实体采用软删除：用户、帖子、评论、标签。数据库触发器直接拒绝这些表的普通 `DELETE`。管理员下架帖子写入 `deleted_reason=admin`，保留帖子与图片关联供取证；它不是机审误杀，现有恢复端点只接受 `deleted_reason=moderation`，不会恢复管理员主动下架的帖子。
 
 点赞、收藏、关注、标签/口味/图片关联属于动作，取消时物理删除。否则复合主键会让“已取消”的软删除行永久占位，用户无法再次执行同一动作。
 
@@ -602,6 +602,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 - 标签：block 下架，保留帖子关联；
 - 用户字段：违规时通知管理员，由管理员重置或封禁；
 - 图片：block 后不支持帖子进入公开状态；同事务写 durable 访问意图，后台 worker 把 COS ACL 收敛为私有并确认 EdgeOne 精确刷新终态，人工改判可恢复公开 ACL。
+- 管理员下架帖子：按“帖子未软删除”的有效引用口径检查每张附图，不要求引用帖已经审核通过。仍被其他未软删除帖子（包括待审核帖子）引用的图片保持原状；已无未软删除帖子引用的图片在下架事务内追加 `provider=admin_post_delete`、`verdict=block`、带 reviewer 且无 `supersedes_id` 的独立流水，写回 `image_assets.moderation=block`，并写入 `desired_public=false`、`purge_required=true` 的访问意图。外部 COS/EdgeOne 调用仍只由事务外 worker 执行。
 
 系统不根据单条机器 verdict 自动封禁用户。
 
