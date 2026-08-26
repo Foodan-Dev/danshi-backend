@@ -362,6 +362,16 @@ func testPostLevelUnifiedModeration(
 		var image model.ImageAsset
 		require.NoError(t, gdb.First(&image, rejected.images[index].ID).Error)
 		require.Equal(t, model.ModerationStatusBlock, image.Moderation)
+		var delivery model.ImageAccessDelivery
+		require.NoError(t, gdb.First(&delivery, image.ID).Error)
+		require.False(t, delivery.DesiredPublic)
+		require.True(t, delivery.PurgeRequired)
+		var intent model.ImageAccessIntent
+		require.NoError(t, gdb.First(&intent, delivery.DesiredIntentID).Error)
+		var source model.ModerationRecord
+		require.NoError(t, gdb.First(&source, intent.SourceModerationRecordID).Error)
+		require.Equal(t, model.ModerationProviderManual, source.Provider,
+			"整帖联合审核判 block 仍必须沿用 manual supersedes 流水")
 	}
 
 	blocked := createFixture("batch38-block-priority", model.ModerationVerdictReview)

@@ -51,6 +51,13 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 	require.Nil(t, migratedLegacy.ReviewerID)
 	require.Nil(t, migratedLegacy.ReviewedAt)
 
+	version, err = dbinfra.Version(ctx, database.SQL)
+	require.NoError(t, err)
+	for version > 7 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	require.NoError(t, dbinfra.Up(ctx, database.SQL), "迁移必须支持无损 down / up 重放")
 

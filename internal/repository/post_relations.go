@@ -159,6 +159,32 @@ func (PostRepository) PostImageIDs(ctx context.Context, postID uint64) ([]uint64
 	return ids, err
 }
 
+// ImageIDsWithoutPublicPostReferences 返回已不再被公开帖子引用的目标图片。
+// 公开口径与信息流和详情一致：帖子未删除且 status=approved。
+// 调用方必须先按 id 升序锁定全部目标资产，避免并发引用、编辑或下架漏掉状态收敛。
+func (PostRepository) ImageIDsWithoutPublicPostReferences(
+	ctx context.Context,
+	imageIDs []uint64,
+) ([]uint64, error) {
+	imageIDs = uniqueSortedIDs(imageIDs)
+	if len(imageIDs) == 0 {
+		return []uint64{}, nil
+	}
+	var ids []uint64
+	err := db.FromContext(ctx).Table("image_assets AS image").
+		Where("image.id IN ?", imageIDs).
+		Where(`NOT EXISTS (
+			SELECT 1
+			FROM post_images AS pi
+			JOIN posts AS p ON p.id = pi.post_id
+			WHERE pi.image_asset_id = image.id
+			  AND p.deleted_at IS NULL
+			  AND p.status = ?
+		)`, model.PostStatusApproved).
+		Order("image.id").Pluck("image.id", &ids).Error
+	return ids, err
+}
+
 // ReplaceImages 物理替换图片关联；调用前必须锁定新旧资产全集。
 func (PostRepository) ReplaceImages(ctx context.Context, postID uint64, imageIDs []uint64) error {
 	if err := db.FromContext(ctx).Where("post_id = ?", postID).Delete(&model.PostImage{}).Error; err != nil {

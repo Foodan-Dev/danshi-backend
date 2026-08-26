@@ -12,7 +12,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-// DeletePost 以管理员来源软删除帖子，不解除任何内容关联。
+// DeletePost 以管理员来源软删除帖子，并收紧已无公开帖子引用的附图访问状态。
 func (s *AdminService) DeletePost(
 	ctx context.Context,
 	postID uint64,
@@ -25,8 +25,32 @@ func (s *AdminService) DeletePost(
 	if post.DeletedAt != nil {
 		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
-	if err := s.admin.SoftDeletePost(ctx, postID, actorID, time.Now().UTC()); err != nil {
+	imageIDs, err := s.posts.PostImageIDs(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	assets, err := s.posts.LockImagesByIDs(ctx, imageIDs)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.admin.SoftDeletePost(ctx, postID, actorID, now); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+	}
+	privateImageIDs, err := s.posts.ImageIDsWithoutPublicPostReferences(ctx, imageIDs)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	assetsByID := make(map[uint64]*model.ImageAsset, len(assets))
+	for index := range assets {
+		assetsByID[assets[index].ID] = &assets[index]
+	}
+	for _, imageID := range privateImageIDs {
+		if err := s.moderation.applyAdminPostDeleteImage(
+			ctx, postID, actorID, assetsByID[imageID], now,
+		); err != nil {
+			return nil, apierr.Internal(err)
+		}
 	}
 	return &AdminPostDeleteResult{PostID: postID}, nil
 }
@@ -134,6 +158,40 @@ func (s *AdminService) RestoreComment(
 
 func isModerationDeletion(deletedAt *time.Time, reason *model.DeleteReason) bool {
 	return deletedAt != nil && reason != nil && *reason == model.DeleteReasonModeration
+}
+
+func (s *ModerationService) applyAdminPostDeleteImage(
+	ctx context.Context,
+	postID uint64,
+	actorID uint64,
+	asset *model.ImageAsset,
+	now time.Time,
+) error {
+	if asset == nil {
+		return nil
+	}
+	raw, err := json.Marshal(struct {
+		Action string `json:"action"`
+		PostID uint64 `json:"post_id"`
+	}{Action: "admin_delete_post", PostID: postID})
+	if err != nil {
+		return err
+	}
+	record := model.ModerationRecord{
+		ImageAssetID: &asset.ID, Scene: model.ModerationSceneImage,
+		Provider: adminPostDeleteProvider, Verdict: model.ModerationVerdictBlock,
+		Labels: pq.StringArray{}, RawResponse: raw,
+		ReviewerID: &actorID, ReviewedAt: &now, CreatedAt: now,
+	}
+	if err := s.moderation.CreateAdministrativeRecord(ctx, &record); err != nil {
+		return err
+	}
+	if err := s.moderation.UpdateImageModeration(
+		ctx, asset.ID, model.ModerationStatusBlock,
+	); err != nil {
+		return err
+	}
+	return s.applyImageAccess(ctx, asset, record.ID, model.ModerationVerdictBlock)
 }
 
 func restorationRecord(

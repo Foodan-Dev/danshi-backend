@@ -219,6 +219,14 @@ func (ModerationRepository) CreateManualRecord(
 	return db.FromContext(ctx).Create(record).Error
 }
 
+// CreateAdministrativeRecord 追加一条不 supersede 机审行的人工管理审核事实。
+func (ModerationRepository) CreateAdministrativeRecord(
+	ctx context.Context,
+	record *model.ModerationRecord,
+) error {
+	return db.FromContext(ctx).Create(record).Error
+}
+
 // UpdateImageModeration 写回图片当前结论，不修改既有审核流水。
 func (ModerationRepository) UpdateImageModeration(
 	ctx context.Context,
