@@ -37,12 +37,13 @@ type SESVerificationEmailSender struct {
 	fromEmailAddress string
 	subject          string
 	templateID       uint64
+	redactor         knownSecretRedactor
 }
 
 // NewSESVerificationEmailSender 从已校验配置创建生产投递器。
 func NewSESVerificationEmailSender(cfg config.Config) (*SESVerificationEmailSender, error) {
 	if err := validateSESConfig(cfg); err != nil {
-		return nil, err
+		return nil, newKnownSecretRedactor(cfg).redact(err)
 	}
 	clientProfile := profile.NewClientProfile()
 	clientProfile.HttpProfile.Endpoint = sesEndpoint
@@ -53,7 +54,9 @@ func NewSESVerificationEmailSender(cfg config.Config) (*SESVerificationEmailSend
 		clientProfile,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("创建腾讯云 SES 客户端: %w", err)
+		return nil, newKnownSecretRedactor(cfg).redact(
+			fmt.Errorf("创建腾讯云 SES 客户端: %w", err),
+		)
 	}
 	return newSESVerificationEmailSender(cfg, client), nil
 }
@@ -71,6 +74,7 @@ func newSESVerificationEmailSender(
 		),
 		subject:    strings.TrimSpace(cfg.TencentSESSubject),
 		templateID: cfg.TencentSESTemplateID,
+		redactor:   newKnownSecretRedactor(cfg),
 	}
 }
 
@@ -80,6 +84,7 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	email string,
 	code string,
 ) (err error) {
+	defer func() { err = s.redactor.redact(err) }()
 	templateData, err := json.Marshal(map[string]string{"code": code})
 	if err != nil {
 		return fmt.Errorf("编码腾讯云 SES 模板参数: %w", err)
@@ -97,7 +102,7 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	ctx, span := obs.StartExternalCall(
 		ctx, sesInstrumentationName, "tencent_ses", "SendEmail",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, s.redactor.redact(err)) }()
 
 	response, err := s.client.SendEmailWithContext(ctx, request)
 	if err != nil {

@@ -45,12 +45,15 @@ type EdgeOnePurger struct {
 	imageOrigin *url.URL
 	gate        *edgeOneRateGate
 	overallTTL  time.Duration
+	redactor    knownSecretRedactor
 }
 
 // NewEdgeOnePurger 使用官方腾讯云 Go SDK 创建 EdgeOne durable task provider。
 func NewEdgeOnePurger(cfg config.Config) (*EdgeOnePurger, error) {
 	if !cfg.EdgeOneConfigured() {
-		return nil, errors.New("EdgeOne URL 刷新配置不完整")
+		return nil, newKnownSecretRedactor(cfg).redact(
+			errors.New("EdgeOne URL 刷新配置不完整"),
+		)
 	}
 	clientProfile := profile.NewClientProfile()
 	clientProfile.HttpProfile.Endpoint = edgeOneEndpoint
@@ -62,7 +65,9 @@ func NewEdgeOnePurger(cfg config.Config) (*EdgeOnePurger, error) {
 		common.NewCredential(cfg.TencentSecretID, cfg.TencentSecretKey), "", clientProfile,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("创建腾讯云 EdgeOne 客户端: %w", err)
+		return nil, newKnownSecretRedactor(cfg).redact(
+			fmt.Errorf("创建腾讯云 EdgeOne 客户端: %w", err),
+		)
 	}
 	return newEdgeOnePurger(cfg, client, edgeOnePurgeRequestSpacing), nil
 }
@@ -72,6 +77,7 @@ func newEdgeOnePurger(cfg config.Config, client edgeOnePurgeClient, spacing time
 	return &EdgeOnePurger{
 		client: client, zoneID: cfg.EdgeOneZoneID, imageOrigin: origin,
 		gate: newEdgeOneRateGate(spacing), overallTTL: edgeOnePurgeOverallTimeout,
+		redactor: newKnownSecretRedactor(cfg),
 	}
 }
 
@@ -80,6 +86,7 @@ func (p *EdgeOnePurger) Submit(
 	ctx context.Context,
 	publicURL string,
 ) (submission service.ImageCachePurgeSubmission, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	targets, err := p.exactTargets(publicURL)
 	if err != nil {
 		return submission, service.NewImageCachePurgeError(service.ImageCachePurgeErrorPermanent)
@@ -87,7 +94,7 @@ func (p *EdgeOnePurger) Submit(
 	ctx, cancel := context.WithTimeout(ctx, p.overallTTL)
 	defer cancel()
 	ctx, span := obs.StartExternalCall(ctx, edgeOneInstrumentationName, "tencent_edgeone", "CreatePurgeTask")
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 	if err = p.gate.Wait(ctx); err != nil {
 		return submission, service.NewImageCachePurgeError(service.ImageCachePurgeErrorUnknown)
 	}
@@ -116,6 +123,7 @@ func (p *EdgeOnePurger) Describe(
 	publicURL string,
 	jobID string,
 ) (state service.ImageCachePurgeTaskState, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	targets, err := p.exactTargets(publicURL)
 	if err != nil || strings.TrimSpace(jobID) == "" {
 		return service.ImageCachePurgeProtocolUnknown,
@@ -124,7 +132,7 @@ func (p *EdgeOnePurger) Describe(
 	ctx, cancel := context.WithTimeout(ctx, p.overallTTL)
 	defer cancel()
 	ctx, span := obs.StartExternalCall(ctx, edgeOneInstrumentationName, "tencent_edgeone", "DescribePurgeTasks")
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 	tasks, err := p.describePages(ctx, func(offset int64) *teo.DescribePurgeTasksRequest {
 		request := teo.NewDescribePurgeTasksRequest()
 		request.ZoneId = common.StringPtr(p.zoneID)
@@ -149,6 +157,7 @@ func (p *EdgeOnePurger) Recover(
 	startedAt time.Time,
 	endedAt time.Time,
 ) (recovery service.ImageCachePurgeRecovery, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	targets, err := p.exactTargets(publicURL)
 	if err != nil || !startedAt.Before(endedAt) || endedAt.Sub(startedAt) > 7*24*time.Hour {
 		return recovery, service.NewImageCachePurgeError(service.ImageCachePurgeErrorPermanent)
@@ -156,7 +165,7 @@ func (p *EdgeOnePurger) Recover(
 	ctx, cancel := context.WithTimeout(ctx, p.overallTTL)
 	defer cancel()
 	ctx, span := obs.StartExternalCall(ctx, edgeOneInstrumentationName, "tencent_edgeone", "DescribePurgeTasksRecover")
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 	request := teo.NewDescribePurgeTasksRequest()
 	request.ZoneId = common.StringPtr(p.zoneID)
 	request.StartTime = common.StringPtr(startedAt.UTC().Format(time.RFC3339))

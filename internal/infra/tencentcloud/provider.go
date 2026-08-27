@@ -35,17 +35,18 @@ type Provider struct {
 	client    *cos.Client
 	bucketURL *url.URL
 	now       func() time.Time
+	redactor  knownSecretRedactor
 }
 
 // NewProvider 按腾讯云配置创建一个共享连接池的供应商适配器。
 func NewProvider(cfg config.Config, httpClient *http.Client) (*Provider, error) {
 	bucketURL, err := cos.NewBucketURL(cfg.COSBucket, cfg.COSRegion, true)
 	if err != nil {
-		return nil, fmt.Errorf("构造 COS endpoint: %w", err)
+		return nil, newKnownSecretRedactor(cfg).redact(fmt.Errorf("构造 COS endpoint: %w", err))
 	}
 	ciURL, err := url.Parse(fmt.Sprintf("https://%s.ci.%s.myqcloud.com", cfg.COSBucket, cfg.COSRegion))
 	if err != nil {
-		return nil, fmt.Errorf("构造 CI endpoint: %w", err)
+		return nil, newKnownSecretRedactor(cfg).redact(fmt.Errorf("构造 CI endpoint: %w", err))
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: providerRequestTimeout}
@@ -64,14 +65,18 @@ func NewProvider(cfg config.Config, httpClient *http.Client) (*Provider, error) 
 		SecretID: cfg.TencentSecretID, SecretKey: cfg.TencentSecretKey, Transport: transport,
 	}
 	client := cos.NewClient(&cos.BaseURL{BucketURL: bucketURL, CIURL: ciURL}, httpClient)
-	return &Provider{cfg: cfg, client: client, bucketURL: bucketURL, now: time.Now}, nil
+	return &Provider{
+		cfg: cfg, client: client, bucketURL: bucketURL, now: time.Now,
+		redactor: newKnownSecretRedactor(cfg),
+	}, nil
 }
 
 // PresignPut 生成把 Content-Type、Content-Length 与 Content-MD5 全部签入的 PUT URL。
 func (p *Provider) PresignPut(
 	ctx context.Context,
 	request service.StoragePresignRequest,
-) (service.StorageUploadTicket, error) {
+) (ticket service.StorageUploadTicket, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	startedAt := p.now().UTC()
 	uploadURL, err := PresignCOSPut(
 		ctx, p.bucketURL, p.cfg.TencentSecretID, p.cfg.TencentSecretKey, request, startedAt,
@@ -92,7 +97,9 @@ func PresignCOSPut(
 	secretKey string,
 	request service.StoragePresignRequest,
 	startedAt time.Time,
-) (string, error) {
+) (result string, err error) {
+	redactor := newSecretRedactor(secretKey)
+	defer func() { err = redactor.redact(err) }()
 	if bucketURL == nil || request.ObjectKey == "" || request.TTL <= 0 {
 		return "", errors.New("COS 预签名参数不完整")
 	}
@@ -120,11 +127,17 @@ func PresignCOSPut(
 }
 
 // PresignGet 为私有 COS 对象生成短期 GET URL。
-func (p *Provider) PresignGet(ctx context.Context, objectKey string, ttl time.Duration) (string, error) {
-	return PresignCOSGet(
+func (p *Provider) PresignGet(
+	ctx context.Context,
+	objectKey string,
+	ttl time.Duration,
+) (result string, err error) {
+	defer func() { err = p.redactor.redact(err) }()
+	result, err = PresignCOSGet(
 		ctx, p.bucketURL, p.cfg.TencentSecretID, p.cfg.TencentSecretKey,
 		objectKey, ttl, p.now().UTC(),
 	)
+	return result, err
 }
 
 // PresignCOSGet 是可用固定时间独立验证的 COS V5 GET 签名纯函数。
@@ -136,7 +149,9 @@ func PresignCOSGet(
 	objectKey string,
 	ttl time.Duration,
 	startedAt time.Time,
-) (string, error) {
+) (result string, err error) {
+	redactor := newSecretRedactor(secretKey)
+	defer func() { err = redactor.redact(err) }()
 	if bucketURL == nil || objectKey == "" || ttl <= 0 {
 		return "", errors.New("COS 预签名参数不完整")
 	}
@@ -160,10 +175,11 @@ func (p *Provider) HeadObject(
 	ctx context.Context,
 	objectKey string,
 ) (result service.StorageObjectMeta, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	ctx, span := obs.StartExternalCall(
 		ctx, providerInstrumentationName, "tencent_cos", "HeadObject",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
 	response, err := p.client.Object.Head(ctx, objectKey, nil)
 	if err != nil {
@@ -181,10 +197,11 @@ func (p *Provider) HeadObject(
 
 // DeleteObject 幂等删除对象。
 func (p *Provider) DeleteObject(ctx context.Context, objectKey string) (err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	ctx, span := obs.StartExternalCall(
 		ctx, providerInstrumentationName, "tencent_cos", "DeleteObject",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
 	_, err = p.client.Object.Delete(ctx, objectKey)
 	if err != nil && cos.IsNotFoundError(err) {
@@ -199,10 +216,11 @@ func (p *Provider) SetObjectPublicAccess(
 	objectKey string,
 	public bool,
 ) (err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	ctx, span := obs.StartExternalCall(
 		ctx, providerInstrumentationName, "tencent_cos", "PutObjectACL",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
 	acl := "private"
 	if public {
@@ -215,7 +233,8 @@ func (p *Provider) SetObjectPublicAccess(
 }
 
 // PublicURL 只在 complete 成功后按配置的公开读域名构造 URL。
-func (p *Provider) PublicURL(objectKey string) (string, error) {
+func (p *Provider) PublicURL(objectKey string) (result string, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	base, err := url.Parse(strings.TrimRight(p.cfg.COSImageDomain, "/") + "/")
 	if err != nil || base.Host == "" {
 		return "", errors.New("COS_IMG_DOMAIN 无效")
@@ -229,20 +248,23 @@ func (p *Provider) Review(
 	ctx context.Context,
 	request service.ModerationRequest,
 ) (result service.ModerationResult, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	ctx, span := obs.StartExternalCall(
 		ctx, providerInstrumentationName, "tencent_ci", "ReviewText",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
 	response, _, err := p.client.CI.PutTextAuditingJob(ctx, &cos.PutTextAuditingJobOptions{
 		InputContent: base64.StdEncoding.EncodeToString([]byte(request.Text)),
 		Conf:         &cos.TextAuditingJobConf{BizType: p.cfg.TencentCIBizType},
 	})
 	if err != nil {
-		return service.ModerationResult{}, unavailableModeration(err)
+		return service.ModerationResult{}, unavailableModeration(p.redactor.redact(err))
 	}
 	if response == nil || response.JobsDetail == nil {
-		return service.ModerationResult{}, unavailableModeration(errors.New("腾讯 CI 文本审核缺少 JobsDetail"))
+		return service.ModerationResult{}, unavailableModeration(
+			errors.New("腾讯 CI 文本审核缺少 JobsDetail"),
+		)
 	}
 	detail := response.JobsDetail
 	verdict, err := verdictFromResult(detail.Result)
@@ -270,6 +292,7 @@ func (p *Provider) SubmitImage(
 	ctx context.Context,
 	request service.ImageModerationRequest,
 ) (result service.ImageModerationSubmission, err error) {
+	defer func() { err = p.redactor.redact(err) }()
 	callbackURL, err := p.callbackURL()
 	if err != nil {
 		return service.ImageModerationSubmission{}, unavailableModeration(err)
@@ -277,7 +300,7 @@ func (p *Provider) SubmitImage(
 	ctx, span := obs.StartExternalCall(
 		ctx, providerInstrumentationName, "tencent_ci", "SubmitImage",
 	)
-	defer func() { obs.EndExternalCall(span, err) }()
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
 	response, _, err := p.client.CI.ImageAuditing(ctx, request.ObjectKey, &cos.ImageRecognitionOptions{
 		CIProcess: "sensitive-content-recognition", Async: 1,
@@ -285,7 +308,7 @@ func (p *Provider) SubmitImage(
 		DataId: fmt.Sprintf("image_asset:%d", request.ImageAssetID),
 	})
 	if err != nil {
-		return service.ImageModerationSubmission{}, unavailableModeration(err)
+		return service.ImageModerationSubmission{}, unavailableModeration(p.redactor.redact(err))
 	}
 	if response == nil || strings.TrimSpace(response.JobId) == "" {
 		return service.ImageModerationSubmission{}, unavailableModeration(
@@ -503,8 +526,12 @@ func decimalPointer(value *int) *decimal.Decimal {
 }
 
 // DecodeImageCallback 让共享供应商实例也能直接作为回调解码端口注入。
-func (*Provider) DecodeImageCallback(body []byte) (service.ImageModerationCallback, error) {
-	return CallbackDecoder{}.DecodeImageCallback(body)
+func (p *Provider) DecodeImageCallback(
+	body []byte,
+) (result service.ImageModerationCallback, err error) {
+	defer func() { err = p.redactor.redact(err) }()
+	result, err = (CallbackDecoder{}).DecodeImageCallback(body)
+	return result, err
 }
 
 type tencentImageCallbackDetail struct {
