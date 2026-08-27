@@ -1125,6 +1125,16 @@ BEGIN
   PERFORM _assert(EXISTS (
     SELECT 1
       FROM pg_index i
+     WHERE i.indexrelid='uq_image_assets_public_url'::regclass
+       AND i.indrelid='image_assets'::regclass
+       AND i.indisunique AND i.indisvalid AND i.indisready
+       AND i.indpred IS NOT NULL
+       AND pg_get_expr(i.indpred, i.indrelid)=
+           '(public_url <> ''''::text)'
+  ), 'image_assets.public_url 仅对非空值使用部分唯一索引');
+  PERFORM _assert(EXISTS (
+    SELECT 1
+      FROM pg_index i
       JOIN pg_class idx ON idx.oid=i.indexrelid
       JOIN pg_am am ON am.oid=idx.relam
      WHERE i.indexrelid='idx_posts_title_trgm'::regclass

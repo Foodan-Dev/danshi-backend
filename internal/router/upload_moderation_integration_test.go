@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -81,6 +82,10 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 
 	t.Run("content md5 is mandatory and signed", func(t *testing.T) {
 		testUploadContentMD5(t, engine, storage, author.Token)
+	})
+
+	t.Run("pending uploads coexist while completed public URLs stay unique", func(t *testing.T) {
+		testUploadPublicURLPartialUniqueness(t, engine, gdb, sender, author)
 	})
 
 	t.Run("pending image callback approves post exactly once", func(t *testing.T) {
@@ -781,6 +786,63 @@ func testUploadContentMD5(
 	completePath := fmt.Sprintf("/api/v2/uploads/%d/complete", presign.UploadID)
 	status, response, _ = performJSON(t, engine, http.MethodPost, completePath, nil, token)
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+}
+
+func testUploadPublicURLPartialUniqueness(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	sender *captureEmailSender,
+	author service.AuthResult,
+) {
+	t.Helper()
+	first := presignImage(t, engine, author.Token, 1024)
+	second := presignImage(t, engine, author.Token, 2048)
+
+	var sameUserAssets []model.ImageAsset
+	require.NoError(t, gdb.Where("id IN ?", []uint64{first.UploadID, second.UploadID}).
+		Order("id").Find(&sameUserAssets).Error)
+	require.Len(t, sameUserAssets, 2)
+	for _, asset := range sameUserAssets {
+		require.NotNil(t, asset.UploaderID)
+		require.Equal(t, author.User.ID, *asset.UploaderID)
+		require.Equal(t, model.ImageStatusPending, asset.Status)
+		require.Empty(t, asset.PublicURL)
+	}
+
+	other := registerPostTestUser(
+		t, engine, sender, "upload-public-url-other@fdueat.com", "上传约束用户",
+	)
+	authorUpload := presignImage(t, engine, author.Token, 3072)
+	otherUpload := presignImage(t, engine, other.Token, 4096)
+	expectedUploaders := map[uint64]uint64{
+		authorUpload.UploadID: author.User.ID,
+		otherUpload.UploadID:  other.User.ID,
+	}
+	var differentUserAssets []model.ImageAsset
+	require.NoError(t, gdb.Where("id IN ?", []uint64{authorUpload.UploadID, otherUpload.UploadID}).
+		Find(&differentUserAssets).Error)
+	require.Len(t, differentUserAssets, 2)
+	for _, asset := range differentUserAssets {
+		require.NotNil(t, asset.UploaderID)
+		require.Equal(t, expectedUploaders[asset.ID], *asset.UploaderID)
+		require.Equal(t, model.ImageStatusPending, asset.Status)
+		require.Empty(t, asset.PublicURL)
+	}
+
+	const duplicatePublicURL = "https://img.example.test/completed/shared.jpg"
+	require.NoError(t, gdb.Model(&model.ImageAsset{}).Where("id = ?", first.UploadID).
+		Update("public_url", duplicatePublicURL).Error)
+	err := gdb.Model(&model.ImageAsset{}).Where("id = ?", second.UploadID).
+		Update("public_url", duplicatePublicURL).Error
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	require.Equal(t, "23505", pgErr.Code)
+	require.Equal(t, "uq_image_assets_public_url", pgErr.ConstraintName)
+
+	var rejected model.ImageAsset
+	require.NoError(t, gdb.First(&rejected, second.UploadID).Error)
+	require.Empty(t, rejected.PublicURL, "重复非空 public_url 被拒后不得污染 pending 资产")
 }
 
 func testUploadBoundaries(

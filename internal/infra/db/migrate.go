@@ -15,7 +15,7 @@ import (
 // server 启动时会核对，不符就拒绝启动（见 AssertVersion）。
 // 这条门禁的意义：滚动更新时如果迁移还没跑完，新版本代码会连上旧 schema，
 // 症状往往是「某个字段不存在」这类难查的运行时错误，不如直接起不来。
-const ExpectedVersion int64 = 13
+const ExpectedVersion int64 = 14
 
 func gooseInit() error {
 	goose.SetBaseFS(migrations.FS)
