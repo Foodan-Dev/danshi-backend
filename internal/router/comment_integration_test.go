@@ -96,8 +96,8 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentLikes(t, engine, gdb, actors, fixture)
 	})
 
-	t.Run("deleted post hides comments and disables interaction", func(t *testing.T) {
-		testDeletedPostCommentVisibility(t, engine, actors, fixture)
+	t.Run("deleted post comments are read only for post author", func(t *testing.T) {
+		testDeletedPostCommentsReadOnly(t, engine, actors, fixture)
 	})
 
 	t.Run("moderation failures roll back comment transaction", func(t *testing.T) {
@@ -1026,7 +1026,7 @@ func testCommentLikes(
 	require.EqualValues(t, 1, likeCount, "并发重复点赞只能形成一条关系")
 }
 
-func testDeletedPostCommentVisibility(
+func testDeletedPostCommentsReadOnly(
 	t *testing.T,
 	engine *server.Hertz,
 	actors commentActors,
@@ -1039,12 +1039,34 @@ func testDeletedPostCommentVisibility(
 		map[string]any{"content": "帖子删除后不可见的评论"})
 	reply := createComment(t, engine, actors.Replier.Token, post.ID,
 		map[string]any{"content": "帖子删除后不可见的回复", "parent_id": root.Comment.ID})
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status, "未删除帖子应保持正常可读")
+	var beforeDelete service.CommentList
+	decodeData(t, response, &beforeDelete)
+	require.Equal(t, []uint64{root.Comment.ID}, commentItemIDs(beforeDelete.Comments))
+	require.Equal(t, []uint64{reply.Comment.ID}, commentItemIDs(beforeDelete.Comments[0].Replies))
 
-	status, _, _ := performJSON(t, engine, http.MethodDelete,
+	status, _, _ = performJSON(t, engine, http.MethodDelete,
 		postPath(post.ID), nil, actors.PostAuthor.Token)
 	require.Equal(t, http.StatusOK, status)
 
-	status, response, _ := performJSON(t, engine, http.MethodGet,
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status, "帖子作者应能读取自己已删除帖子的已有评论")
+	var afterDelete service.CommentList
+	decodeData(t, response, &afterDelete)
+	require.Equal(t, []uint64{root.Comment.ID}, commentItemIDs(afterDelete.Comments))
+	require.Equal(t, []uint64{reply.Comment.ID}, commentItemIDs(afterDelete.Comments[0].Replies))
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(root.Comment.ID)+"/replies", nil, actors.PostAuthor.Token)
+	require.Equal(t, http.StatusOK, status, "帖子作者应能读取自己已删除帖子的完整回复")
+	var replies service.CommentReplies
+	decodeData(t, response, &replies)
+	require.Equal(t, []uint64{reply.Comment.ID}, commentItemIDs(replies.Replies))
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
 		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), nil, actors.Commenter.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
@@ -1052,18 +1074,44 @@ func testDeletedPostCommentVisibility(
 		commentPath(root.Comment.ID)+"/replies", nil, actors.Commenter.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID), map[string]any{"content": "删帖后新评论"},
-		actors.Commenter.Token)
+		actors.PostAuthor.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 
-	for _, commentID := range []uint64{root.Comment.ID, reply.Comment.ID} {
-		status, response, _ = performJSON(t, engine, http.MethodPost,
-			commentPath(commentID)+"/like", nil, actors.Mentioned.Token)
-		require.Equal(t, http.StatusConflict, status)
-		require.Equal(t, apierr.BizPostNotPublished, response.ErrorCode)
+	for _, interaction := range []struct {
+		method string
+		suffix string
+	}{
+		{method: http.MethodPost, suffix: "/like"},
+		{method: http.MethodDelete, suffix: "/like"},
+		{method: http.MethodPost, suffix: "/favorite"},
+		{method: http.MethodDelete, suffix: "/favorite"},
+	} {
+		status, response, _ = performJSON(t, engine, interaction.method,
+			postPath(post.ID)+interaction.suffix, nil, actors.PostAuthor.Token)
+		require.Equal(t, http.StatusNotFound, status)
+		require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 	}
+
+	for _, commentID := range []uint64{root.Comment.ID, reply.Comment.ID} {
+		for _, method := range []string{http.MethodPost, http.MethodDelete} {
+			status, response, _ = performJSON(t, engine, method,
+				commentPath(commentID)+"/like", nil, actors.PostAuthor.Token)
+			require.Equal(t, http.StatusConflict, status)
+			require.Equal(t, apierr.BizPostNotPublished, response.ErrorCode)
+		}
+	}
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		commentPath(root.Comment.ID), map[string]any{"content": "删帖后修改评论"}, actors.Commenter.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	status, response, _ = performJSON(t, engine, http.MethodDelete,
+		commentPath(root.Comment.ID), nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		commentPath(root.Comment.ID)+"/history", nil, actors.Commenter.Token)

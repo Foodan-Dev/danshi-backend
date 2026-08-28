@@ -438,7 +438,7 @@ func (s *PostService) Histories(
 
 // Like 幂等点赞并返回触发器维护后的计数。
 func (s *PostService) Like(ctx context.Context, postID, userID uint64) (*PostLikeResult, error) {
-	post, err := s.interactivePost(ctx, postID)
+	post, err := s.postForWrite(ctx, postID)
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +464,7 @@ func (s *PostService) Like(ctx context.Context, postID, userID uint64) (*PostLik
 
 // Unlike 幂等取消点赞。
 func (s *PostService) Unlike(ctx context.Context, postID, userID uint64) (*PostLikeResult, error) {
-	if err := s.ensureInteractive(ctx, postID); err != nil {
+	if _, err := s.postForWrite(ctx, postID); err != nil {
 		return nil, err
 	}
 	if err := s.posts.Unlike(ctx, userID, postID); err != nil {
@@ -483,7 +483,7 @@ func (s *PostService) Favorite(
 	postID uint64,
 	userID uint64,
 ) (*PostFavoriteResult, error) {
-	if err := s.ensureInteractive(ctx, postID); err != nil {
+	if _, err := s.postForWrite(ctx, postID); err != nil {
 		return nil, err
 	}
 	if err := s.posts.Favorite(ctx, userID, postID); err != nil {
@@ -502,7 +502,7 @@ func (s *PostService) Unfavorite(
 	postID uint64,
 	userID uint64,
 ) (*PostFavoriteResult, error) {
-	if err := s.ensureInteractive(ctx, postID); err != nil {
+	if _, err := s.postForWrite(ctx, postID); err != nil {
 		return nil, err
 	}
 	if err := s.posts.Unfavorite(ctx, userID, postID); err != nil {
@@ -533,23 +533,35 @@ func (s *PostService) visibleRecord(
 	return record, nil
 }
 
-func (s *PostService) ensureInteractive(ctx context.Context, postID uint64) error {
-	_, err := s.interactivePost(ctx, postID)
-	return err
-}
-
-func (s *PostService) interactivePost(ctx context.Context, postID uint64) (*repository.PostRecord, error) {
+func (s *PostService) postForWrite(ctx context.Context, postID uint64) (*repository.PostRecord, error) {
 	record, err := s.posts.FindByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if record.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
-	}
-	if record.Status != model.PostStatusApproved {
-		return nil, apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
+	if err := ensurePostWritable(&record.Post); err != nil {
+		return nil, err
 	}
 	return record, nil
+}
+
+func ensurePostReadable(post *model.Post, currentUserID uint64) error {
+	if post.DeletedAt != nil && post.AuthorID != currentUserID {
+		return apierr.NotFound(apierr.BizPostDeleted, "帖子")
+	}
+	if post.Status != model.PostStatusApproved && post.AuthorID != currentUserID {
+		return apierr.NotFound(apierr.BizPostNotPublished, "帖子")
+	}
+	return nil
+}
+
+func ensurePostWritable(post *model.Post) error {
+	if post.DeletedAt != nil {
+		return apierr.NotFound(apierr.BizPostDeleted, "帖子")
+	}
+	if post.Status != model.PostStatusApproved {
+		return apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
+	}
+	return nil
 }
 
 func (s *PostService) loadRelations(
