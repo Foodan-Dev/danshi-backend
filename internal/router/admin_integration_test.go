@@ -267,8 +267,7 @@ func testAdminBanStates(
 	timedPath := fmt.Sprintf("/api/v2/admin/users/%d/status", actors.Timed.User.ID)
 	until := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
 	status, _, _ = performJSON(t, engine, http.MethodPut, timedPath, map[string]any{
-		"ban_is_permanent": false, "banned_until": ptime.Format(until),
-		"ban_reason": "限时封禁集成测试",
+		"banned_until": ptime.Format(until), "ban_reason": "限时封禁集成测试",
 	}, actors.Admin.Token)
 	require.Equal(t, http.StatusOK, status)
 	var timed model.User
@@ -316,6 +315,36 @@ func testAdminBanStates(
 	require.Equal(t, apierr.BizValidation, response.ErrorCode)
 	requireAdminFieldError(t, response, "ban_reason", apierr.FieldRequired)
 	var unchanged model.User
+	require.NoError(t, gdb.First(&unchanged, actors.Illegal.User.ID).Error)
+	require.False(t, unchanged.BanIsPermanent)
+	require.Nil(t, unchanged.BannedUntil)
+	require.Nil(t, unchanged.BanReason)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+		"ban_reason": "缺少封禁时长",
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	require.Equal(t, "封禁时必须设置 banned_until 或将 ban_is_permanent 设为 true", response.Message)
+	requireAdminFieldError(t, response, "ban_is_permanent", apierr.FieldRequired)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+		"ban_is_permanent": true, "ban_reason": " \t\n ",
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	require.Equal(t, "ban_reason 必填且不能为空", response.Message)
+	requireAdminFieldError(t, response, "ban_reason", apierr.FieldRequired)
+
+	past := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	status, response, _ = performJSON(t, engine, http.MethodPut, illegalPath, map[string]any{
+		"banned_until": ptime.Format(past), "ban_reason": "已经失效的限时封禁",
+	}, actors.Admin.Token)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, apierr.BizValidation, response.ErrorCode)
+	require.Equal(t, "banned_until 必须晚于当前时间", response.Message)
+	requireAdminFieldError(t, response, "banned_until", apierr.FieldOutOfRange)
+
 	require.NoError(t, gdb.First(&unchanged, actors.Illegal.User.ID).Error)
 	require.False(t, unchanged.BanIsPermanent)
 	require.Nil(t, unchanged.BannedUntil)
