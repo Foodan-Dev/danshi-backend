@@ -326,11 +326,18 @@ func testConcurrentImageLifecycleInvariant(
 	var references int64
 	require.NoError(t, harness.Database.GORM.Model(&model.PostImage{}).
 		Where("image_asset_id = ?", asset.ID).Count(&references).Error)
-	require.EqualValues(t, removals, references)
+	require.EqualValues(t, concurrencyWidth, references,
+		"软删除保留旧关联，并发创建追加新关联")
+	var undeletedReferences int64
+	require.NoError(t, harness.Database.GORM.Table("post_images AS pi").
+		Joins("JOIN posts AS p ON p.id = pi.post_id").
+		Where("pi.image_asset_id = ? AND p.deleted_at IS NULL", asset.ID).
+		Count(&undeletedReferences).Error)
+	require.EqualValues(t, removals, undeletedReferences)
 	require.NoError(t, harness.Database.GORM.First(&asset, asset.ID).Error)
 	require.Equal(t, model.ImageStatusReady, asset.Status)
-	require.Equal(t, references > 0, asset.Status == model.ImageStatusReady,
-		"EXISTS(引用) 必须与 status='ready' 等价")
+	require.Equal(t, undeletedReferences > 0, asset.Moderation == model.ModerationStatusPass,
+		"存在未软删除帖子引用时图片不得被删除路径封禁")
 }
 
 func testConcurrentSessionRevocation(t *testing.T, harness *testutil.Harness) {

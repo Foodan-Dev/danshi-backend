@@ -244,7 +244,7 @@ func (s *UserService) Posts(
 		approved := model.PostStatusApproved
 		parsed = &approved
 	}
-	records, meta, err := s.posts.FindAuthorPage(ctx, userID, parsed, params)
+	records, meta, err := s.posts.FindAuthorPage(ctx, userID, parsed, userID == currentUserID, params)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}

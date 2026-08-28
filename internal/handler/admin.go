@@ -112,7 +112,7 @@ func (h *Admin) DeletePost(ctx context.Context, c *app.RequestContext) {
 	respondAdmin(ctx, c, "删除成功", result, err)
 }
 
-// RestorePost 恢复机审误杀帖子。
+// RestorePost 恢复作者、管理员或机审来源的软删除帖子。
 func (h *Admin) RestorePost(ctx context.Context, c *app.RequestContext) {
 	postID, principal, err := adminIdentity(c, "post_id")
 	var result *service.AdminPostRestoreResult

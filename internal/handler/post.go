@@ -56,6 +56,10 @@ type updatePostRequest struct {
 	EditReason *string `json:"edit_reason"`
 }
 
+type restorePostHistoryRequest struct {
+	EditReason *string `json:"edit_reason"`
+}
+
 // List 返回公开帖子信息流。
 func (h *Post) List(ctx context.Context, c *app.RequestContext) {
 	principal, err := httpx.CurrentPrincipal(c)
@@ -172,6 +176,36 @@ func (h *Post) Histories(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
+}
+
+// RestoreHistory 把指定历史 revision 恢复成新的当前版本。
+func (h *Post) RestoreHistory(ctx context.Context, c *app.RequestContext) {
+	postID, principal, err := postRequestIdentity(c)
+	var revision int64
+	if err == nil {
+		revision, err = strconv.ParseInt(c.Param("revision"), 10, 32)
+		if err != nil || revision <= 0 {
+			err = apierr.InvalidField(
+				"revision", apierr.FieldInvalidFormat, "revision 必须是正整数",
+			)
+		}
+	}
+	var request restorePostHistoryRequest
+	if err == nil {
+		err = bindJSON(c, &request)
+	}
+	var result *service.PostCreateResult
+	if err == nil {
+		result, err = h.service.RestoreHistory(
+			ctx, postID, int32(revision),
+			service.RestorePostHistoryInput{EditReason: request.EditReason}, principal.User.ID,
+		)
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("版本恢复成功", result))
 }
 
 // Like 幂等点赞。

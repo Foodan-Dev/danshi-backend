@@ -29,7 +29,7 @@ import (
 
 const (
 	contractSecret = "contract-test-secret-longer-than-thirty-two-bytes"
-	businessRoutes = 96
+	businessRoutes = 97
 	runtimeRoutes  = 2
 )
 

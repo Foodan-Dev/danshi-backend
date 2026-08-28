@@ -99,6 +99,16 @@ func (PostRepository) FindActiveCanteenByCode(ctx context.Context, code string) 
 	return &canteen, nil
 }
 
+// FindActiveCanteenByID 解析历史快照中的餐厅 id。
+func (PostRepository) FindActiveCanteenByID(ctx context.Context, canteenID uint64) (*model.Canteen, error) {
+	var canteen model.Canteen
+	err := db.FromContext(ctx).Where("id = ? AND is_active", canteenID).First(&canteen).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &canteen, nil
+}
+
 // FindActiveWindow 返回可用于新写入的餐厅窗口。
 func (PostRepository) FindActiveWindow(ctx context.Context, windowID uint64) (*model.CanteenWindow, error) {
 	var window model.CanteenWindow
@@ -117,6 +127,44 @@ func (PostRepository) FindActiveCuisineByName(ctx context.Context, name string) 
 		return nil, NormalizeError(err)
 	}
 	return &cuisine, nil
+}
+
+// FindActiveCuisineByID 解析历史快照中的菜系 id。
+func (PostRepository) FindActiveCuisineByID(ctx context.Context, cuisineID uint64) (*model.Cuisine, error) {
+	var cuisine model.Cuisine
+	err := db.FromContext(ctx).Where("id = ? AND is_active", cuisineID).First(&cuisine).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &cuisine, nil
+}
+
+// LatestImageModerationByAssetIDs 返回每张目标图片按时间与主键确定的最新审核流水。
+func (PostRepository) LatestImageModerationByAssetIDs(
+	ctx context.Context,
+	imageAssetIDs []uint64,
+) (map[uint64]model.ModerationRecord, error) {
+	imageAssetIDs = uniqueSortedIDs(imageAssetIDs)
+	records := make([]model.ModerationRecord, 0, len(imageAssetIDs))
+	if len(imageAssetIDs) == 0 {
+		return map[uint64]model.ModerationRecord{}, nil
+	}
+	err := db.FromContext(ctx).Raw(`
+		SELECT DISTINCT ON (image_asset_id) mr.*
+		FROM moderation_records AS mr
+		WHERE mr.image_asset_id IN ? AND mr.scene = ?
+		ORDER BY image_asset_id, created_at DESC, id DESC
+	`, imageAssetIDs, model.ModerationSceneImage).Scan(&records).Error
+	if err != nil {
+		return nil, err
+	}
+	byAssetID := make(map[uint64]model.ModerationRecord, len(records))
+	for index := range records {
+		if records[index].ImageAssetID != nil {
+			byAssetID[*records[index].ImageAssetID] = records[index]
+		}
+	}
+	return byAssetID, nil
 }
 
 // FindActiveFlavorsByNames 批量解析可用于新写入的口味名称。

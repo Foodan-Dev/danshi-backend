@@ -1806,6 +1806,9 @@
             },
             "type": "array"
           },
+          "is_deleted": {
+            "type": "boolean"
+          },
           "is_edited": {
             "type": "boolean"
           },
@@ -2015,6 +2018,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "is_deleted": {
+            "type": "boolean"
           },
           "is_edited": {
             "type": "boolean"
@@ -3239,6 +3245,15 @@
       "renameAdminTagRequest": {
         "properties": {
           "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "restorePostHistoryRequest": {
+        "properties": {
+          "edit_reason": {
+            "nullable": true,
             "type": "string"
           }
         },
@@ -19840,6 +19855,295 @@
           }
         ],
         "summary": "GET /api/v2/posts/:post_id/history",
+        "tags": [
+          "posts"
+        ]
+      }
+    },
+    "/api/v2/posts/{post_id}/history/{revision}/restore": {
+      "post": {
+        "operationId": "post_api_v2_posts_post_id_history_revision_restore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/restorePostHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/PostCreateResult"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v2/posts/:post_id/history/:revision/restore",
         "tags": [
           "posts"
         ]

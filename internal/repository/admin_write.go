@@ -102,47 +102,6 @@ func (AdminRepository) CreateUserRoleRecord(
 	return db.FromContext(ctx).Create(record).Error
 }
 
-// SoftDeletePost 标记管理员删除帖子，不触碰帖子内容、计数或关联。
-func (AdminRepository) SoftDeletePost(
-	ctx context.Context,
-	postID uint64,
-	actorID uint64,
-	now time.Time,
-) error {
-	result := db.FromContext(ctx).Model(&model.Post{}).
-		Where("id = ? AND deleted_at IS NULL", postID).
-		UpdateColumns(map[string]any{
-			"deleted_at":     now,
-			"deleted_reason": model.DeleteReasonAdmin,
-			"deleted_by":     actorID,
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// RestorePost 清空机审软删除字段，内容与关联保持原样。
-func (AdminRepository) RestorePost(ctx context.Context, postID uint64) error {
-	result := db.FromContext(ctx).Model(&model.Post{}).
-		Where("id = ? AND deleted_at IS NOT NULL AND deleted_reason = ?", postID, model.DeleteReasonModeration).
-		UpdateColumns(map[string]any{
-			"deleted_at":     nil,
-			"deleted_reason": nil,
-			"deleted_by":     nil,
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // RestoreComment 清空机审软删除字段并把恢复审计的 pass 结论写回当前状态。
 func (AdminRepository) RestoreComment(ctx context.Context, commentID uint64) error {
 	result := db.FromContext(ctx).Model(&model.Comment{}).
