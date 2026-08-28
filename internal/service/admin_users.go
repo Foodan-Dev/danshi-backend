@@ -115,17 +115,12 @@ func normalizeAdminBan(
 	if input.IsActive != nil {
 		return normalizeLegacyAdminBan(input, actorID)
 	}
-	if input.BanIsPermanent == nil {
-		return repository.UserBanState{}, false, apierr.InvalidField(
-			"ban_is_permanent", apierr.FieldRequired, "ban_is_permanent 必填",
-		)
-	}
-	if *input.BanIsPermanent && input.BannedUntil != nil {
+	if input.BanIsPermanent != nil && *input.BanIsPermanent && input.BannedUntil != nil {
 		return repository.UserBanState{}, false, apierr.InvalidField(
 			"banned_until", apierr.FieldConflict, "永久封禁不能同时设置 banned_until",
 		)
 	}
-	if *input.BanIsPermanent {
+	if input.BanIsPermanent != nil && *input.BanIsPermanent {
 		return permanentBan(input.BanReason, actorID)
 	}
 	if input.BannedUntil != nil {
@@ -135,6 +130,12 @@ func normalizeAdminBan(
 			)
 		}
 		return timedBan(input.BannedUntil, input.BanReason, actorID)
+	}
+	if input.BanIsPermanent == nil {
+		return repository.UserBanState{}, false, apierr.InvalidField(
+			"ban_is_permanent", apierr.FieldRequired,
+			"封禁时必须设置 banned_until 或将 ban_is_permanent 设为 true",
+		)
 	}
 	if input.BanReason != nil || input.LegacyReason != nil {
 		return repository.UserBanState{}, false, apierr.InvalidField(
