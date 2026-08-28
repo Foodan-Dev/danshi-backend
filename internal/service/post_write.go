@@ -72,7 +72,7 @@ func (s *PostService) Create(
 	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	status, err := s.finishModeration(ctx, post.ID, resolved)
+	status, err := s.finishModeration(ctx, post.ID, 1, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,10 @@ func (s *PostService) Update(
 		initialStatus = model.PostStatusDraft
 	}
 	now := time.Now().UTC()
-	if err := s.appendCurrentPostHistory(ctx, post, authorID, resolved.EditReason, now); err != nil {
+	previousRevision, err := s.appendCurrentPostHistory(
+		ctx, post, authorID, resolved.EditReason, now,
+	)
+	if err != nil {
 		return nil, historyWriteError(err)
 	}
 	if err := s.posts.UpdateContent(ctx, postID, contentFields(resolved, initialStatus, now)); err != nil {
@@ -125,7 +128,7 @@ func (s *PostService) Update(
 	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	status, err := s.finishModeration(ctx, postID, resolved)
+	status, err := s.finishModeration(ctx, postID, previousRevision+1, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -193,29 +196,33 @@ func (s *PostService) appendCurrentPostHistory(
 	editorID uint64,
 	editReason *string,
 	editedAt time.Time,
-) error {
+) (int32, error) {
 	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	history := &model.PostHistory{
 		PostID: post.ID, Revision: revision, EditedBy: editorID, EditedAt: editedAt,
 		Snapshot: snapshot, EditReason: editReason,
 	}
-	return s.posts.CreateHistory(ctx, history)
+	if err := s.posts.CreateHistory(ctx, history); err != nil {
+		return 0, err
+	}
+	return revision, nil
 }
 
 func (s *PostService) finishModeration(
 	ctx context.Context,
 	postID uint64,
+	contentRevision int32,
 	resolved resolvedPostPayload,
 ) (model.PostStatus, error) {
 	if !resolved.Publish {
@@ -230,7 +237,7 @@ func (s *PostService) finishModeration(
 	if err := validateModerationResult(result); err != nil {
 		return "", err
 	}
-	record := moderationRecordForPost(postID, result)
+	record := moderationRecordForPost(postID, contentRevision, result)
 	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
 		return "", apierr.Internal(err)
 	}
@@ -484,9 +491,12 @@ func budgetColumns(value *BudgetRangeInput) (*int32, *int32) {
 
 func moderationRecordForPost(
 	postID uint64,
+	contentRevision int32,
 	result ModerationResult,
 ) *model.ModerationRecord {
-	return moderationRecordForTarget(&postID, nil, result)
+	record := moderationRecordForTarget(&postID, nil, result)
+	record.ContentRevision = &contentRevision
+	return record
 }
 
 func moderationRecordForTarget(

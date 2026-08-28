@@ -295,12 +295,17 @@ func (PostRepository) SoftDelete(ctx context.Context, postID, actorID uint64, no
 	return nil
 }
 
-// NextHistoryRevision 返回下一条旧版本快照的连续 revision。调用方必须已锁定帖子主体。
-func (PostRepository) NextHistoryRevision(ctx context.Context, postID uint64) (int32, error) {
+// CurrentContentRevision 返回主表当前内容的版本号，即最大历史 revision + 1。
+func (PostRepository) CurrentContentRevision(ctx context.Context, postID uint64) (int32, error) {
 	var revision int32
 	err := db.FromContext(ctx).Model(&model.PostHistory{}).
 		Select("COALESCE(max(revision), 0) + 1").Where("post_id = ?", postID).Scan(&revision).Error
 	return revision, err
+}
+
+// NextHistoryRevision 返回下一条旧版本快照的连续 revision。调用方必须已锁定帖子主体。
+func (r PostRepository) NextHistoryRevision(ctx context.Context, postID uint64) (int32, error) {
+	return r.CurrentContentRevision(ctx, postID)
 }
 
 // CreateHistory 追加一条被替换版本的完整快照。
@@ -314,6 +319,21 @@ func (PostRepository) ListHistories(ctx context.Context, postID uint64) ([]model
 	err := db.FromContext(ctx).Where("post_id = ?", postID).
 		Order("revision DESC").Find(&histories).Error
 	return histories, err
+}
+
+// ListHistoryModeration 返回每个旧版本最新一次机器文本审核结论。
+func (PostRepository) ListHistoryModeration(
+	ctx context.Context,
+	postID uint64,
+) ([]model.ModerationRecord, error) {
+	records := make([]model.ModerationRecord, 0)
+	err := db.FromContext(ctx).Raw(`
+		SELECT DISTINCT ON (content_revision) mr.*
+		FROM moderation_records AS mr
+		WHERE mr.post_id = ? AND mr.content_revision IS NOT NULL AND mr.reviewer_id IS NULL
+		ORDER BY content_revision, created_at DESC, id DESC
+	`, postID).Scan(&records).Error
+	return records, err
 }
 
 func postRecordQuery(ctx context.Context) *gorm.DB {

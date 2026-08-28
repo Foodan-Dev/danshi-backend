@@ -49,7 +49,9 @@ func (ModerationRepository) LatestPostModeration(
 	postID uint64,
 ) (*model.ModerationRecord, error) {
 	var record model.ModerationRecord
-	err := db.FromContext(ctx).Where("post_id = ?", postID).
+	err := db.FromContext(ctx).Where(`post_id = ? AND content_revision = (
+		SELECT COALESCE(max(revision), 0) + 1 FROM post_histories WHERE post_id = ?
+	)`, postID, postID).
 		Order("created_at DESC, id DESC").First(&record).Error
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -57,7 +59,7 @@ func (ModerationRepository) LatestPostModeration(
 	return &record, nil
 }
 
-// LockPendingReviewRecordsForPost 锁定正文及当前全部附图尚未处理的机器 review 记录。
+// LockPendingReviewRecordsForPost 锁定正文及当前全部附图尚未处理的机器未通过记录。
 func (ModerationRepository) LockPendingReviewRecordsForPost(
 	ctx context.Context,
 	postID uint64,
@@ -140,6 +142,31 @@ func (ModerationRepository) LockManualTarget(
 		err = ErrNotFound
 	}
 	return NormalizeError(err)
+}
+
+// IsCurrentContentRevision 报告帖子或评论审核记录是否绑定对象当前版本。
+func (ModerationRepository) IsCurrentContentRevision(
+	ctx context.Context,
+	record *model.ModerationRecord,
+) (bool, error) {
+	if record.ContentRevision == nil {
+		return record.PostID == nil && record.CommentID == nil, nil
+	}
+	var current int32
+	var err error
+	switch {
+	case record.PostID != nil:
+		err = db.FromContext(ctx).Model(&model.PostHistory{}).
+			Select("COALESCE(max(revision), 0) + 1").Where("post_id = ?", *record.PostID).
+			Scan(&current).Error
+	case record.CommentID != nil:
+		err = db.FromContext(ctx).Model(&model.CommentHistory{}).
+			Select("COALESCE(max(revision), 0) + 1").Where("comment_id = ?", *record.CommentID).
+			Scan(&current).Error
+	default:
+		return false, nil
+	}
+	return current == *record.ContentRevision, err
 }
 
 // LockPendingPostsForImage 按 id 升序锁定引用指定图片的待审帖子。
@@ -250,6 +277,10 @@ func (ModerationRepository) ApplyManualTextVerdict(
 	original *model.ModerationRecord,
 	verdict model.ModerationVerdict,
 ) error {
+	current, err := (ModerationRepository{}).IsCurrentContentRevision(ctx, original)
+	if err != nil || !current {
+		return err
+	}
 	switch {
 	case original.PostID != nil:
 		return applyManualPostVerdict(ctx, original, verdict)
@@ -283,7 +314,7 @@ func (ModerationRepository) ReconcilePendingPosts(
 		UPDATE posts AS p
 		SET status = ?
 		WHERE p.id IN ?
-		  AND p.status = ?
+		  AND p.status IN (?, ?)
 		  AND p.deleted_at IS NULL
 		  AND (
 		    EXISTS (
@@ -295,12 +326,16 @@ func (ModerationRepository) ReconcilePendingPosts(
 		    OR (
 		      SELECT mr.verdict
 		      FROM moderation_records AS mr
-		      WHERE mr.post_id = p.id
+			      WHERE mr.post_id = p.id
+			        AND mr.content_revision = (
+			          SELECT COALESCE(max(ph.revision), 0) + 1
+			          FROM post_histories AS ph WHERE ph.post_id = p.id
+			        )
 		      ORDER BY mr.created_at DESC, mr.id DESC
 		      LIMIT 1
 		    ) = ?
 		  )
-	`, model.PostStatusRejected, postIDs, model.PostStatusPending,
+	`, model.PostStatusRejected, postIDs, model.PostStatusPending, model.PostStatusRejected,
 		model.ModerationStatusBlock, model.ModerationVerdictBlock)
 	if rejected.Error != nil {
 		return PostModerationTransitions{}, rejected.Error
@@ -309,7 +344,7 @@ func (ModerationRepository) ReconcilePendingPosts(
 		UPDATE posts AS p
 		SET status = ?
 		WHERE p.id IN ?
-		  AND p.status = ?
+		  AND p.status IN (?, ?)
 		  AND p.deleted_at IS NULL
 		  AND NOT EXISTS (
 		    SELECT 1
@@ -321,10 +356,14 @@ func (ModerationRepository) ReconcilePendingPosts(
 		    SELECT mr.verdict
 			    FROM moderation_records AS mr
 			    WHERE mr.post_id = p.id
+			      AND mr.content_revision = (
+			        SELECT COALESCE(max(ph.revision), 0) + 1
+			        FROM post_histories AS ph WHERE ph.post_id = p.id
+			      )
 			    ORDER BY mr.created_at DESC, mr.id DESC
 		    LIMIT 1
 		  ) = ?
-	`, model.PostStatusApproved, postIDs, model.PostStatusPending,
+	`, model.PostStatusApproved, postIDs, model.PostStatusPending, model.PostStatusRejected,
 		model.ModerationStatusPass, model.ModerationVerdictPass)
 	if approved.Error != nil {
 		return PostModerationTransitions{}, approved.Error
@@ -370,7 +409,7 @@ func applyManualPostVerdict(
 	return db.FromContext(ctx).Exec(`
 		UPDATE posts
 			SET status = ?
-			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+			WHERE id = ? AND status IN ('pending', 'rejected') AND deleted_at IS NULL
 			  `+imageClause,
 		status, *original.PostID).Error
 }

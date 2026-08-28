@@ -66,7 +66,7 @@ func (s *CommentService) Create(
 	if err := s.comments.ReplaceMentions(ctx, comment.ID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	moderation, err := s.moderateComment(ctx, comment.ID, content)
+	moderation, err := s.moderateComment(ctx, comment.ID, 1, content)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (s *CommentService) Update(
 	if err := s.comments.ReplaceMentions(ctx, commentID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	moderation, err := s.moderateComment(ctx, commentID, content)
+	moderation, err := s.moderateComment(ctx, commentID, revision+1, content)
 	if err != nil {
 		return nil, err
 	}
@@ -259,6 +259,7 @@ func (s *CommentService) normalizeCommentPayload(
 func (s *CommentService) moderateComment(
 	ctx context.Context,
 	commentID uint64,
+	contentRevision int32,
 	content string,
 ) (model.ModerationStatus, error) {
 	result, err := s.moderator.Review(ctx, ModerationRequest{
@@ -270,7 +271,7 @@ func (s *CommentService) moderateComment(
 	if err := validateModerationResult(result); err != nil {
 		return "", err
 	}
-	record := moderationRecordForComment(commentID, result)
+	record := moderationRecordForComment(commentID, contentRevision, result)
 	if err := s.comments.CreateModerationRecord(ctx, record); err != nil {
 		return "", apierr.Internal(err)
 	}
@@ -309,6 +310,7 @@ func (s *CommentService) commentMutationResult(
 
 func moderationRecordForComment(
 	commentID uint64,
+	contentRevision int32,
 	result ModerationResult,
 ) *model.ModerationRecord {
 	labels := pq.StringArray(result.Labels)
@@ -316,8 +318,8 @@ func moderationRecordForComment(
 		labels = pq.StringArray{}
 	}
 	return &model.ModerationRecord{
-		CommentID: &commentID,
-		Scene:     model.ModerationSceneText, Provider: result.Provider,
+		CommentID: &commentID, ContentRevision: &contentRevision,
+		Scene: model.ModerationSceneText, Provider: result.Provider,
 		ProviderJobID: result.ProviderJobID, Verdict: result.Verdict,
 		Labels: labels, Score: result.Score, RawResponse: result.RawResponse,
 		CreatedAt: time.Now().UTC(),

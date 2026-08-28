@@ -242,7 +242,7 @@ func (AdminRepository) FindUserBanRecords(
 	return records, err
 }
 
-// FindPendingModerationPage 返回尚未处理且仍是对象同字段最新一次机审的 review 记录。
+// FindPendingModerationPage 返回尚未处理且绑定当前内容版本的机审未通过记录。
 func (AdminRepository) FindPendingModerationPage(
 	ctx context.Context,
 	label *string,
@@ -277,7 +277,7 @@ func (AdminRepository) FindPendingModerationPage(
 		LEFT JOIN image_assets AS image ON image.id = mr.image_asset_id
 		LEFT JOIN tags AS tag ON tag.id = mr.tag_id
 		LEFT JOIN users AS target_user ON target_user.id = mr.user_id
-		ORDER BY queue_items.created_at, queue_items.record_id
+		ORDER BY queue_items.priority, queue_items.created_at, queue_items.record_id
 		OFFSET ? LIMIT ?`
 	pageArgs := append(append([]any{}, args...), params.Offset(), params.Limit)
 	err := db.FromContext(ctx).Raw(pageSQL, pageArgs...).Scan(&records).Error
@@ -325,6 +325,10 @@ func (AdminRepository) FindPostModerationBundleRows(
 			SELECT mr.*
 			FROM moderation_records AS mr
 			WHERE mr.post_id = p.id AND mr.provider <> ?
+			  AND mr.content_revision = (
+				SELECT COALESCE(max(ph.revision), 0) + 1
+				FROM post_histories AS ph WHERE ph.post_id = p.id
+			  )
 			ORDER BY mr.created_at DESC, mr.id DESC
 			LIMIT 1
 		) AS text_mr ON true
@@ -346,8 +350,8 @@ func (AdminRepository) FindPostModerationBundleRows(
 func pendingModerationItemsCTE(label *string) (string, []any) {
 	labelClause := ""
 	args := []any{
+		model.ModerationVerdictBlock,
 		model.ModerationVerdictReview,
-		model.ModerationProviderManual,
 		model.ModerationProviderManual,
 	}
 	if label != nil {
@@ -356,42 +360,38 @@ func pendingModerationItemsCTE(label *string) (string, []any) {
 	}
 	args = append(args,
 		model.PostStatusPending,
+		model.PostStatusRejected,
 		model.ModerationStatusPending,
-		model.ModerationStatusBlock,
 		model.ImagePurposePost,
 	)
 	return strings.ReplaceAll(`
 		WITH pending AS (
 			SELECT mr.*
 			FROM moderation_records AS mr
-			WHERE mr.verdict = ?
+			WHERE mr.verdict IN (?, ?)
 			  AND mr.provider <> ?
 			  AND NOT EXISTS (
 				SELECT 1 FROM moderation_records AS manual
 				WHERE manual.supersedes_id = mr.id
 			  )
-			  AND (
-				(mr.post_id IS NULL AND mr.comment_id IS NULL AND mr.image_asset_id IS NULL)
-				OR NOT EXISTS (
-					SELECT 1 FROM moderation_records AS newer
-					WHERE newer.provider <> ?
-					  AND newer.scene = mr.scene
-					  AND newer.field IS NOT DISTINCT FROM mr.field
-					  AND (
-						(newer.post_id = mr.post_id AND mr.post_id IS NOT NULL)
-						OR (newer.comment_id = mr.comment_id AND mr.comment_id IS NOT NULL)
-						OR (newer.image_asset_id = mr.image_asset_id AND mr.image_asset_id IS NOT NULL)
-					  )
-					  AND (newer.created_at, newer.id) > (mr.created_at, mr.id)
-				)
-			  )
+			  AND (mr.post_id IS NULL OR mr.content_revision = (
+				SELECT COALESCE(max(ph.revision), 0) + 1
+				FROM post_histories AS ph WHERE ph.post_id = mr.post_id
+			  ))
+			  AND (mr.comment_id IS NULL OR mr.content_revision = (
+				SELECT COALESCE(max(ch.revision), 0) + 1
+				FROM comment_histories AS ch WHERE ch.comment_id = mr.comment_id
+			  ))
 			  __LABEL_CLAUSE__
 		),
 		post_items AS (
 			SELECT
 				p.id AS target_id,
-				(array_agg(pending.id ORDER BY pending.created_at, pending.id))[1] AS record_id,
+				(array_agg(pending.id ORDER BY
+					CASE WHEN pending.verdict = 'block' THEN 0 ELSE 1 END,
+					pending.created_at, pending.id))[1] AS record_id,
 				min(pending.created_at) AS created_at,
+				min(CASE WHEN pending.verdict = 'block' THEN 0 ELSE 1 END) AS priority,
 				p.id AS group_post_id
 			FROM posts AS p
 			JOIN pending ON pending.post_id = p.id OR EXISTS (
@@ -399,12 +399,12 @@ func pendingModerationItemsCTE(label *string) (string, []any) {
 				WHERE pending_pi.post_id = p.id
 				  AND pending_pi.image_asset_id = pending.image_asset_id
 			)
-			WHERE p.status = ? AND p.deleted_at IS NULL
+			WHERE p.status IN (?, ?) AND p.deleted_at IS NULL
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM post_images AS pi
 				JOIN image_assets AS image ON image.id = pi.image_asset_id
-				WHERE pi.post_id = p.id AND image.moderation IN (?, ?)
+				WHERE pi.post_id = p.id AND image.moderation = ?
 			  )
 			GROUP BY p.id
 		),
@@ -419,6 +419,7 @@ func pendingModerationItemsCTE(label *string) (string, []any) {
 				COALESCE(pending.comment_id, pending.image_asset_id, pending.tag_id, pending.user_id) AS target_id,
 				pending.id AS record_id,
 				pending.created_at,
+				CASE WHEN pending.verdict = 'block' THEN 0 ELSE 1 END AS priority,
 				NULL::bigint AS group_post_id
 			FROM pending
 			LEFT JOIN image_assets AS image ON image.id = pending.image_asset_id
@@ -426,23 +427,24 @@ func pendingModerationItemsCTE(label *string) (string, []any) {
 			  AND (pending.image_asset_id IS NULL OR image.purpose <> ?)
 		),
 		queue_items AS (
-			SELECT 'post'::text AS target_type, target_id, record_id, created_at, group_post_id
+			SELECT 'post'::text AS target_type, target_id, record_id, created_at, priority, group_post_id
 			FROM post_items
 			UNION ALL
-			SELECT target_type, target_id, record_id, created_at, group_post_id
+			SELECT target_type, target_id, record_id, created_at, priority, group_post_id
 			FROM generic_items
 		)
 	`, "__LABEL_CLAUSE__", labelClause), args
 }
 
-// FindPendingPostReview 返回指定帖子的最新一条未处理机器 review 记录。
+// FindPendingPostReview 返回指定帖子的最高优先级未处理机审未通过记录。
 func (AdminRepository) FindPendingPostReview(
 	ctx context.Context,
 	postID uint64,
 ) (*model.ModerationRecord, error) {
 	var record model.ModerationRecord
 	err := pendingModerationQuery(ctx).Where("mr.post_id = ?", postID).
-		Order("mr.created_at DESC, mr.id DESC").First(&record).Error
+		Order("CASE WHEN mr.verdict = 'block' THEN 0 ELSE 1 END, mr.created_at, mr.id").
+		First(&record).Error
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
@@ -451,27 +453,20 @@ func (AdminRepository) FindPendingPostReview(
 
 func pendingModerationQuery(ctx context.Context) *gorm.DB {
 	return db.FromContext(ctx).Table("moderation_records AS mr").Where(`
-			mr.verdict = ? AND mr.provider <> ?
+			mr.verdict IN (?, ?) AND mr.provider <> ?
 			AND NOT EXISTS (
 				SELECT 1 FROM moderation_records AS manual
 				WHERE manual.supersedes_id = mr.id
 			)
-			AND (
-				(mr.post_id IS NULL AND mr.comment_id IS NULL AND mr.image_asset_id IS NULL)
-				OR NOT EXISTS (
-					SELECT 1 FROM moderation_records AS newer
-					WHERE newer.provider <> ?
-					  AND newer.scene = mr.scene
-					  AND newer.field IS NOT DISTINCT FROM mr.field
-					  AND (
-						(newer.post_id = mr.post_id AND mr.post_id IS NOT NULL)
-						OR (newer.comment_id = mr.comment_id AND mr.comment_id IS NOT NULL)
-						OR (newer.image_asset_id = mr.image_asset_id AND mr.image_asset_id IS NOT NULL)
-					  )
-					  AND (newer.created_at, newer.id) > (mr.created_at, mr.id)
-				)
-			)
-		`, model.ModerationVerdictReview, model.ModerationProviderManual,
+			AND (mr.post_id IS NULL OR mr.content_revision = (
+				SELECT COALESCE(max(ph.revision), 0) + 1
+				FROM post_histories AS ph WHERE ph.post_id = mr.post_id
+			))
+			AND (mr.comment_id IS NULL OR mr.content_revision = (
+				SELECT COALESCE(max(ch.revision), 0) + 1
+				FROM comment_histories AS ch WHERE ch.comment_id = mr.comment_id
+			))
+		`, model.ModerationVerdictBlock, model.ModerationVerdictReview,
 		model.ModerationProviderManual)
 }
 

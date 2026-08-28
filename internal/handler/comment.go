@@ -136,7 +136,7 @@ func (h *Comment) Histories(ctx context.Context, c *app.RequestContext) {
 	commentID, principal, err := commentIdentity(c)
 	var result *service.CommentHistoryList
 	if err == nil {
-		result, err = h.service.Histories(ctx, commentID, principal.User.ID)
+		result, err = h.service.Histories(ctx, commentID, principal)
 	}
 	if err != nil {
 		failService(ctx, c, err)

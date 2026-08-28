@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	hertzconfig "github.com/cloudwego/hertz/pkg/common/config"
 	"github.com/lib/pq"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 	"github.com/Foodan-Dev/danshi-backend/internal/router"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
+	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
 type adminActors struct {
@@ -49,6 +51,9 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 	fixture := loadPostFixture(t, gdb)
 	reviewEngine := adminTestEngine(
 		cfg, database, sender, fixedVerdictModerator(model.ModerationVerdictReview),
+	)
+	blockEngine := adminTestEngine(
+		cfg, database, sender, fixedVerdictModerator(model.ModerationVerdictBlock),
 	)
 
 	t.Run("route inventory and role guards", func(t *testing.T) {
@@ -85,6 +90,14 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 	t.Run("edited content hides stale pending reviews", func(t *testing.T) {
 		testEditedContentHidesStalePendingReviews(t, engine, reviewEngine, gdb, actors, fixture)
+	})
+
+	t.Run("block queue priority and manual review", func(t *testing.T) {
+		testBlockQueuePriorityAndManualReview(t, engine, blockEngine, gdb, actors, fixture)
+	})
+
+	t.Run("moderators read version moderation while authors see redacted status", func(t *testing.T) {
+		testHistoryModerationVisibility(t, cfg, database, sender, engine, actors, fixture)
 	})
 
 	t.Run("generic queue review restore and counter refill", func(t *testing.T) {
@@ -419,6 +432,7 @@ func testAdminPostReview(
 	require.Equal(t, model.ModerationProviderManual, manual.Provider)
 	require.Equal(t, model.ModerationVerdictPass, manual.Verdict)
 	require.Equal(t, actors.Admin.User.ID, *manual.ReviewerID)
+	require.Equal(t, machine.ContentRevision, manual.ContentRevision)
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, post.ID).Error)
 	require.Equal(t, model.PostStatusApproved, stored.Status)
@@ -610,6 +624,160 @@ func testEditedContentHidesStalePendingReviews(
 		"评论编辑前的旧待复核记录不得继续展示")
 	require.True(t, moderationRecordPresent(queue.Records, commentReviews[1].ID),
 		"评论编辑后的最新待复核记录必须展示")
+}
+
+func testBlockQueuePriorityAndManualReview(
+	t *testing.T,
+	engine *server.Hertz,
+	blockEngine *server.Hertz,
+	gdb *gorm.DB,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	field := model.ModerationFieldName
+	now := time.Now().UTC()
+	priorityRecords := []model.ModerationRecord{
+		{
+			UserID: &actors.Ordinary.User.ID, Field: &field, Scene: model.ModerationSceneText,
+			Provider: "queue_priority_test", Verdict: model.ModerationVerdictReview,
+			Labels: pq.StringArray{"queue_priority"}, CreatedAt: now.Add(-time.Hour),
+		},
+		{
+			UserID: &actors.Permanent.User.ID, Field: &field, Scene: model.ModerationSceneText,
+			Provider: "queue_priority_test", Verdict: model.ModerationVerdictBlock,
+			Labels: pq.StringArray{"queue_priority"}, CreatedAt: now,
+		},
+	}
+	require.NoError(t, gdb.Create(&priorityRecords).Error)
+	status, response, _ := performJSON(t, engine, http.MethodGet,
+		"/api/v2/admin/moderation-records/pending?label=queue_priority&limit=100", nil,
+		actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var queue service.AdminModerationList
+	decodeData(t, response, &queue)
+	require.Len(t, queue.Records, 2)
+	require.Equal(t, priorityRecords[1].ID, queue.Records[0].ID,
+		"违规 block 必须排在更早创建的需复核 review 之前")
+	require.Equal(t, priorityRecords[0].ID, queue.Records[1].ID)
+
+	post := createPost(t, engine, actors.Author.Token,
+		sharePostPayload(fixture, "机审违规评论父帖", []string{"违规复核"}))
+	comment := createComment(t, blockEngine, actors.Commenter.Token, post.ID,
+		map[string]any{"content": "机审违规也要人工复核"})
+	var machine model.ModerationRecord
+	require.NoError(t, gdb.Where("comment_id = ? AND verdict = ?",
+		comment.Comment.ID, model.ModerationVerdictBlock).First(&machine).Error)
+	status, response, _ = performJSON(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/v2/admin/moderation-records/%d/review", machine.ID),
+		map[string]any{"verdict": model.ModerationVerdictPass}, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var manual model.ModerationRecord
+	require.NoError(t, gdb.Where("supersedes_id = ?", machine.ID).First(&manual).Error)
+	require.Equal(t, machine.ContentRevision, manual.ContentRevision)
+	var restored model.Comment
+	require.NoError(t, gdb.First(&restored, comment.Comment.ID).Error)
+	require.Equal(t, model.ModerationStatusPass, restored.Moderation)
+	require.Nil(t, restored.DeletedAt)
+}
+
+func testHistoryModerationVisibility(
+	t *testing.T,
+	cfg appconfig.Config,
+	database *dbinfra.DB,
+	sender service.VerificationEmailSender,
+	passEngine *server.Hertz,
+	actors adminActors,
+	fixture postFixture,
+) {
+	t.Helper()
+	postScore := decimal.RequireFromString("96.50")
+	commentScore := decimal.RequireFromString("88.25")
+	moderation := testutil.NewMockModeration()
+	moderation.ProgramContent(
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetPost, Contains: "历史审核帖子第一版",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictBlock, []string{"history_block"}, &postScore),
+		},
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetPost, Contains: "历史审核帖子第二版",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictReview, []string{"history_review"}, nil),
+		},
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetComment, Contains: "历史审核评论第一版",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictBlock, []string{"history_block"}, &commentScore),
+		},
+		testutil.ContentModerationRule{
+			Target: service.ModerationTargetComment, Contains: "历史审核评论第二版",
+			Outcome: testutil.ContentVerdict(model.ModerationVerdictReview, []string{"history_review"}, nil),
+		},
+	)
+	historyEngine := adminTestEngine(cfg, database, sender, moderation)
+
+	post := createPost(t, historyEngine, actors.Author.Token,
+		sharePostPayload(fixture, "历史审核帖子第一版", []string{"版本审核"}))
+	status, response, _ := performJSON(t, historyEngine, http.MethodPut, postPath(post.ID),
+		sharePostPayload(fixture, "历史审核帖子第二版", []string{"版本审核"}), actors.Author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+
+	path := postPath(post.ID) + "/history"
+	status, response, raw := performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var authorPostHistory service.PostHistoryList
+	decodeData(t, response, &authorPostHistory)
+	require.Len(t, authorPostHistory.Histories, 1)
+	require.Equal(t, service.HistoryModerationMachineFailed,
+		authorPostHistory.Histories[0].Moderation.Status)
+	require.Nil(t, authorPostHistory.Histories[0].Moderation.Verdict)
+	require.Nil(t, authorPostHistory.Histories[0].Moderation.Score)
+	require.NotContains(t, string(raw.Result().Body()), "\"verdict\"")
+	require.NotContains(t, string(raw.Result().Body()), "\"score\"")
+
+	status, response, _ = performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var adminPostHistory service.PostHistoryList
+	decodeData(t, response, &adminPostHistory)
+	require.Equal(t, model.ModerationVerdictBlock, *adminPostHistory.Histories[0].Moderation.Verdict)
+	require.True(t, postScore.Equal(*adminPostHistory.Histories[0].Moderation.Score))
+	status, _, _ = performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Super.Token)
+	require.Equal(t, http.StatusOK, status)
+	status, response, _ = performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+
+	parent := createPost(t, passEngine, actors.Author.Token,
+		sharePostPayload(fixture, "历史审核评论父帖", []string{"评论版本"}))
+	comment := createComment(t, historyEngine, actors.Commenter.Token, parent.ID,
+		map[string]any{"content": "历史审核评论第一版"})
+	status, response, _ = performJSON(t, historyEngine, http.MethodPut, commentPath(comment.Comment.ID),
+		map[string]any{"content": "历史审核评论第二版"}, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+
+	commentHistoryPath := commentPath(comment.Comment.ID) + "/history"
+	status, response, raw = performJSON(t, historyEngine, http.MethodGet, commentHistoryPath, nil,
+		actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status)
+	var authorCommentHistory service.CommentHistoryList
+	decodeData(t, response, &authorCommentHistory)
+	require.Len(t, authorCommentHistory.Histories, 1)
+	require.Equal(t, service.HistoryModerationMachineFailed,
+		authorCommentHistory.Histories[0].Moderation.Status)
+	require.Nil(t, authorCommentHistory.Histories[0].Moderation.Verdict)
+	require.Nil(t, authorCommentHistory.Histories[0].Moderation.Score)
+	require.NotContains(t, string(raw.Result().Body()), "\"verdict\"")
+	require.NotContains(t, string(raw.Result().Body()), "\"score\"")
+
+	status, response, _ = performJSON(t, historyEngine, http.MethodGet, commentHistoryPath, nil,
+		actors.Admin.Token)
+	require.Equal(t, http.StatusOK, status)
+	var adminCommentHistory service.CommentHistoryList
+	decodeData(t, response, &adminCommentHistory)
+	require.Equal(t, model.ModerationVerdictBlock,
+		*adminCommentHistory.Histories[0].Moderation.Verdict)
+	require.True(t, commentScore.Equal(*adminCommentHistory.Histories[0].Moderation.Score))
+	status, _, _ = performJSON(t, historyEngine, http.MethodGet, commentHistoryPath, nil,
+		actors.Author.Token)
+	require.Equal(t, http.StatusForbidden, status)
 }
 
 func testAdminListsAndDeletion(
