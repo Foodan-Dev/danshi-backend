@@ -114,7 +114,7 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 		testUploadBoundaries(t, engine, gdb, database, cfg, storage, imageModerator, author)
 	})
 
-	t.Run("storage and moderation failures roll back upload state", func(t *testing.T) {
+	t.Run("storage failures and canceled requests roll back upload state", func(t *testing.T) {
 		testUploadDependencyFailures(t, engine, gdb, database, storage, imageModerator, author)
 	})
 
@@ -141,6 +141,42 @@ func TestUploadModerationAgainstPostgres(t *testing.T) {
 	t.Run("manual review appends and supersedes machine record", func(t *testing.T) {
 		testManualReviewIsAppendOnly(t, gdb, database, author.User.ID)
 	})
+}
+
+func TestUploadCompleteSucceedsAndEnqueuesRetryWhenSubmissionFailsAgainstPostgres18(
+	t *testing.T,
+) {
+	gdb, database := openAuthPostgres(t)
+	storage := newFakeImageStorage()
+	sender := newCaptureEmailSender()
+	moderator := testutil.NewMockModeration()
+	moderator.SetDefaultImage(testutil.ImageFailure(
+		apierr.ServiceUnavailable("图片审核 5xx").WithCause(errors.New("moderation 5xx")),
+	))
+	engine := uploadModerationEngine(
+		uploadModerationTestConfig(), database, sender, storage, moderator,
+	)
+	author := registerPostTestUser(
+		t, engine, sender, "upload-retry@fdueat.com", "上传补审用户",
+	)
+	upload := presignImage(t, engine, author.Token, 1024)
+
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("/api/v2/uploads/%d/complete", upload.UploadID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var completed service.UploadCompleteResult
+	decodeData(t, response, &completed)
+	require.Equal(t, model.ModerationStatusPending, completed.Moderation)
+	require.NotEmpty(t, completed.PublicURL)
+	var asset model.ImageAsset
+	require.NoError(t, gdb.First(&asset, upload.UploadID).Error)
+	require.Equal(t, model.ModerationStatusPending, asset.Moderation)
+	require.Equal(t, completed.PublicURL, asset.PublicURL)
+	var retry model.ImageModerationRetry
+	require.NoError(t, gdb.First(&retry, upload.UploadID).Error)
+	require.Equal(t, model.ImageModerationRetryPending, retry.State)
+	require.Equal(t, 1, retry.Attempts)
+	require.Equal(t, "submit_failed", retry.LastErrorCode)
 }
 
 func TestFailedTencentImageCallbackAgainstPostgres(t *testing.T) {
@@ -999,23 +1035,6 @@ func testUploadDependencyFailures(
 	requireUploadPending(t, gdb, headFailure.UploadID)
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/v2/uploads/%d/complete", headFailure.UploadID), nil, author.Token)
-	require.Equal(t, http.StatusOK, status)
-
-	moderationFailure := presignImage(t, engine, author.Token, 1024)
-	failureCall := len(imageModerator.ImageCalls()) + 1
-	imageModerator.ProgramImage(testutil.ImageModerationRule{
-		Call: failureCall,
-		Outcome: testutil.ImageFailure(
-			apierr.ServiceUnavailable("图片审核 5xx").WithCause(errors.New("moderation 5xx")),
-		),
-	})
-	status, response, _ = performJSON(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/v2/uploads/%d/complete", moderationFailure.UploadID), nil, author.Token)
-	require.Equal(t, http.StatusServiceUnavailable, status)
-	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
-	requireUploadPending(t, gdb, moderationFailure.UploadID)
-	status, response, _ = performJSON(t, engine, http.MethodPost,
-		fmt.Sprintf("/api/v2/uploads/%d/complete", moderationFailure.UploadID), nil, author.Token)
 	require.Equal(t, http.StatusOK, status)
 
 	timeoutUpload := presignImage(t, engine, author.Token, 1024)

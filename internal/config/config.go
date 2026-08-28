@@ -72,6 +72,7 @@ type Config struct {
 	ModerationCallbackAuthFailureWindowS   int    `mapstructure:"MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS"`
 	ModerationReviewBacklogThreshold       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_THRESHOLD"`
 	ModerationReviewBacklogCooldownS       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS"`
+	ImageModerationRetryScanIntervalS      int    `mapstructure:"IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS"`
 
 	OTLPEndpoint string `mapstructure:"OTLP_ENDPOINT"`
 	LogLevel     string `mapstructure:"LOG_LEVEL"`
@@ -113,6 +114,11 @@ func (c Config) ModerationCallbackAuthFailureWindow() time.Duration {
 // ModerationReviewBacklogCooldown 返回待复核积压告警的最短重复间隔。
 func (c Config) ModerationReviewBacklogCooldown() time.Duration {
 	return time.Duration(c.ModerationReviewBacklogCooldownS) * time.Second
+}
+
+// ImageModerationRetryScanInterval 返回 server 内补审 goroutine 的空闲扫描间隔。
+func (c Config) ImageModerationRetryScanInterval() time.Duration {
+	return time.Duration(c.ImageModerationRetryScanIntervalS) * time.Second
 }
 
 // COSConfigured 报告对象存储是否具备完整的运行配置。
@@ -202,6 +208,7 @@ var bindings = map[string]any{
 	"MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS": 60,
 	"MODERATION_REVIEW_BACKLOG_THRESHOLD":             100,
 	"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS":      3600,
+	"IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS":    30,
 
 	"OTLP_ENDPOINT": "",
 	"LOG_LEVEL":     "info",

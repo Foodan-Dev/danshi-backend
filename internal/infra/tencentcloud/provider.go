@@ -321,6 +321,53 @@ func (p *Provider) SubmitImage(
 	}, nil
 }
 
+// ProbeImageModeration 只读查询当前桶的 CI 开通状态，不创建审核任务或计费内容。
+func (p *Provider) ProbeImageModeration(ctx context.Context) (err error) {
+	defer func() { err = p.redactor.redact(err) }()
+	ctx, span := obs.StartExternalCall(
+		ctx, providerInstrumentationName, "tencent_ci", "ProbeImageModeration",
+	)
+	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
+
+	result, _, err := p.client.CI.GetCIService(ctx)
+	if err != nil {
+		kind := service.ImageModerationProbeTransient
+		if isImageModerationAuthorizationError(err) {
+			kind = service.ImageModerationProbeAuthorization
+		}
+		return service.NewImageModerationProbeError(kind, p.redactor.redact(err))
+	}
+	if result == nil || !strings.EqualFold(strings.TrimSpace(result.CIStatus), "on") {
+		return service.NewImageModerationProbeError(
+			service.ImageModerationProbeConfiguration,
+			errors.New("腾讯 CI 服务未开通"),
+		)
+	}
+	return nil
+}
+
+func isImageModerationAuthorizationError(err error) bool {
+	cosErr, ok := cos.IsCOSError(err)
+	if !ok || cosErr == nil {
+		return false
+	}
+	if cosErr.Response != nil &&
+		(cosErr.Response.StatusCode == http.StatusUnauthorized ||
+			cosErr.Response.StatusCode == http.StatusForbidden) {
+		return true
+	}
+	code := strings.ToLower(strings.TrimSpace(cosErr.Code))
+	for _, marker := range []string{
+		"accessdenied", "forbidden", "unauthorized", "authfailure",
+		"signaturedoesnotmatch", "invalidaccesskeyid", "invalidsecretid",
+	} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Provider) callbackURL() (string, error) {
 	u, err := url.Parse(p.cfg.TencentCICallbackURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || p.cfg.ModerationCallbackToken == "" {

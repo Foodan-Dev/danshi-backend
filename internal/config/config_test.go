@@ -24,6 +24,7 @@ func base() config.Config {
 		ModerationCallbackAuthFailureWindowS:   60,
 		ModerationReviewBacklogThreshold:       100,
 		ModerationReviewBacklogCooldownS:       3600,
+		ImageModerationRetryScanIntervalS:      30,
 		LogLevel:                               "info",
 	}
 }
@@ -90,6 +91,9 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"复核积压冷却非正", func(c *config.Config) {
 			c.ModerationReviewBacklogCooldownS = 0
 		}, "MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS"},
+		{"图片补审扫描间隔非正", func(c *config.Config) {
+			c.ImageModerationRetryScanIntervalS = 0
+		}, "IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -172,6 +176,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS", "90")
 	t.Setenv("MODERATION_REVIEW_BACKLOG_THRESHOLD", "250")
 	t.Setenv("MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS", "7200")
+	t.Setenv("IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS", "45")
 	t.Setenv("PORT", "9001")
 	cfg, err := config.Load()
 	if err != nil {
@@ -197,7 +202,8 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.ModerationCallbackAuthFailureThreshold != 7 ||
 		cfg.ModerationCallbackAuthFailureWindow() != 90*time.Second ||
 		cfg.ModerationReviewBacklogThreshold != 250 ||
-		cfg.ModerationReviewBacklogCooldown() != 2*time.Hour {
+		cfg.ModerationReviewBacklogCooldown() != 2*time.Hour ||
+		cfg.ImageModerationRetryScanInterval() != 45*time.Second {
 		t.Fatalf("审核告警环境变量未完整加载: %+v", cfg)
 	}
 }

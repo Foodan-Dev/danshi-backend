@@ -309,6 +309,75 @@ func TestProviderFailureIsFailClosed(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, apierr.As(err).Status)
 }
 
+func TestProviderImageModerationProbeClassifiesAuthorizationAndNetworkFailures(t *testing.T) {
+	t.Run("success is a side effect free GET", func(t *testing.T) {
+		var request *http.Request
+		provider, err := NewProvider(providerTestConfig(), &http.Client{
+			Transport: roundTripperFunc(func(got *http.Request) (*http.Response, error) {
+				request = got
+				return &http.Response{
+					StatusCode: http.StatusOK, Status: "200 OK", Request: got,
+					Header: http.Header{}, Body: io.NopCloser(strings.NewReader("<CIStatus>on</CIStatus>")),
+				}, nil
+			}),
+		})
+		require.NoError(t, err)
+		require.NoError(t, provider.ProbeImageModeration(context.Background()))
+		require.Equal(t, http.MethodGet, request.Method)
+		require.Equal(t, "/", request.URL.Path)
+		require.Empty(t, request.URL.RawQuery)
+	})
+
+	t.Run("HTTP 403 AccessDenied is authorization", func(t *testing.T) {
+		provider, err := NewProvider(providerTestConfig(), &http.Client{
+			Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusForbidden, Status: "403 Forbidden", Request: request,
+					Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
+						"<Error><Code>AccessDenied</Code><Message>denied</Message></Error>",
+					)),
+				}, nil
+			}),
+		})
+		require.NoError(t, err)
+		err = provider.ProbeImageModeration(context.Background())
+		require.Error(t, err)
+		require.Equal(t, service.ImageModerationProbeAuthorization,
+			service.ClassifyImageModerationProbeError(err))
+	})
+
+	t.Run("network error is transient", func(t *testing.T) {
+		provider, err := NewProvider(providerTestConfig(), &http.Client{
+			Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("network timeout")
+			}),
+		})
+		require.NoError(t, err)
+		err = provider.ProbeImageModeration(context.Background())
+		require.Error(t, err)
+		require.Equal(t, service.ImageModerationProbeTransient,
+			service.ClassifyImageModerationProbeError(err))
+	})
+
+	t.Run("HTTP 5xx is transient", func(t *testing.T) {
+		provider, err := NewProvider(providerTestConfig(), &http.Client{
+			Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable",
+					Request: request, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
+						"<Error><Code>ServiceUnavailable</Code></Error>",
+					)),
+				}, nil
+			}),
+		})
+		require.NoError(t, err)
+		err = provider.ProbeImageModeration(context.Background())
+		require.Error(t, err)
+		require.Equal(t, service.ImageModerationProbeTransient,
+			service.ClassifyImageModerationProbeError(err))
+	})
+}
+
 func providerTestConfig() config.Config {
 	return config.Config{
 		TencentSecretID: "test-secret-id", TencentSecretKey: "test-secret-key",

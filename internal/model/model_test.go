@@ -292,7 +292,7 @@ func tableName(t *testing.T, gdb *gorm.DB, value any) string {
 func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	catalog := modelCatalog()
-	require.Len(t, catalog, 30)
+	require.Len(t, catalog, 31)
 
 	var actualTables []string
 	require.NoError(t, gdb.Raw(`
@@ -342,7 +342,7 @@ func modelCatalog() []any {
 		&model.CommentLike{}, &model.Notification{}, &model.EmailVerificationCode{},
 		&model.UserSession{}, &model.PostHistory{}, &model.CommentHistory{},
 		&model.ModerationRecord{}, &model.ModerationAlertState{}, &model.DictionarySuggestion{},
-		&model.ImageAccessIntent{}, &model.ImageAccessDelivery{},
+		&model.ImageAccessIntent{}, &model.ImageAccessDelivery{}, &model.ImageModerationRetry{},
 	}
 }
 

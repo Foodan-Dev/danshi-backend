@@ -495,22 +495,7 @@ func (s *ModerationService) applyImageResult(
 		return nil, apierr.Internal(err)
 	}
 	if !created {
-		existing, findErr := s.moderation.FindMachineRecordByProviderJobID(
-			ctx, callback.Provider, callback.ProviderJobID,
-		)
-		if findErr != nil {
-			return nil, apierr.Internal(findErr)
-		}
-		if existing.ImageAssetID == nil || *existing.ImageAssetID != callback.ImageAssetID {
-			return nil, apierr.Conflict(
-				apierr.BizModerationCallbackInvalid,
-				"审核回调任务号与图片不一致",
-			)
-		}
-		if err := s.reconcileImageAccess(ctx, asset, existing.ID); err != nil {
-			return nil, apierr.Internal(err)
-		}
-		return &ImageModerationApplyResult{Duplicate: true}, nil
+		return s.reconcileDuplicateImageResult(ctx, callback, asset)
 	}
 	status := model.ModerationStatus(callback.Verdict)
 	if err := s.moderation.UpdateImageModeration(ctx, callback.ImageAssetID, status); err != nil {
@@ -530,10 +515,43 @@ func (s *ModerationService) applyImageResult(
 	if err := s.applyImageAccess(ctx, asset, record.ID, callback.Verdict); err != nil {
 		return nil, apierr.Internal(err)
 	}
+	if err := (repository.ImageModerationRetryRepository{}).DeleteForAsset(
+		ctx, callback.ImageAssetID,
+	); err != nil {
+		return nil, apierr.Internal(err)
+	}
 	return &ImageModerationApplyResult{
 		ApprovedPosts: transitions.Approved,
 		RejectedPosts: transitions.Rejected,
 	}, nil
+}
+
+func (s *ModerationService) reconcileDuplicateImageResult(
+	ctx context.Context,
+	callback ImageModerationCallback,
+	asset *model.ImageAsset,
+) (*ImageModerationApplyResult, error) {
+	existing, err := s.moderation.FindMachineRecordByProviderJobID(
+		ctx, callback.Provider, callback.ProviderJobID,
+	)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if existing.ImageAssetID == nil || *existing.ImageAssetID != callback.ImageAssetID {
+		return nil, apierr.Conflict(
+			apierr.BizModerationCallbackInvalid,
+			"审核回调任务号与图片不一致",
+		)
+	}
+	if err := s.reconcileImageAccess(ctx, asset, existing.ID); err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if err := (repository.ImageModerationRetryRepository{}).DeleteForAsset(
+		ctx, callback.ImageAssetID,
+	); err != nil {
+		return nil, apierr.Internal(err)
+	}
+	return &ImageModerationApplyResult{Duplicate: true}, nil
 }
 
 func validateImageCallback(callback ImageModerationCallback, requireJobID bool) error {
@@ -632,5 +650,3 @@ func imageModerationRecord(callback ImageModerationCallback) *model.ModerationRe
 		CreatedAt: time.Now().UTC(),
 	}
 }
-
-var errImmediateImageResultMissingJobID = errors.New("异步图片审核未返回任务号")

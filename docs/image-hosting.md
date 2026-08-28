@@ -17,8 +17,11 @@
 - `EDGEONE_ZONE_ID`。
 
 图片审核还需要 `TENCENT_CI_BIZ_TYPE`、`TENCENT_CI_CALLBACK_URL` 和 `MODERATION_CALLBACK_TOKEN`。
+server 内补审扫描间隔由 `IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS` 控制，默认 30 秒。
 
 配置不完整时适配器 fail closed：不会签发伪造凭证或假定对象已存在，上传端点返回服务不可用。
+生产 profile 在监听端口前用只读 `GetCIService` 探测 CI：401/403、`AccessDenied` 等鉴权或
+权限错误以及 CI 未开通会拒绝启动；网络、限流与 5xx 只告警并继续，由持久补审兜底。
 
 ## 2. 客户端上传协议
 
@@ -86,6 +89,10 @@ Presign 响应刻意不返回 `object_key` 和 `public_url`，避免客户端在
 5. 构造配置域名下的公开 URL；
 6. 写入公开 URL 和实际大小，引用状态继续保持 `pending`；
 7. 提交图片审核任务。
+
+第 7 步调用失败时，步骤 6 与一条补审记录仍在同一数据库事务提交，`complete` 照常成功，
+图片保持 `moderation=pending`。补审 worker 使用有界指数退避再次提交；异步供应商受理后仍
+等待回调写入最终结论。上传响应形状不因是否进入补审而改变。
 
 成功响应包含 `upload_id`、`object_key`、`public_url` 和 `status=pending`。这里的
 `pending` 表示尚未被业务内容引用，不表示对象上传未完成；上传完成由非空
@@ -247,14 +254,15 @@ SELECT danshi_purge_image_assets(ARRAY[123, 456]::bigint[]);
 
 | 情况 | 行为 |
 |---|---|
-| COS/CI 未配置或不可用 | 503，fail closed |
+| COS 未配置或不可用 | presign、HEAD 等存储操作返回 503，fail closed |
 | presign 输入格式错误 | 422，字段级错误 |
 | upload 不存在 | 404 |
 | upload 不属于当前用户 | 403 |
 | upload 已完成或已退役 | 409 |
 | COS 中没有对象 | 409 |
 | 实际大小不匹配 | 删除对象并返回 409 |
-| 审核供应商失败 | 不宣告完整完成，保留可追踪错误原因 |
+| 图片送审调用失败 | complete 成功并登记补审，图片保持 pending、不可随帖子公开 |
+| 图片补审耗尽 8 次预算 | 保留 dead-letter，写错误日志并暴露固定状态指标 |
 | `review/block` 后 COS ACL 更新失败 | 审核事实与 intent 已提交；worker 有界退避，耗尽后 dead-letter |
 | Create 响应未知或进程崩溃 | 保持 `submitting`，只读对账；不盲目重放 |
 | EdgeOne 长期 processing/失败终态 | 有界轮询；明确失败按 submission 预算重试，耗尽后 dead-letter |
