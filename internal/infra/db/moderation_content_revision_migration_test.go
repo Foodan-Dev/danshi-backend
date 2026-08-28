@@ -14,9 +14,15 @@ func TestModerationContentRevisionMigrationBackfillsAndAllowsBlockReview(t *test
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+	// 回滚到 00015 之前那一格。用循环而不是单次 DownOne：后续再加迁移时，
+	// 00015 就不再是最新一格，单次回滚会停在别处。
 	version, err := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, err)
+	for version > 14 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	require.EqualValues(t, 14, version)
 
 	_, err = database.SQL.ExecContext(ctx, `
