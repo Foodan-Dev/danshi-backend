@@ -97,6 +97,18 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostHistoryRestore(t, engine, gdb, moderation, author, other, fixture)
 	})
 
+	t.Run("history restore without moderation re-reviews", func(t *testing.T) {
+		testPostHistoryRestoreWithoutModeration(
+			t, engine, gdb, moderation, h.Fixtures, author, fixture, false,
+		)
+	})
+
+	t.Run("deleted post history restore without moderation re-reviews", func(t *testing.T) {
+		testPostHistoryRestoreWithoutModeration(
+			t, engine, gdb, moderation, h.Fixtures, author, fixture, true,
+		)
+	})
+
 	t.Run("tag canonical case remains editable", func(t *testing.T) {
 		testTagCanonicalCaseRemainsEditable(t, engine, author, fixture)
 	})
@@ -647,13 +659,88 @@ func testPostHistoryRestore(
 
 	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	beforeDeletedRestoreCalls := len(moderation.ContentCalls())
 	status, response, _ = performJSON(t, engine, http.MethodPost, restorePath, map[string]any{}, author.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	decodeData(t, response, &passed)
 	require.Equal(t, model.PostStatusApproved, passed.Status)
+	require.Equal(t, beforeDeletedRestoreCalls, len(moderation.ContentCalls()),
+		"已删除帖子继承历史结论时也不得重新送审")
+	assertInheritedPostModeration(t, gdb, post.ID, 7, 1, model.ModerationVerdictPass)
 	var restored model.Post
 	require.NoError(t, gdb.First(&restored, post.ID).Error)
 	require.Nil(t, restored.DeletedAt, "已删除帖子应仅通过历史回退重新成为当前内容")
+}
+
+func testPostHistoryRestoreWithoutModeration(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	moderation *testutil.MockModeration,
+	fixtures *testutil.Fixtures,
+	author service.AuthResult,
+	fixture postFixture,
+	deleteBeforeRestore bool,
+) {
+	t.Helper()
+	legacyTitle := "迁移旧帖无审核流水"
+	legacy := fixtures.CreatePost(
+		author.User.ID,
+		testutil.WithPostTitle(legacyTitle),
+		testutil.WithPostTags("迁移旧标签"),
+	)
+	var legacyModerationCount int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
+		Where("post_id = ?", legacy.Post.ID).Count(&legacyModerationCount).Error)
+	require.Zero(t, legacyModerationCount, "迁移旧帖夹具不得伪造审核流水")
+
+	updatedPayload := sharePostPayload(fixture, "迁移旧帖编辑后版本", []string{"迁移编辑标签"})
+	status, response, _ := performJSON(
+		t, engine, http.MethodPut, postPath(legacy.Post.ID), updatedPayload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	assertSinglePostModerationRevision(
+		t, gdb, legacy.Post.ID, 2, testutil.MockModerationProvider,
+	)
+
+	if deleteBeforeRestore {
+		status, response, _ = performJSON(
+			t, engine, http.MethodDelete, postPath(legacy.Post.ID), nil, author.Token,
+		)
+		require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	}
+
+	beforeRestoreCalls := len(moderation.ContentCalls())
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost,
+		fmt.Sprintf("%s/history/1/restore", postPath(legacy.Post.ID)),
+		map[string]any{"edit_reason": "恢复迁移旧版本"}, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var restored service.PostCreateResult
+	decodeData(t, response, &restored)
+	require.Equal(t, model.PostStatusApproved, restored.Status)
+	require.Equal(t, beforeRestoreCalls+1, len(moderation.ContentCalls()),
+		"无可继承结论时必须像普通编辑一样重新送审")
+
+	expectedRevision := int32(3)
+	if deleteBeforeRestore {
+		expectedRevision = 4
+	}
+	assertSinglePostModerationRevision(
+		t, gdb, legacy.Post.ID, expectedRevision, testutil.MockModerationProvider,
+	)
+	var sourceRevisionModerationCount int64
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
+		"post_id = ? AND content_revision = ?", legacy.Post.ID, 1,
+	).Count(&sourceRevisionModerationCount).Error)
+	require.Zero(t, sourceRevisionModerationCount,
+		"重新送审只记录新的当前版本，不得给迁移历史补写假流水")
+
+	var stored model.Post
+	require.NoError(t, gdb.First(&stored, legacy.Post.ID).Error)
+	require.Equal(t, legacyTitle, stored.Title)
+	require.Nil(t, stored.DeletedAt, "已删除迁移帖应通过历史回退恢复")
 }
 
 func assertInheritedPostModeration(
@@ -665,10 +752,13 @@ func assertInheritedPostModeration(
 	verdict model.ModerationVerdict,
 ) {
 	t.Helper()
+	assertSinglePostModerationRevision(
+		t, gdb, postID, contentRevision, historyRestoreProviderForTest,
+	)
 	var record model.ModerationRecord
 	require.NoError(t, gdb.Where(
 		"post_id = ? AND content_revision = ? AND provider = ?",
-		postID, contentRevision, "history_restore",
+		postID, contentRevision, historyRestoreProviderForTest,
 	).First(&record).Error)
 	require.Equal(t, verdict, record.Verdict)
 	var raw struct {
@@ -680,6 +770,24 @@ func assertInheritedPostModeration(
 	require.Equal(t, "restore_history", raw.Action)
 	require.Equal(t, sourceRevision, raw.SourceRevision)
 	require.NotZero(t, raw.SourceRecordID)
+}
+
+const historyRestoreProviderForTest model.ModerationProvider = "history_restore"
+
+func assertSinglePostModerationRevision(
+	t *testing.T,
+	gdb *gorm.DB,
+	postID uint64,
+	contentRevision int32,
+	provider model.ModerationProvider,
+) {
+	t.Helper()
+	var records []model.ModerationRecord
+	require.NoError(t, gdb.Where(
+		"post_id = ? AND content_revision = ?", postID, contentRevision,
+	).Order("id").Find(&records).Error)
+	require.Len(t, records, 1, "新的当前版本必须恰有一条对应审核流水")
+	require.Equal(t, provider, records[0].Provider)
 }
 
 func testPostEditEdges(

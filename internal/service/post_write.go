@@ -152,7 +152,7 @@ func (s *PostService) Delete(ctx context.Context, postID, authorID uint64) error
 	)
 }
 
-// RestoreHistory 把指定旧快照写成新的当前版本，并继承该版本已有的审核结论。
+// RestoreHistory 把指定旧快照写成新的当前版本；有审核结论时继承，否则重新送审。
 func (s *PostService) RestoreHistory(
 	ctx context.Context,
 	postID uint64,
@@ -176,12 +176,10 @@ func (s *PostService) RestoreHistory(
 	}
 	sourceModeration, err := s.posts.LatestPostModerationForRevision(ctx, postID, revision)
 	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, apierr.Conflict(
-				apierr.BizContentNotRestorable, "该历史版本没有可继承的审核结论",
-			)
+		if !errors.Is(err, repository.ErrNotFound) {
+			return nil, apierr.Internal(err)
 		}
-		return nil, apierr.Internal(err)
+		sourceModeration = nil
 	}
 	updateInput, snapshot, err := s.updateInputFromSnapshot(ctx, history.Snapshot, input.EditReason)
 	if err != nil {
@@ -206,9 +204,15 @@ func (s *PostService) RestoreHistory(
 	if err != nil {
 		return nil, err
 	}
-	status, err := aggregatePostModeration(sourceModeration.Verdict, resolved.ImageAssets)
-	if err != nil {
-		return nil, err
+	status := model.PostStatusPending
+	if !resolved.Publish {
+		status = model.PostStatusDraft
+	}
+	if sourceModeration != nil {
+		status, err = aggregatePostModeration(sourceModeration.Verdict, resolved.ImageAssets)
+		if err != nil {
+			return nil, err
+		}
 	}
 	now := time.Now().UTC()
 	contentRevision, err := s.replacePostContentVersion(
@@ -217,14 +221,15 @@ func (s *PostService) RestoreHistory(
 	if err != nil {
 		return nil, err
 	}
-	record, err := inheritedPostModerationRecord(
-		postID, contentRevision, revision, sourceModeration, now,
-	)
-	if err != nil {
-		return nil, apierr.Internal(err)
+	if sourceModeration == nil {
+		status, err = s.reviewRestoredPost(ctx, postID, contentRevision, resolved)
+	} else {
+		err = s.inheritRestoredPostModeration(
+			ctx, postID, contentRevision, revision, sourceModeration, now,
+		)
 	}
-	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
-		return nil, apierr.Internal(err)
+	if err != nil {
+		return nil, err
 	}
 	if post.DeletedAt != nil {
 		if err := s.posts.Restore(ctx, postID); err != nil {
@@ -232,6 +237,42 @@ func (s *PostService) RestoreHistory(
 		}
 	}
 	return &PostCreateResult{ID: postID, PostType: post.PostType, Status: status}, nil
+}
+
+func (s *PostService) reviewRestoredPost(
+	ctx context.Context,
+	postID uint64,
+	contentRevision int32,
+	resolved resolvedPostPayload,
+) (model.PostStatus, error) {
+	status, err := s.finishModeration(ctx, postID, contentRevision, resolved)
+	if err != nil {
+		return "", err
+	}
+	if err := s.posts.UpdateStatus(ctx, postID, status); err != nil {
+		return "", apierr.Internal(err)
+	}
+	return status, nil
+}
+
+func (s *PostService) inheritRestoredPostModeration(
+	ctx context.Context,
+	postID uint64,
+	contentRevision int32,
+	sourceRevision int32,
+	source *model.ModerationRecord,
+	now time.Time,
+) error {
+	record, err := inheritedPostModerationRecord(
+		postID, contentRevision, sourceRevision, source, now,
+	)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
+		return apierr.Internal(err)
+	}
+	return nil
 }
 
 // replacePostContentVersion 是普通编辑与历史回退共用的内容写入路径。
