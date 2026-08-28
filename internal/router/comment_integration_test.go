@@ -422,6 +422,11 @@ func testCommentEditVersion(
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("comment_id = ?", stored.ID).Count(&moderationCount).Error)
 	require.EqualValues(t, 4, moderationCount, "创建和每次编辑必须分别产生审核记录")
+	var moderationRevisions []int32
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where("comment_id = ?", stored.ID).
+		Order("id").Pluck("content_revision", &moderationRevisions).Error)
+	require.Equal(t, []int32{1, 2, 3, 4}, moderationRevisions,
+		"编辑后的审核记录必须绑定新当前版本")
 
 	status, response, _ = performJSON(t, engine, http.MethodGet,
 		commentPath(stored.ID)+"/history", nil, actors.Commenter.Token)
@@ -468,6 +473,13 @@ func testCommentMutationGuards(
 	var stored model.Comment
 	require.NoError(t, gdb.First(&stored, comment.Comment.ID).Error)
 	require.NotNil(t, stored.DeletedAt)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(comment.Comment.ID)+"/history", nil, actors.Commenter.Token)
+	require.Equal(t, http.StatusOK, status, "作者仍可查看已删除评论的修改记录")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		commentPath(comment.Comment.ID)+"/history", nil, actors.Replier.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
 
 	requests := []struct {
 		method string
@@ -476,7 +488,6 @@ func testCommentMutationGuards(
 		code   apierr.BizCode
 	}{
 		{method: http.MethodPut, path: commentPath(comment.Comment.ID), body: map[string]any{"content": "删除后编辑"}, code: apierr.BizCommentDeleted},
-		{method: http.MethodGet, path: commentPath(comment.Comment.ID) + "/history", code: apierr.BizCommentNotFound},
 		{method: http.MethodPost, path: commentPath(comment.Comment.ID) + "/like", code: apierr.BizCommentNotFound},
 		{method: http.MethodDelete, path: commentPath(comment.Comment.ID) + "/like", code: apierr.BizCommentNotFound},
 		{method: http.MethodDelete, path: commentPath(comment.Comment.ID), code: apierr.BizCommentDeleted},

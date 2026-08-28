@@ -458,39 +458,39 @@ UPDATE comments SET deleted_at=now(), deleted_reason='moderation' WHERE id=2003;
 \echo ''
 \echo '########## 1d-4. moderation_records 内容审核 ##########'
 DO $$ BEGIN
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,comment_id,scene,provider,verdict) VALUES (1001,2001,'text','tencent_ci','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,comment_id,content_revision,scene,provider,verdict) VALUES (1001,2001,2,'text','tencent_ci','pass')$q$,
     ARRAY['23514'], '审核对象只能三选一');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (scene,provider,verdict) VALUES ('text','tencent_ci','pass')$q$,
     ARRAY['23514'], '审核对象不能为空');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict) VALUES (1001,'text','tencent_ci','maybe')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict) VALUES (1001,2,'text','tencent_ci','maybe')$q$,
     ARRAY['23514'], 'verdict 枚举收敛');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (image_asset_id,scene,provider,verdict) VALUES (101,'text','tencent_ci','pass')$q$,
     ARRAY['23514'], '图片只能走图像审核');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (comment_id,scene,provider,verdict) VALUES (2001,'image','tencent_ci','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (comment_id,content_revision,scene,provider,verdict) VALUES (2001,1,'image','tencent_ci','pass')$q$,
     ARRAY['23514'], '评论只有文本审核');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,score) VALUES (1001,'text','tencent_ci','pass',101)$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,score) VALUES (1001,2,'text','tencent_ci','pass',101)$q$,
     ARRAY['23514'], 'score 取值 0-100');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,reviewer_id) VALUES (1001,'text','manual','pass',3)$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,reviewer_id) VALUES (1001,2,'text','manual','pass',3)$q$,
     ARRAY['23001','23514'], '人工复核记录必须成形（复核时间 + supersedes_id）');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict) VALUES (1001,'image','tencent_ci','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict) VALUES (1001,2,'image','tencent_ci','pass')$q$,
     ARRAY['23514'], '帖子只做文本审核，图片是独立审核对象');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict) VALUES (1001,'text','  ','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict) VALUES (1001,2,'text','  ','pass')$q$,
     ARRAY['23514'], 'provider 不接受空白串');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,provider_job_id,verdict) VALUES (1001,'text','tencent_ci','  ','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,provider_job_id,verdict) VALUES (1001,2,'text','tencent_ci','  ','pass')$q$,
     ARRAY['23514'], '外部任务号不接受空白串');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,reviewer_id,reviewed_at) VALUES (1001,'text','tencent_ci','pass',3,now())$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,reviewer_id,reviewed_at) VALUES (1001,2,'text','tencent_ci','pass',3,now())$q$,
     ARRAY['23514'], '机审记录不得携带人工复核信息');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,provider_job_id,verdict,reviewer_id,reviewed_at) VALUES (1001,'text','manual','j','pass',3,now())$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,provider_job_id,verdict,reviewer_id,reviewed_at) VALUES (1001,2,'text','manual','j','pass',3,now())$q$,
     ARRAY['23001','23514'], '人工记录不得带外部任务号');
 END $$;
-INSERT INTO moderation_records (id,post_id,scene,provider,provider_job_id,verdict,labels,score)
- VALUES (601,1001,'text','tencent_ci','job-001','pass','{}',2.5);
-INSERT INTO moderation_records (id,comment_id,scene,provider,provider_job_id,verdict,labels,score)
- VALUES (602,2003,'text','tencent_ci','job-002','block','{politics,illegal}',97.0);
+INSERT INTO moderation_records (id,post_id,content_revision,scene,provider,provider_job_id,verdict,labels,score)
+ VALUES (601,1001,2,'text','tencent_ci','job-001','pass','{}',2.5);
+INSERT INTO moderation_records (id,comment_id,content_revision,scene,provider,provider_job_id,verdict,labels,score)
+ VALUES (602,2003,1,'text','tencent_ci','job-002','block','{politics,illegal}',97.0);
 INSERT INTO moderation_records (id,image_asset_id,scene,provider,provider_job_id,verdict,labels,score)
  VALUES (603,101,'image','tencent_ci','job-003','review','{off_topic}',61.0);
 DO $$ BEGIN
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,provider_job_id,verdict) VALUES (1001,'text','tencent_ci','job-001','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,provider_job_id,verdict) VALUES (1001,2,'text','tencent_ci','job-001','pass')$q$,
     ARRAY['23505'], '同一供应商任务号幂等，重复回调不写重复行');
   PERFORM _assert((SELECT count(*) FROM moderation_records WHERE labels @> ARRAY['politics'])=1, '可按违规标签检索');
   PERFORM _assert((SELECT count(*) FROM moderation_records WHERE verdict='review' AND reviewed_at IS NULL)=1, '待人工复核队列');
@@ -559,15 +559,15 @@ END $$;
 
 -- 管理员误杀恢复不是人工复核，不 supersede 机审行，但必须能按实际操作人列检索。
 INSERT INTO moderation_records
-  (id,post_id,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
+  (id,post_id,content_revision,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
 VALUES
-  (605,1001,'text','admin_restore','pass','{}','{"action":"restore"}',3,now());
+  (605,1001,2,'text','admin_restore','pass','{}','{"action":"restore"}',3,now());
 DO $$ BEGIN
   PERFORM _assert((SELECT count(*) FROM moderation_records WHERE id=605 AND reviewer_id=3)=1,
                   '恢复流水可按 reviewer_id 检索');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records
-    (post_id,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id)
-    VALUES (1001,'text','admin_restore','pass',3,now(),603)$q$,
+    (post_id,content_revision,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id)
+    VALUES (1001,2,'text','admin_restore','pass',3,now(),603)$q$,
     ARRAY['23001','23514'], '恢复不是人工复核，不得 supersede 机审行');
 END $$;
 
@@ -612,6 +612,10 @@ DO $$ BEGIN
      WHERE table_schema='public' AND table_name='moderation_records'
        AND column_name IN ('post_history_id','comment_history_id')
   ), '审核流水不再包含内容历史锚定列');
+  PERFORM _assert((SELECT content_revision FROM moderation_records WHERE id=601)=2,
+                  '帖子审核以整数版本号绑定被审内容，不依赖历史行外键');
+  PERFORM _assert((SELECT content_revision FROM moderation_records WHERE id=602)=1,
+                  '评论无历史时的当前版本号为 1');
   PERFORM _assert(NOT EXISTS (
     SELECT 1 FROM information_schema.columns
      WHERE table_schema='public' AND table_name IN ('posts','comments') AND column_name='revision'
@@ -665,13 +669,13 @@ DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (1001,1,1,'{}'::jsonb)$q$,
     ARRAY['23505'], '同一帖子的版本号唯一');
   -- 人工复核关系闭合
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,reviewer_id,reviewed_at) VALUES (1001,'text','manual','pass',3,now())$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,reviewer_id,reviewed_at) VALUES (1001,2,'text','manual','pass',3,now())$q$,
     ARRAY['23001'], '人工复核必须带 supersedes_id');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,supersedes_id) VALUES (1001,'text','ci','pass',601)$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,supersedes_id) VALUES (1001,2,'text','ci','pass',601)$q$,
     ARRAY['23514','23001'], '机审记录不得带 supersedes_id');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id) VALUES (1001,'text','manual','pass',3,now(),601)$q$,
-    ARRAY['23001'], '只能复核 verdict=review 的记录');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (comment_id,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id) VALUES (2001,'text','manual','pass',3,now(),603)$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,content_revision,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id) VALUES (1001,2,'text','manual','pass',3,now(),601)$q$,
+    ARRAY['23001'], '只能复核机审未通过的 review 或 block 记录');
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (comment_id,content_revision,scene,provider,verdict,reviewer_id,reviewed_at,supersedes_id) VALUES (2001,2,'text','manual','pass',3,now(),603)$q$,
     ARRAY['23001'], '人工复核必须针对同一对象');
   -- 计数器：INSERT 灌值 + GUC 不泄漏
   PERFORM _assert_rejects($q$INSERT INTO posts (author_id,post_type,share_type,status,category,title,content,like_count) VALUES (1,'share','recommend','approved','food','t','c',999)$q$,
@@ -706,7 +710,7 @@ DO $$ BEGIN
     ARRAY['23514'], '用户对象必须指明审的是昵称还是简介');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (tag_id,scene,provider,verdict) VALUES (301,'image','tencent_ci','pass')$q$,
     ARRAY['23514'], '标签只做文本审核');
-  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,tag_id,scene,provider,verdict) VALUES (1001,301,'text','tencent_ci','pass')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,tag_id,content_revision,scene,provider,verdict) VALUES (1001,301,2,'text','tencent_ci','pass')$q$,
     ARRAY['23514'], '审核对象五选一');
 END $$;
 INSERT INTO moderation_records (id,tag_id,scene,provider,provider_job_id,verdict,labels)

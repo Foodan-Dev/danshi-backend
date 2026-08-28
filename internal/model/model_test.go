@@ -176,8 +176,8 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	jobID := "model-job-1"
 	score := decimal.RequireFromString("98.25")
 	moderation := &model.ModerationRecord{
-		PostID: &post.ID,
-		Scene:  model.ModerationSceneText, Provider: model.ModerationProviderTencentCI,
+		PostID: &post.ID, ContentRevision: ptr[int32](1),
+		Scene: model.ModerationSceneText, Provider: model.ModerationProviderTencentCI,
 		ProviderJobID: &jobID, Verdict: model.ModerationVerdictPass,
 		Labels: pq.StringArray{"food", "safe"}, Score: &score,
 		RawResponse: json.RawMessage(`{"request_id":"model-test"}`),

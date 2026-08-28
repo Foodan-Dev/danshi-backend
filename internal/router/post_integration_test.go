@@ -188,6 +188,7 @@ func testPostCreateContract(
 
 	var moderation model.ModerationRecord
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).First(&moderation).Error)
+	require.EqualValues(t, 1, *moderation.ContentRevision)
 	require.Equal(t, model.ModerationVerdictPass, moderation.Verdict)
 	require.Equal(t, testutil.MockModerationProvider, moderation.Provider)
 
@@ -549,6 +550,11 @@ func testPostEditVersion(
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("post_id = ?", post.ID).Count(&moderationCount).Error)
 	require.EqualValues(t, 4, moderationCount, "创建和每次编辑必须分别产生审核记录")
+	var moderationRevisions []int32
+	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where("post_id = ?", post.ID).
+		Order("id").Pluck("content_revision", &moderationRevisions).Error)
+	require.Equal(t, []int32{1, 2, 3, 4}, moderationRevisions,
+		"编辑后的审核记录必须绑定新当前版本")
 	var tagNames []string
 	require.NoError(t, gdb.Table("post_tags AS pt").Select("t.name").
 		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).
@@ -642,6 +648,15 @@ func testPostEditEdges(
 	)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
+	status, _, _ = performJSON(
+		t, engine, http.MethodGet, postPath(deleted.ID)+"/history", nil, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "作者仍可查看已删除帖子的修改记录")
+	status, response, _ = performJSON(
+		t, engine, http.MethodGet, postPath(deleted.ID)+"/history", nil, other.Token,
+	)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
 }
 
 func testConcurrentPostEdits(

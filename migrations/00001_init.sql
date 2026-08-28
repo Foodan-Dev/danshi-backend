@@ -1109,15 +1109,12 @@ COMMENT ON COLUMN user_sessions.revoked_at IS
 -- ============================================================
 -- post_histories / comment_histories：编辑历史快照
 --
--- 帖子与评论都可以编辑。**每一个版本都在这里留一行**，包括首次发布那一版：
---   创建 → 写入 revision 1
---   编辑 → 写入 revision 2（新内容），主表同步为新内容
--- 因此「主表内容 == 最新一条历史」，上一版内容 = 倒数第二条。
---
--- 早先设计成「只存编辑前的旧版本」，看似省一行，实际上让「审核记录指向被审版本」
--- 变得无法表达：审核审的是**编辑后的新内容**，而那时 history 里存的是旧内容，
--- 指过去就指错了；不指又只能依赖此后仍会变化的主表。改成全量版本后，
--- moderation_records 指向的就是它真正审过的那一版。
+-- 帖子与评论都可以编辑。当前内容始终只保存在主表，历史表只保存被替换的旧版本：
+--   创建 → 不写历史，当前版本号为 1
+--   首次编辑 → 旧内容写 revision 1，新内容留在主表且当前版本号为 2
+-- 因此历史 revision N 就是第 N 版内容，当前版本号 = 最大历史 revision + 1。
+-- 00015 用 moderation_records.content_revision 直接记录被审版本号，不把尚在主表里的
+-- 当前内容重复写入历史表，也不要求审核流水外键指向当时尚不存在的历史行。
 --
 -- 用途：申诉与追责（「他改之前写的是什么」）、机审复核、以及编辑滥用排查
 -- （发一条正常内容过审后再改成违规内容，是内容平台的经典绕过手法——
@@ -1419,9 +1416,8 @@ COMMENT ON COLUMN moderation_records.field IS
   '被审的具体字段。用户对象必填（name 昵称 / bio 简介）；帖子可用 title / content 区分，'
   '整体送审时留空。评论、标签、图片各自只有一个可审内容，无需本列。';
 COMMENT ON COLUMN moderation_records.post_history_id IS
-  '被审版本。复合外键 (post_history_id, post_id) 同时锚定「属于哪个帖子」，'
-  '不可能指到别的帖子的版本上。因为历史表现在是全量版本表，首次发布也有 revision 1，'
-  '所以每条审核结论都能明确回答「审的是哪一版」。';
+  '00001 初始模型使用的历史行锚点；00008 删除该列并改为只保存被替换旧版，'
+  '00015 再以不带外键的 content_revision 记录被审版本号。';
 COMMENT ON COLUMN moderation_records.verdict IS
   'pass 通过；review 需人工复核；block 判定违规。'
   '注意本列是**这一次审核**的结论，对象当前状态看 posts.status / comments.deleted_at / image_assets.moderation。';

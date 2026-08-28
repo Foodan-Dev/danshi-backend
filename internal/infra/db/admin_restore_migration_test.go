@@ -39,7 +39,7 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 		Provider: "admin_restore", Verdict: model.ModerationVerdictPass,
 		Labels: pq.StringArray{}, RawResponse: json.RawMessage(`{"action":"restore"}`),
 	}
-	require.NoError(t, database.GORM.Create(&legacy).Error,
+	require.NoError(t, database.GORM.Omit("ContentRevision").Create(&legacy).Error,
 		"v6 允许的无操作人恢复流水必须可作为存量数据迁移")
 
 	require.NoError(t, dbinfra.Up(ctx, database.SQL))

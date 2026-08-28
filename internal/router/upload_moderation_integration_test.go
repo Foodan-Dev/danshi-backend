@@ -251,8 +251,9 @@ func testPostLevelUnifiedModeration(
 		}}
 		require.NoError(t, gdb.Create(&fixture.post).Error)
 		textScore := decimal.NewFromInt(62)
+		contentRevision := int32(1)
 		fixture.text = model.ModerationRecord{
-			PostID: &fixture.post.ID, Scene: model.ModerationSceneText,
+			PostID: &fixture.post.ID, ContentRevision: &contentRevision, Scene: model.ModerationSceneText,
 			Provider: "batch38_text", Verdict: textVerdict,
 			Labels: pq.StringArray{"text_" + string(textVerdict)}, Score: &textScore,
 			CreatedAt: time.Now().UTC(),
@@ -439,10 +440,12 @@ func testPostLevelUnifiedModeration(
 		"/api/v2/admin/moderation-records/pending?limit=100", nil, reviewer.Token)
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &queue)
-	require.Empty(t, moderationItemsForPost(queue.Records, blocked.post.ID),
-		"存在 block 的帖子不得进入人工队列")
-	require.Empty(t, moderationItemsForPost(queue.Records, textBlocked.post.ID),
-		"正文 block 的帖子不得进入人工队列")
+	blockedItems := moderationItemsForPost(queue.Records, blocked.post.ID)
+	require.Len(t, blockedItems, 1, "图片 block 的帖子必须进入人工复核队列")
+	require.Equal(t, model.ModerationVerdictBlock, blockedItems[0].Verdict)
+	textBlockedItems := moderationItemsForPost(queue.Records, textBlocked.post.ID)
+	require.Len(t, textBlockedItems, 1, "正文 block 的帖子必须进入人工复核队列")
+	require.Equal(t, model.ModerationVerdictBlock, textBlockedItems[0].Verdict)
 	require.Empty(t, moderationItemsForPost(queue.Records, allPassed.post.ID),
 		"全部 pass 的帖子不得进入人工队列")
 }

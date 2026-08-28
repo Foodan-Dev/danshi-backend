@@ -165,7 +165,7 @@ func (h *Post) Histories(ctx context.Context, c *app.RequestContext) {
 	postID, principal, err := postRequestIdentity(c)
 	var result *service.PostHistoryList
 	if err == nil {
-		result, err = h.service.Histories(ctx, postID, principal.User.ID)
+		result, err = h.service.Histories(ctx, postID, principal)
 	}
 	if err != nil {
 		failService(ctx, c, err)

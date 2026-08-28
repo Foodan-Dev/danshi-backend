@@ -232,12 +232,17 @@ func (CommentRepository) SoftDelete(
 	return nil
 }
 
-// NextHistoryRevision 返回下一条旧版本正文的连续 revision。调用方必须已锁定评论主体。
-func (CommentRepository) NextHistoryRevision(ctx context.Context, commentID uint64) (int32, error) {
+// CurrentContentRevision 返回主表当前正文的版本号，即最大历史 revision + 1。
+func (CommentRepository) CurrentContentRevision(ctx context.Context, commentID uint64) (int32, error) {
 	var revision int32
 	err := db.FromContext(ctx).Model(&model.CommentHistory{}).
 		Select("COALESCE(max(revision), 0) + 1").Where("comment_id = ?", commentID).Scan(&revision).Error
 	return revision, err
+}
+
+// NextHistoryRevision 返回下一条旧版本正文的连续 revision。调用方必须已锁定评论主体。
+func (r CommentRepository) NextHistoryRevision(ctx context.Context, commentID uint64) (int32, error) {
+	return r.CurrentContentRevision(ctx, commentID)
 }
 
 // CreateHistory 追加不可篡改的被替换评论正文。
@@ -251,6 +256,21 @@ func (CommentRepository) ListHistories(ctx context.Context, commentID uint64) ([
 	err := db.FromContext(ctx).Where("comment_id = ?", commentID).
 		Order("revision DESC").Find(&histories).Error
 	return histories, err
+}
+
+// ListHistoryModeration 返回每个旧版本最新一次机器文本审核结论。
+func (CommentRepository) ListHistoryModeration(
+	ctx context.Context,
+	commentID uint64,
+) ([]model.ModerationRecord, error) {
+	records := make([]model.ModerationRecord, 0)
+	err := db.FromContext(ctx).Raw(`
+		SELECT DISTINCT ON (content_revision) mr.*
+		FROM moderation_records AS mr
+		WHERE mr.comment_id = ? AND mr.content_revision IS NOT NULL AND mr.reviewer_id IS NULL
+		ORDER BY content_revision, created_at DESC, id DESC
+	`, commentID).Scan(&records).Error
+	return records, err
 }
 
 // ReplaceMentions 物理替换评论正文中的提及关联。

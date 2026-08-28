@@ -1104,6 +1104,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "moderation": {
+            "$ref": "#/components/schemas/HistoryModerationView"
+          },
           "revision": {
             "format": "int32",
             "type": "integer"
@@ -1470,6 +1473,26 @@
           },
           "is_following": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "HistoryModerationView": {
+        "properties": {
+          "score": {
+            "$ref": "#/components/schemas/Decimal"
+          },
+          "status": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "review",
+              "block"
+            ],
+            "nullable": true,
+            "type": "string"
           }
         },
         "type": "object"
@@ -1898,6 +1921,9 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
+          },
+          "moderation": {
+            "$ref": "#/components/schemas/HistoryModerationView"
           },
           "revision": {
             "format": "int32",

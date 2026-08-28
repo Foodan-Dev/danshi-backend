@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/authz"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
@@ -132,11 +133,12 @@ type CommentLikeResult struct {
 
 // CommentHistoryView 是评论被替换的一版不可变正文。
 type CommentHistoryView struct {
-	ID       uint64     `json:"id"`
-	Revision int32      `json:"revision"`
-	EditedBy uint64     `json:"edited_by"`
-	EditedAt ptime.Time `json:"edited_at"`
-	Content  string     `json:"content"`
+	ID         uint64                 `json:"id"`
+	Revision   int32                  `json:"revision"`
+	EditedBy   uint64                 `json:"edited_by"`
+	EditedAt   ptime.Time             `json:"edited_at"`
+	Content    string                 `json:"content"`
+	Moderation *HistoryModerationView `json:"moderation"`
 }
 
 // CommentHistoryList 是按版本倒序的评论历史。
@@ -240,35 +242,35 @@ func (s *CommentService) Replies(
 	return &CommentReplies{Replies: items, Pagination: meta}, nil
 }
 
-// Histories 允许作者查看未删除或因审核违规软删除评论的旧版本历史。
+// Histories 允许作者与具备内容审核能力的管理员查看评论旧版本历史。
 func (s *CommentService) Histories(
 	ctx context.Context,
 	commentID uint64,
-	currentUserID uint64,
+	principal *Principal,
 ) (*CommentHistoryList, error) {
 	comment, err := s.comments.FindByID(ctx, commentID)
 	if err != nil {
 		return nil, commentRepositoryError(err)
 	}
-	if comment.DeletedAt != nil {
-		moderationDeletion := comment.DeletedReason != nil &&
-			*comment.DeletedReason == model.DeleteReasonModeration
-		if !moderationDeletion || comment.AuthorID != currentUserID {
-			return nil, apierr.NotFound(apierr.BizCommentNotFound, "评论")
-		}
-	}
-	if comment.AuthorID != currentUserID {
+	isModerator := authz.HasCapability(principal.User.Roles, authz.CapReviewContent)
+	if comment.AuthorID != principal.User.ID && !isModerator {
 		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能查看自己的评论编辑历史")
 	}
 	rows, err := s.comments.ListHistories(ctx, commentID)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
+	moderationRows, err := s.comments.ListHistoryModeration(ctx, commentID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	moderationByRevision := historyModerationByRevision(moderationRows, isModerator)
 	histories := make([]CommentHistoryView, 0, len(rows))
 	for _, row := range rows {
 		histories = append(histories, CommentHistoryView{
 			ID: row.ID, Revision: row.Revision, EditedBy: row.EditedBy,
 			EditedAt: ptime.Time(row.EditedAt), Content: row.Content,
+			Moderation: moderationByRevision[row.Revision],
 		})
 	}
 	return &CommentHistoryList{Histories: histories}, nil

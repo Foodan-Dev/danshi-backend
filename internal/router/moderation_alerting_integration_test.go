@@ -267,9 +267,10 @@ func testPostLevelBacklogSuppression(t *testing.T, gdb *gorm.DB, database *dbinf
 		testutil.WithPostStatus(model.PostStatusPending),
 		testutil.WithPostImages(firstImage, secondImage),
 	)
+	contentRevision := int32(1)
 	records := []model.ModerationRecord{
 		{
-			PostID: &post.Post.ID, Scene: model.ModerationSceneText,
+			PostID: &post.Post.ID, ContentRevision: &contentRevision, Scene: model.ModerationSceneText,
 			Provider: model.ModerationProviderTencentCI,
 			Verdict:  model.ModerationVerdictReview, Labels: pq.StringArray{"text"},
 		},

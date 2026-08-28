@@ -125,7 +125,7 @@ func (s *ModerationService) ManualReview(
 	record := &model.ModerationRecord{
 		PostID: original.PostID, CommentID: original.CommentID,
 		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
-		Field: original.Field, Scene: original.Scene,
+		Field: original.Field, ContentRevision: original.ContentRevision, Scene: original.Scene,
 		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
 		Labels: labels, Score: input.Score, RawResponse: input.RawResponse,
 		ReviewerID: &input.ReviewerID, ReviewedAt: &now,
@@ -262,7 +262,7 @@ func (s *ModerationService) lockPostReviewSnapshot(
 	if post.DeletedAt != nil {
 		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
-	if post.Status != model.PostStatusPending {
+	if post.Status != model.PostStatusPending && post.Status != model.PostStatusRejected {
 		return nil, apierr.Conflict(apierr.BizModerationNotPending, "帖子当前不在待审核状态")
 	}
 	assets, err := s.moderation.LockImagesForPost(ctx, postID)
@@ -275,12 +275,6 @@ func (s *ModerationService) lockPostReviewSnapshot(
 	latestText, err := s.moderation.LatestPostModeration(ctx, postID)
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizModerationNotPending, "帖子审核记录")
-	}
-	if latestText.Verdict == model.ModerationVerdictBlock {
-		return nil, apierr.Conflict(
-			apierr.BizModerationNotPending,
-			"帖子正文已被机器禁止，不应进入人工复核",
-		)
 	}
 	pending, err := s.moderation.LockPendingReviewRecordsForPost(ctx, postID)
 	if err != nil {
@@ -298,16 +292,11 @@ func (s *ModerationService) lockPostReviewSnapshot(
 func validatePostReviewAssets(assets []model.ImageAsset) error {
 	for index := range assets {
 		switch assets[index].Moderation {
-		case model.ModerationStatusPass, model.ModerationStatusReview:
+		case model.ModerationStatusPass, model.ModerationStatusReview, model.ModerationStatusBlock:
 		case model.ModerationStatusPending:
 			return apierr.Conflict(
 				apierr.BizModerationNotPending,
 				"帖子仍有图片正在机审，暂不能人工复核",
-			)
-		case model.ModerationStatusBlock:
-			return apierr.Conflict(
-				apierr.BizModerationNotPending,
-				"帖子包含已被机器禁止的图片，不应进入人工复核",
 			)
 		default:
 			return apierr.Internal(errors.New("图片存在未知审核状态"))
@@ -335,7 +324,7 @@ func (s *ModerationService) createPostManualRecords(
 		}
 		if original.ImageAssetID != nil {
 			asset := snapshot.assetByID[*original.ImageAssetID]
-			if asset == nil || asset.Moderation != model.ModerationStatusReview {
+			if asset == nil || asset.Moderation != model.ModerationStatus(original.Verdict) {
 				continue
 			}
 			imageIDs = append(imageIDs, asset.ID)
@@ -369,7 +358,7 @@ func postManualRecord(
 	return model.ModerationRecord{
 		PostID: original.PostID, CommentID: original.CommentID,
 		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
-		Field: original.Field, Scene: original.Scene,
+		Field: original.Field, ContentRevision: original.ContentRevision, Scene: original.Scene,
 		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
 		Labels: pq.StringArray{}, RawResponse: input.RawResponse,
 		ReviewerID: &input.ReviewerID, ReviewedAt: &now,
@@ -427,8 +416,9 @@ func (s *ModerationService) alertPostManualBlock(
 
 func validateMachineReviewRecord(record *model.ModerationRecord) error {
 	if record.Provider == model.ModerationProviderManual ||
-		record.Verdict != model.ModerationVerdictReview {
-		return apierr.Conflict(apierr.BizConflict, "只能复核机器判定为 review 的记录")
+		(record.Verdict != model.ModerationVerdictReview &&
+			record.Verdict != model.ModerationVerdictBlock) {
+		return apierr.Conflict(apierr.BizConflict, "只能复核机器判定为 review 或 block 的记录")
 	}
 	return nil
 }

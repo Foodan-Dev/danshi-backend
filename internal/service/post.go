@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
+	"github.com/Foodan-Dev/danshi-backend/internal/authz"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
@@ -199,12 +200,13 @@ type PostFavoriteResult struct {
 
 // PostHistoryView 是一条可展示的被替换旧版本历史。
 type PostHistoryView struct {
-	ID         uint64          `json:"id"`
-	Revision   int32           `json:"revision"`
-	EditedBy   uint64          `json:"edited_by"`
-	EditedAt   ptime.Time      `json:"edited_at"`
-	Snapshot   json.RawMessage `json:"snapshot"`
-	EditReason *string         `json:"edit_reason"`
+	ID         uint64                 `json:"id"`
+	Revision   int32                  `json:"revision"`
+	EditedBy   uint64                 `json:"edited_by"`
+	EditedAt   ptime.Time             `json:"edited_at"`
+	Snapshot   json.RawMessage        `json:"snapshot"`
+	EditReason *string                `json:"edit_reason"`
+	Moderation *HistoryModerationView `json:"moderation"`
 }
 
 // PostHistoryList 是作者查看帖子编辑历史的响应。
@@ -380,31 +382,35 @@ func (s *PostService) Get(
 	return detail, nil
 }
 
-// Histories 仅允许作者查看未删除帖子的旧版本历史。
+// Histories 允许作者与具备内容审核能力的管理员查看旧版本历史。
 func (s *PostService) Histories(
 	ctx context.Context,
 	postID uint64,
-	currentUserID uint64,
+	principal *Principal,
 ) (*PostHistoryList, error) {
 	record, err := s.posts.FindByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if record.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
-	}
-	if record.AuthorID != currentUserID {
+	isModerator := authz.HasCapability(principal.User.Roles, authz.CapReviewContent)
+	if record.AuthorID != principal.User.ID && !isModerator {
 		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能查看自己的帖子编辑历史")
 	}
 	rows, err := s.posts.ListHistories(ctx, postID)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
+	moderationRows, err := s.posts.ListHistoryModeration(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	moderationByRevision := historyModerationByRevision(moderationRows, isModerator)
 	histories := make([]PostHistoryView, 0, len(rows))
 	for _, row := range rows {
 		histories = append(histories, PostHistoryView{
 			ID: row.ID, Revision: row.Revision, EditedBy: row.EditedBy,
 			EditedAt: ptime.Time(row.EditedAt), Snapshot: row.Snapshot, EditReason: row.EditReason,
+			Moderation: moderationByRevision[row.Revision],
 		})
 	}
 	return &PostHistoryList{Histories: histories}, nil
