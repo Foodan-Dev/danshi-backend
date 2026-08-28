@@ -34,7 +34,10 @@ tables(){ docker exec "$CT" psql -U postgres -d danshi -tAc "select count(*) fro
 
 echo "== A 数据链路 =="
 reset; up
-docker exec "$CT" psql -X -v ON_ERROR_STOP=1 -U postgres -d danshi -f /tmp/schema_smoke.sql > "$TMP/smoke.out" 2>&1
+if ! docker exec "$CT" psql -X -v ON_ERROR_STOP=1 -U postgres -d danshi -f /tmp/schema_smoke.sql > "$TMP/smoke.out" 2>&1; then
+  cat "$TMP/smoke.out" >&2
+  exit 1
+fi
 echo "   PASS=$(grep -c 'NOTICE:  PASS' "$TMP/smoke.out")  FAIL=$(grep -c 'FAIL' "$TMP/smoke.out" || true)"
 
 echo "== B 结构链路 =="

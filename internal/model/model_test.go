@@ -97,11 +97,22 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	post := &model.Post{
 		AuthorID: author.ID, PostType: model.PostTypeShare,
 		ShareType: ptr(model.ShareTypeRecommend), Status: model.PostStatusApproved,
-		Category: model.PostCategoryFood, Title: "模型层测试帖子", Content: "验证真实 schema",
+		CurrentRevision: 1,
+		Category:        model.PostCategoryFood, Title: "模型层测试帖子", Content: "验证真实 schema",
 		CanteenID: &canteen.ID, CanteenWindowID: &window.ID, CuisineID: &cuisine.ID,
 		Price: &price,
 	}
-	gotPost := insertAndSelect(t, gdb, post).(*model.Post)
+	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(post).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.PostHistory{
+			PostID: post.ID, Revision: 1, EditedBy: author.ID,
+			Snapshot: json.RawMessage(`{"title":"模型层测试帖子","content":"验证真实 schema"}`),
+		}).Error
+	}))
+	var gotPost model.Post
+	require.NoError(t, gdb.First(&gotPost, post.ID).Error)
 	require.True(t, gotPost.Price.Equal(price))
 
 	postTag := &model.PostTag{PostID: post.ID, TagID: tag.ID}
@@ -118,9 +129,18 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 
 	comment := &model.Comment{
 		PostID: post.ID, AuthorID: actor.ID, ReplyToUserID: author.ID,
-		Content: "模型层测试评论", Moderation: model.ModerationStatusPass,
+		Content: "模型层测试评论", CurrentRevision: 1, Moderation: model.ModerationStatusPass,
 	}
-	gotComment := insertAndSelect(t, gdb, comment).(*model.Comment)
+	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(comment).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.CommentHistory{
+			CommentID: comment.ID, Revision: 1, EditedBy: actor.ID, Content: comment.Content,
+		}).Error
+	}))
+	var gotComment model.Comment
+	require.NoError(t, gdb.First(&gotComment, comment.ID).Error)
 	require.Equal(t, comment.ID, gotComment.EffectiveRootID)
 	require.Equal(t, post.ID, *gotComment.RootPostIDForAuthorCheck)
 
@@ -161,14 +181,14 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	insertAndSelect(t, gdb, session)
 
 	postHistory := &model.PostHistory{
-		PostID: post.ID, Revision: 1, EditedBy: author.ID, EditedAt: now,
+		PostID: post.ID, Revision: 2, EditedBy: author.ID, EditedAt: now,
 		Snapshot:   json.RawMessage(`{"title":"模型层测试帖子","content":"验证真实 schema"}`),
 		EditReason: ptr("首次发布"),
 	}
 	insertAndSelect(t, gdb, postHistory)
 
 	commentHistory := &model.CommentHistory{
-		CommentID: comment.ID, Revision: 1, EditedBy: actor.ID,
+		CommentID: comment.ID, Revision: 2, EditedBy: actor.ID,
 		EditedAt: now, Content: comment.Content,
 	}
 	insertAndSelect(t, gdb, commentHistory)

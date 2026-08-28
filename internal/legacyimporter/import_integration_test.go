@@ -40,8 +40,10 @@ func TestAdvanceIdentitySequencesAllowsNormalInserts(t *testing.T) {
 		`INSERT INTO cuisines (id,name) VALUES (10000,'legacy-cuisine')`,
 		`INSERT INTO flavors (id,name) VALUES (10000,'legacy-flavor')`,
 		`INSERT INTO posts (id,author_id,post_type,share_type,category,title,content) VALUES (10000,10000,'share','recommend','food','legacy','legacy')`,
+		`INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (10000,1,10000,'{"post_type":"share","share_type":"recommend","title":"legacy","content":"legacy","category":"food","canteen_id":null,"canteen_window_id":null,"cuisine_id":null,"price":null,"budget_min":null,"budget_max":null,"tags":[],"flavors":[],"images":[]}'::jsonb)`,
 		`INSERT INTO tags (id,name) VALUES (10000,'legacy-tag')`,
 		`INSERT INTO comments (id,post_id,author_id,reply_to_user_id,content,moderation) VALUES (10000,10000,10000,10000,'legacy','pass')`,
+		`INSERT INTO comment_histories (comment_id,revision,edited_by,content) VALUES (10000,1,10000,'legacy')`,
 		`INSERT INTO notifications (id,recipient_id,sender_id,type) VALUES (10000,10000,10000,'follow')`,
 	}
 	for _, statement := range statements {
@@ -162,10 +164,18 @@ func assertNormalIdentityInserts(ctx context.Context, t *testing.T, database *sq
 	postID := insert("posts", `
 		INSERT INTO posts (author_id,post_type,share_type,category,title,content)
 		VALUES ($1,'share','recommend','food','normal','normal') RETURNING id`, userID)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO post_histories (post_id,revision,edited_by,snapshot)
+		VALUES ($1,1,$2,'{"post_type":"share","share_type":"recommend","title":"normal","content":"normal","category":"food","canteen_id":null,"canteen_window_id":null,"cuisine_id":null,"price":null,"budget_min":null,"budget_max":null,"tags":[],"flavors":[],"images":[]}'::jsonb)`, postID, userID)
+	require.NoError(t, err)
 	insert("tags", `INSERT INTO tags (name) VALUES ('normal-tag') RETURNING id`)
-	insert("comments", `
+	commentID := insert("comments", `
 		INSERT INTO comments (post_id,author_id,reply_to_user_id,content)
 		VALUES ($1,$2,$2,'normal') RETURNING id`, postID, userID)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO comment_histories (comment_id,revision,edited_by,content)
+		VALUES ($1,1,$2,'normal')`, commentID, userID)
+	require.NoError(t, err)
 	insert("notifications", `
 		INSERT INTO notifications (recipient_id,sender_id,type) VALUES ($1,$1,'follow') RETURNING id`, userID)
 }

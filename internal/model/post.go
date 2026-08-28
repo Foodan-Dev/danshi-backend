@@ -17,6 +17,7 @@ type Post struct {
 	Category        PostCategory
 	Title           string
 	Content         string
+	CurrentRevision int32 `gorm:"default:1"`
 	CanteenID       *uint64
 	CanteenWindowID *uint64
 	CuisineID       *uint64
@@ -88,7 +89,7 @@ type PostLike struct {
 // TableName 返回帖子点赞表名。
 func (PostLike) TableName() string { return "post_likes" }
 
-// PostHistory 是帖子被编辑替换掉的一版完整内容快照。
+// PostHistory 是帖子的一版不可变完整内容快照，包括当前版本。
 type PostHistory struct {
 	ID         uint64 `gorm:"primaryKey"`
 	PostID     uint64

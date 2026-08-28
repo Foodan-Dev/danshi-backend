@@ -204,7 +204,7 @@ type PostFavoriteResult struct {
 	FavoriteCount int32 `json:"favorite_count"`
 }
 
-// PostHistoryView 是一条可展示的被替换旧版本历史。
+// PostHistoryView 是一条可展示的不可变完整版本历史。
 type PostHistoryView struct {
 	ID         uint64                 `json:"id"`
 	Revision   int32                  `json:"revision"`
@@ -212,6 +212,7 @@ type PostHistoryView struct {
 	EditedAt   ptime.Time             `json:"edited_at"`
 	Snapshot   json.RawMessage        `json:"snapshot"`
 	EditReason *string                `json:"edit_reason"`
+	IsCurrent  bool                   `json:"is_current"`
 	Moderation *HistoryModerationView `json:"moderation"`
 }
 
@@ -402,7 +403,7 @@ func (s *PostService) Get(
 	return detail, nil
 }
 
-// Histories 允许作者与具备内容审核能力的管理员查看旧版本历史。
+// Histories 允许作者与具备内容审核能力的管理员查看全部不可变版本。
 func (s *PostService) Histories(
 	ctx context.Context,
 	postID uint64,
@@ -430,6 +431,7 @@ func (s *PostService) Histories(
 		histories = append(histories, PostHistoryView{
 			ID: row.ID, Revision: row.Revision, EditedBy: row.EditedBy,
 			EditedAt: ptime.Time(row.EditedAt), Snapshot: row.Snapshot, EditReason: row.EditReason,
+			IsCurrent:  row.Revision == record.CurrentRevision,
 			Moderation: moderationByRevision[row.Revision],
 		})
 	}

@@ -37,7 +37,7 @@ func buildPostListItem(
 			CommentCount: record.CommentCount, ViewCount: record.ViewCount,
 		},
 		IsLiked: relations.Liked[record.ID], IsFavorited: relations.Favorited[record.ID],
-		IsEdited: record.Revision > 0, IsDeleted: record.DeletedAt != nil, Status: record.Status,
+		IsEdited: record.MaxRevision > 1, IsDeleted: record.DeletedAt != nil, Status: record.Status,
 		CreatedAt: ptime.Time(record.CreatedAt), UpdatedAt: ptime.Time(record.UpdatedAt),
 	}
 }

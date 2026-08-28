@@ -58,7 +58,7 @@ func buildCommentItem(
 		Author:         buildCommentAuthor(comment.AuthorID, relations),
 		MentionedUsers: mentionedUsers, LikeCount: comment.LikeCount,
 		IsLiked: relations.Liked[comment.ID], IsAuthor: comment.AuthorID == postAuthorID,
-		IsEdited: relations.Revisions[comment.ID] > 0, Moderation: comment.Moderation,
+		IsEdited: relations.Revisions[comment.ID] > 1, Moderation: comment.Moderation,
 		CreatedAt: ptime.Time(comment.CreatedAt), Replies: []CommentItem{},
 	}
 	if isRoot {

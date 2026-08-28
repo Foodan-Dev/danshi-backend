@@ -758,11 +758,13 @@ func testHistoryModerationVisibility(
 	require.Equal(t, http.StatusOK, status)
 	var authorPostHistory service.PostHistoryList
 	decodeData(t, response, &authorPostHistory)
-	require.Len(t, authorPostHistory.Histories, 1)
+	require.Len(t, authorPostHistory.Histories, 2)
+	require.True(t, authorPostHistory.Histories[0].IsCurrent)
+	require.EqualValues(t, 2, authorPostHistory.Histories[0].Revision)
 	require.Equal(t, service.HistoryModerationMachineFailed,
-		authorPostHistory.Histories[0].Moderation.Status)
-	require.Nil(t, authorPostHistory.Histories[0].Moderation.Verdict)
-	require.Nil(t, authorPostHistory.Histories[0].Moderation.Score)
+		authorPostHistory.Histories[1].Moderation.Status)
+	require.Nil(t, authorPostHistory.Histories[1].Moderation.Verdict)
+	require.Nil(t, authorPostHistory.Histories[1].Moderation.Score)
 	require.NotContains(t, string(raw.Result().Body()), "\"verdict\"")
 	require.NotContains(t, string(raw.Result().Body()), "\"score\"")
 
@@ -770,8 +772,8 @@ func testHistoryModerationVisibility(
 	require.Equal(t, http.StatusOK, status)
 	var adminPostHistory service.PostHistoryList
 	decodeData(t, response, &adminPostHistory)
-	require.Equal(t, model.ModerationVerdictBlock, *adminPostHistory.Histories[0].Moderation.Verdict)
-	require.True(t, postScore.Equal(*adminPostHistory.Histories[0].Moderation.Score))
+	require.Equal(t, model.ModerationVerdictBlock, *adminPostHistory.Histories[1].Moderation.Verdict)
+	require.True(t, postScore.Equal(*adminPostHistory.Histories[1].Moderation.Score))
 	status, _, _ = performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Super.Token)
 	require.Equal(t, http.StatusOK, status)
 	status, response, _ = performJSON(t, historyEngine, http.MethodGet, path, nil, actors.Commenter.Token)
@@ -792,11 +794,13 @@ func testHistoryModerationVisibility(
 	require.Equal(t, http.StatusOK, status)
 	var authorCommentHistory service.CommentHistoryList
 	decodeData(t, response, &authorCommentHistory)
-	require.Len(t, authorCommentHistory.Histories, 1)
+	require.Len(t, authorCommentHistory.Histories, 2)
+	require.True(t, authorCommentHistory.Histories[0].IsCurrent)
+	require.EqualValues(t, 2, authorCommentHistory.Histories[0].Revision)
 	require.Equal(t, service.HistoryModerationMachineFailed,
-		authorCommentHistory.Histories[0].Moderation.Status)
-	require.Nil(t, authorCommentHistory.Histories[0].Moderation.Verdict)
-	require.Nil(t, authorCommentHistory.Histories[0].Moderation.Score)
+		authorCommentHistory.Histories[1].Moderation.Status)
+	require.Nil(t, authorCommentHistory.Histories[1].Moderation.Verdict)
+	require.Nil(t, authorCommentHistory.Histories[1].Moderation.Score)
 	require.NotContains(t, string(raw.Result().Body()), "\"verdict\"")
 	require.NotContains(t, string(raw.Result().Body()), "\"score\"")
 
@@ -806,8 +810,8 @@ func testHistoryModerationVisibility(
 	var adminCommentHistory service.CommentHistoryList
 	decodeData(t, response, &adminCommentHistory)
 	require.Equal(t, model.ModerationVerdictBlock,
-		*adminCommentHistory.Histories[0].Moderation.Verdict)
-	require.True(t, commentScore.Equal(*adminCommentHistory.Histories[0].Moderation.Score))
+		*adminCommentHistory.Histories[1].Moderation.Verdict)
+	require.True(t, commentScore.Equal(*adminCommentHistory.Histories[1].Moderation.Score))
 	status, _, _ = performJSON(t, historyEngine, http.MethodGet, commentHistoryPath, nil,
 		actors.Author.Token)
 	require.Equal(t, http.StatusForbidden, status)

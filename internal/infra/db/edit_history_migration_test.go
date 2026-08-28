@@ -10,7 +10,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
 
-func TestEditHistoryMigrationRemovesCurrentCopiesAndRejectsLossyDown(t *testing.T) {
+func TestEditHistoryAndCurrentRevisionMigrationsPreserveVersionSemantics(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
 
@@ -74,22 +74,30 @@ func TestEditHistoryMigrationRemovesCurrentCopiesAndRejectsLossyDown(t *testing.
 	var count int
 	require.NoError(t, database.SQL.QueryRowContext(ctx,
 		`SELECT count(*) FROM post_histories WHERE post_id = 8201`).Scan(&count))
-	require.Zero(t, count, "未编辑帖子的创建期 revision 1 必须被清理")
+	require.Equal(t, 1, count, "00008 清理旧模型的创建期副本后，00017 必须重新写入当前完整版本")
 	require.NoError(t, database.SQL.QueryRowContext(ctx,
 		`SELECT count(*) FROM comment_histories WHERE comment_id = 8401`).Scan(&count))
-	require.Zero(t, count, "未编辑评论的创建期 revision 1 必须被清理")
+	require.Equal(t, 1, count, "评论当前版必须由 00017 写回全量历史")
 	require.NoError(t, database.SQL.QueryRowContext(ctx,
 		`SELECT count(*) FROM post_histories WHERE post_id = 8202`).Scan(&count))
-	require.Equal(t, 1, count, "已编辑帖子只应保留被替换的第一版")
+	require.Equal(t, 2, count, "已编辑帖子应保留第一版并追加当前第二版")
 
 	var revision int
 	var content string
 	require.NoError(t, database.SQL.QueryRowContext(ctx, `
 		SELECT revision, snapshot->>'content'
-		FROM post_histories WHERE post_id = 8202
+		FROM post_histories WHERE post_id = 8202 AND revision = 1
 	`).Scan(&revision, &content))
 	require.Equal(t, 1, revision)
 	require.Equal(t, "第一版", content)
+
+	var postRevision, commentRevision int
+	require.NoError(t, database.SQL.QueryRowContext(ctx,
+		`SELECT current_revision FROM posts WHERE id = 8202`).Scan(&postRevision))
+	require.Equal(t, 2, postRevision)
+	require.NoError(t, database.SQL.QueryRowContext(ctx,
+		`SELECT current_revision FROM comments WHERE id = 8401`).Scan(&commentRevision))
+	require.Equal(t, 1, commentRevision)
 
 	require.NoError(t, database.SQL.QueryRowContext(ctx, `
 		SELECT count(*) FROM information_schema.columns
@@ -101,17 +109,10 @@ func TestEditHistoryMigrationRemovesCurrentCopiesAndRejectsLossyDown(t *testing.
 		`SELECT count(*) FROM moderation_records WHERE id IN (8601, 8602)`).Scan(&count))
 	require.Equal(t, 2, count, "解除版本锚定不得删除审核流水")
 
-	version, err = dbinfra.Version(ctx, database.SQL)
-	require.NoError(t, err)
-	for version > 8 {
-		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
-		version, err = dbinfra.Version(ctx, database.SQL)
-		require.NoError(t, err)
-	}
 	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,
-		"cannot restore version-anchored moderation and full histories while posts or comments exist")
+		"cannot remove current revision pointers while posts or comments exist")
 	version, versionErr := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, versionErr)
-	require.EqualValues(t, 8, version)
+	require.EqualValues(t, dbinfra.ExpectedVersion, version)
 }

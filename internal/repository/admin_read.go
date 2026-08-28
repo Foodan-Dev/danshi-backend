@@ -325,10 +325,7 @@ func (AdminRepository) FindPostModerationBundleRows(
 			SELECT mr.*
 			FROM moderation_records AS mr
 			WHERE mr.post_id = p.id AND mr.provider <> ?
-			  AND mr.content_revision = (
-				SELECT COALESCE(max(ph.revision), 0) + 1
-				FROM post_histories AS ph WHERE ph.post_id = p.id
-			  )
+			  AND mr.content_revision = p.current_revision
 			ORDER BY mr.created_at DESC, mr.id DESC
 			LIMIT 1
 		) AS text_mr ON true
@@ -375,12 +372,10 @@ func pendingModerationItemsCTE(label *string) (string, []any) {
 				WHERE manual.supersedes_id = mr.id
 			  )
 			  AND (mr.post_id IS NULL OR mr.content_revision = (
-				SELECT COALESCE(max(ph.revision), 0) + 1
-				FROM post_histories AS ph WHERE ph.post_id = mr.post_id
+				SELECT p.current_revision FROM posts AS p WHERE p.id = mr.post_id
 			  ))
 			  AND (mr.comment_id IS NULL OR mr.content_revision = (
-				SELECT COALESCE(max(ch.revision), 0) + 1
-				FROM comment_histories AS ch WHERE ch.comment_id = mr.comment_id
+				SELECT c.current_revision FROM comments AS c WHERE c.id = mr.comment_id
 			  ))
 			  __LABEL_CLAUSE__
 		),
@@ -459,12 +454,10 @@ func pendingModerationQuery(ctx context.Context) *gorm.DB {
 				WHERE manual.supersedes_id = mr.id
 			)
 			AND (mr.post_id IS NULL OR mr.content_revision = (
-				SELECT COALESCE(max(ph.revision), 0) + 1
-				FROM post_histories AS ph WHERE ph.post_id = mr.post_id
+				SELECT p.current_revision FROM posts AS p WHERE p.id = mr.post_id
 			))
 			AND (mr.comment_id IS NULL OR mr.content_revision = (
-				SELECT COALESCE(max(ch.revision), 0) + 1
-				FROM comment_histories AS ch WHERE ch.comment_id = mr.comment_id
+				SELECT c.current_revision FROM comments AS c WHERE c.id = mr.comment_id
 			))
 		`, model.ModerationVerdictBlock, model.ModerationVerdictReview,
 		model.ModerationProviderManual)

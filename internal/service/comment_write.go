@@ -29,7 +29,7 @@ type UpdateCommentInput struct {
 	MentionedUserIDs []uint64
 }
 
-// Create 创建评论主体、提及关联、审核流水与通知；首次创建不写编辑历史。
+// Create 创建评论主体、提及关联、revision 1、审核流水与通知。
 func (s *CommentService) Create(
 	ctx context.Context,
 	postID uint64,
@@ -55,13 +55,21 @@ func (s *CommentService) Create(
 	comment := &model.Comment{
 		PostID: postID, AuthorID: authorID, ParentID: input.ParentID, RootID: rootID,
 		ReplyToUserID: replyToUserID, Content: content,
-		Moderation: model.ModerationStatusPending, CreatedAt: now, UpdatedAt: now,
+		CurrentRevision: 1, Moderation: model.ModerationStatusPending,
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.comments.Create(ctx, comment); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	if err := s.comments.ReplaceMentions(ctx, comment.ID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
+	}
+	history := &model.CommentHistory{
+		CommentID: comment.ID, Revision: 1, EditedBy: authorID,
+		EditedAt: now, Content: content,
+	}
+	if err := s.comments.CreateHistory(ctx, history); err != nil {
+		return nil, commentHistoryWriteError(err)
 	}
 	moderation, err := s.moderateComment(ctx, comment.ID, 1, content)
 	if err != nil {
@@ -76,7 +84,7 @@ func (s *CommentService) Create(
 	return s.commentMutationResult(ctx, comment.ID, post.AuthorID, authorID)
 }
 
-// Update 串行化评论编辑，先追加被替换的当前正文，再更新评论。
+// Update 串行化评论编辑，更新副本后追加新的完整版本。
 func (s *CommentService) Update(
 	ctx context.Context,
 	commentID uint64,
@@ -114,20 +122,20 @@ func (s *CommentService) Update(
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	history := &model.CommentHistory{
-		CommentID: commentID, Revision: revision,
-		EditedBy: authorID, EditedAt: now, Content: comment.Content,
-	}
-	if err := s.comments.CreateHistory(ctx, history); err != nil {
-		return nil, commentHistoryWriteError(err)
-	}
-	if err := s.comments.UpdateContent(ctx, commentID, content, now); err != nil {
+	if err := s.comments.UpdateContent(ctx, commentID, content, revision, now); err != nil {
 		return nil, commentRepositoryError(err)
 	}
 	if err := s.comments.ReplaceMentions(ctx, commentID, mentionIDs); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	moderation, err := s.moderateComment(ctx, commentID, revision+1, content)
+	history := &model.CommentHistory{
+		CommentID: commentID, Revision: revision,
+		EditedBy: authorID, EditedAt: now, Content: content,
+	}
+	if err := s.comments.CreateHistory(ctx, history); err != nil {
+		return nil, commentHistoryWriteError(err)
+	}
+	moderation, err := s.moderateComment(ctx, commentID, revision, content)
 	if err != nil {
 		return nil, err
 	}

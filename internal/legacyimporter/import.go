@@ -41,7 +41,8 @@ func writeDataset(ctx context.Context, target *sql.DB, data dataset) (writeErr e
 	}
 	writers := []func(context.Context, *sql.Tx, dataset) error{
 		writeUsers, writeRolesAndAudit, writeImages, writeUserAvatars, writeHistoricalDictionaries, writePosts, writeTags,
-		writePostRelations, writeComments, writeActions, writeNotifications, advanceIdentitySequences, recountAll,
+		writePostRelations, writeComments, writeInitialContentVersions, writeActions, writeNotifications,
+		advanceIdentitySequences, recountAll,
 	}
 	for _, writer := range writers {
 		if err = writer(ctx, tx, data); err != nil {
@@ -178,15 +179,15 @@ func writePosts(ctx context.Context, tx *sql.Tx, data dataset) error {
 			INSERT INTO posts
 			  (id,author_id,post_type,share_type,status,category,title,content,canteen_id,cuisine_id,
 			   price,budget_min,budget_max,like_count,favorite_count,comment_count,view_count,
-			   deleted_at,deleted_reason,deleted_by,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,$14,$15,$16,$17,$18,$19)
+			   deleted_at,deleted_reason,deleted_by,created_at,updated_at,current_revision)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,$14,$15,$16,$17,$18,$19,1)
 			ON CONFLICT (id) DO UPDATE SET author_id=EXCLUDED.author_id,post_type=EXCLUDED.post_type,
 			  share_type=EXCLUDED.share_type,status=EXCLUDED.status,category=EXCLUDED.category,
 			  title=EXCLUDED.title,content=EXCLUDED.content,canteen_id=EXCLUDED.canteen_id,
 			  cuisine_id=EXCLUDED.cuisine_id,price=EXCLUDED.price,budget_min=EXCLUDED.budget_min,
 			  budget_max=EXCLUDED.budget_max,view_count=EXCLUDED.view_count,deleted_at=EXCLUDED.deleted_at,
 			  deleted_reason=EXCLUDED.deleted_reason,deleted_by=EXCLUDED.deleted_by,
-			  created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`,
+			  created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at,current_revision=1`,
 			row.ID, row.AuthorID, row.PostType, row.ShareType, row.Status, row.Category,
 			row.Title, row.Content, row.CanteenID, row.CuisineID, row.Price, row.BudgetMin,
 			row.BudgetMax, row.ViewCount, row.DeletedAt, row.DeletedReason, row.DeletedBy,
@@ -253,19 +254,50 @@ func writeComments(ctx context.Context, tx *sql.Tx, data dataset) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO comments
 			  (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation,
-			   like_count,reply_count,deleted_at,deleted_reason,deleted_by,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10,$11,$12,$13)
+			   like_count,reply_count,deleted_at,deleted_reason,deleted_by,created_at,updated_at,current_revision)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,0,$9,$10,$11,$12,$13,1)
 			ON CONFLICT (id) DO UPDATE SET post_id=EXCLUDED.post_id,author_id=EXCLUDED.author_id,
 			  parent_id=EXCLUDED.parent_id,root_id=EXCLUDED.root_id,reply_to_user_id=EXCLUDED.reply_to_user_id,
 			  content=EXCLUDED.content,moderation=EXCLUDED.moderation,deleted_at=EXCLUDED.deleted_at,
 			  deleted_reason=EXCLUDED.deleted_reason,deleted_by=EXCLUDED.deleted_by,
-			  created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`,
+			  created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at,current_revision=1`,
 			row.ID, row.PostID, row.AuthorID, row.ParentID, row.RootID, row.ReplyToUserID,
 			row.Content, row.Moderation, row.DeletedAt, row.DeletedReason, row.DeletedBy,
 			row.CreatedAt, row.UpdatedAt)
 		if err != nil {
 			return failure("target_write_failed", "comments", err)
 		}
+	}
+	return nil
+}
+
+func writeInitialContentVersions(ctx context.Context, tx *sql.Tx, _ dataset) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO post_histories (post_id,revision,edited_by,edited_at,snapshot)
+		SELECT p.id,1,p.author_id,p.updated_at,jsonb_build_object(
+			'post_type',p.post_type,'share_type',p.share_type,'title',p.title,'content',p.content,
+			'category',p.category,'canteen_id',p.canteen_id,'canteen_window_id',p.canteen_window_id,
+			'cuisine_id',p.cuisine_id,
+			'price',CASE WHEN p.price IS NULL THEN 'null'::jsonb ELSE to_jsonb(p.price::text) END,
+			'budget_min',p.budget_min,'budget_max',p.budget_max,
+			'tags',COALESCE((SELECT jsonb_agg(t.name ORDER BY lower(t.name),t.name)
+				FROM post_tags pt JOIN tags t ON t.id=pt.tag_id WHERE pt.post_id=p.id),'[]'::jsonb),
+			'flavors',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',f.name,'stance',pf.stance)
+				ORDER BY f.sort_order,f.id) FROM post_flavors pf JOIN flavors f ON f.id=pf.flavor_id
+				WHERE pf.post_id=p.id),'[]'::jsonb),
+			'images',COALESCE((SELECT jsonb_agg(a.public_url ORDER BY pi.position)
+				FROM post_images pi JOIN image_assets a ON a.id=pi.image_asset_id
+				WHERE pi.post_id=p.id),'[]'::jsonb)
+		)
+		FROM posts p
+		ON CONFLICT (post_id,revision) DO NOTHING;
+
+		INSERT INTO comment_histories (comment_id,revision,edited_by,edited_at,content)
+		SELECT c.id,1,c.author_id,c.updated_at,c.content FROM comments c
+		ON CONFLICT (comment_id,revision) DO NOTHING;
+	`)
+	if err != nil {
+		return failure("target_write_failed", "content_histories", err)
 	}
 	return nil
 }

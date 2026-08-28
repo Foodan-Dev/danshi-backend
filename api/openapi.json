@@ -1104,6 +1104,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "is_current": {
+            "type": "boolean"
+          },
           "moderation": {
             "$ref": "#/components/schemas/HistoryModerationView"
           },
@@ -1924,6 +1927,9 @@
             "maximum": 18446744073709552000,
             "minimum": 0,
             "type": "integer"
+          },
+          "is_current": {
+            "type": "boolean"
           },
           "moderation": {
             "$ref": "#/components/schemas/HistoryModerationView"

@@ -50,7 +50,7 @@ func (ModerationRepository) LatestPostModeration(
 ) (*model.ModerationRecord, error) {
 	var record model.ModerationRecord
 	err := db.FromContext(ctx).Where(`post_id = ? AND content_revision = (
-		SELECT COALESCE(max(revision), 0) + 1 FROM post_histories WHERE post_id = ?
+		SELECT current_revision FROM posts WHERE id = ?
 	)`, postID, postID).
 		Order("created_at DESC, id DESC").First(&record).Error
 	if err != nil {
@@ -156,12 +156,12 @@ func (ModerationRepository) IsCurrentContentRevision(
 	var err error
 	switch {
 	case record.PostID != nil:
-		err = db.FromContext(ctx).Model(&model.PostHistory{}).
-			Select("COALESCE(max(revision), 0) + 1").Where("post_id = ?", *record.PostID).
+		err = db.FromContext(ctx).Model(&model.Post{}).
+			Select("current_revision").Where("id = ?", *record.PostID).
 			Scan(&current).Error
 	case record.CommentID != nil:
-		err = db.FromContext(ctx).Model(&model.CommentHistory{}).
-			Select("COALESCE(max(revision), 0) + 1").Where("comment_id = ?", *record.CommentID).
+		err = db.FromContext(ctx).Model(&model.Comment{}).
+			Select("current_revision").Where("id = ?", *record.CommentID).
 			Scan(&current).Error
 	default:
 		return false, nil
@@ -327,10 +327,7 @@ func (ModerationRepository) ReconcilePendingPosts(
 		      SELECT mr.verdict
 		      FROM moderation_records AS mr
 			      WHERE mr.post_id = p.id
-			        AND mr.content_revision = (
-			          SELECT COALESCE(max(ph.revision), 0) + 1
-			          FROM post_histories AS ph WHERE ph.post_id = p.id
-			        )
+			        AND mr.content_revision = p.current_revision
 		      ORDER BY mr.created_at DESC, mr.id DESC
 		      LIMIT 1
 		    ) = ?
@@ -356,10 +353,7 @@ func (ModerationRepository) ReconcilePendingPosts(
 		    SELECT mr.verdict
 			    FROM moderation_records AS mr
 			    WHERE mr.post_id = p.id
-			      AND mr.content_revision = (
-			        SELECT COALESCE(max(ph.revision), 0) + 1
-			        FROM post_histories AS ph WHERE ph.post_id = p.id
-			      )
+			      AND mr.content_revision = p.current_revision
 			    ORDER BY mr.created_at DESC, mr.id DESC
 		    LIMIT 1
 		  ) = ?

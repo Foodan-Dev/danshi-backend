@@ -178,7 +178,7 @@ func (h *Post) Histories(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
 }
 
-// RestoreHistory 把指定历史 revision 恢复成新的当前版本。
+// RestoreHistory 把当前指针移到指定历史 revision 并同步主表副本。
 func (h *Post) RestoreHistory(ctx context.Context, c *app.RequestContext) {
 	postID, principal, err := postRequestIdentity(c)
 	var revision int64

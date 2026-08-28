@@ -566,27 +566,11 @@ func (s *DictionaryService) bindSuggestionToPost(
 	reviewerID uint64,
 	now time.Time,
 ) error {
-	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
-	if err != nil {
-		return apierr.Internal(err)
-	}
 	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
 	if err != nil {
 		return apierr.Internal(err)
 	}
-	reason := fmt.Sprintf("词条提议 #%d 审批回绑", suggestion.ID)
-	history := &model.PostHistory{
-		PostID: post.ID, Revision: revision, EditedBy: reviewerID,
-		EditedAt: now, Snapshot: snapshot, EditReason: &reason,
-	}
-	if err := s.posts.CreateHistory(ctx, history); err != nil {
-		return historyWriteError(err)
-	}
-	fields := map[string]any{"updated_at": now}
+	fields := map[string]any{"current_revision": revision, "updated_at": now}
 	switch suggestion.Kind {
 	case model.SuggestionKindFlavor:
 		if suggestion.FlavorStance == nil || !stanceMatchesPostType(*suggestion.FlavorStance, post.PostType) {
@@ -612,6 +596,24 @@ func (s *DictionaryService) bindSuggestionToPost(
 	}
 	if err := s.posts.UpdateContent(ctx, post.ID, fields); err != nil {
 		return postRepositoryError(err)
+	}
+	post.CurrentRevision = revision
+	post.UpdatedAt = now
+	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	reason := fmt.Sprintf("词条提议 #%d 审批回绑", suggestion.ID)
+	history := &model.PostHistory{
+		PostID: post.ID, Revision: revision, EditedBy: reviewerID,
+		EditedAt: now, Snapshot: snapshot, EditReason: &reason,
+	}
+	if err := s.posts.CreateHistory(ctx, history); err != nil {
+		return historyWriteError(err)
 	}
 	return nil
 }
