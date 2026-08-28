@@ -282,10 +282,18 @@ func testPostLevelUnifiedModeration(
 		}
 		fixture := unifiedFixture{post: model.Post{
 			AuthorID: author.User.ID, PostType: model.PostTypeShare, ShareType: &shareType,
-			Status: postStatus, Category: model.PostCategoryFood,
+			Status: postStatus, Category: model.PostCategoryFood, CurrentRevision: 1,
 			Title: title, Content: title + " 的正文",
 		}}
-		require.NoError(t, gdb.Create(&fixture.post).Error)
+		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&fixture.post).Error; err != nil {
+				return err
+			}
+			return tx.Create(&model.PostHistory{
+				PostID: fixture.post.ID, Revision: 1, EditedBy: author.User.ID,
+				Snapshot: []byte(`{"title":"` + title + `"}`),
+			}).Error
+		}))
 		textScore := decimal.NewFromInt(62)
 		contentRevision := int32(1)
 		fixture.text = model.ModerationRecord{

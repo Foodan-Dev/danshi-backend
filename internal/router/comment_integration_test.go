@@ -48,7 +48,7 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentRouteInventory(t, engine)
 	})
 
-	t.Run("create true chain without history mentions and moderation", func(t *testing.T) {
+	t.Run("create true chain with revision one mentions and moderation", func(t *testing.T) {
 		testCommentCreateContract(t, engine, gdb, actors, fixture)
 	})
 
@@ -64,7 +64,7 @@ func TestCommentDomainAgainstPostgres(t *testing.T) {
 		testCommentMutationGuards(t, engine, gdb, actors, fixture)
 	})
 
-	t.Run("concurrent revisions start at one without gaps", func(t *testing.T) {
+	t.Run("concurrent edits append after revision one without gaps", func(t *testing.T) {
 		testConcurrentCommentEdits(t, engine, gdb, database, actors, fixture)
 	})
 
@@ -167,10 +167,12 @@ func testCommentCreateContract(
 	for _, commentID := range []uint64{rootRow.ID, firstRow.ID, secondRow.ID} {
 		var histories []model.CommentHistory
 		require.NoError(t, gdb.Where("comment_id = ?", commentID).Find(&histories).Error)
-		require.Empty(t, histories, "创建评论不得写入编辑历史")
+		require.Len(t, histories, 1, "创建评论必须写 revision 1")
+		require.EqualValues(t, 1, histories[0].Revision)
 		var moderation model.ModerationRecord
 		require.NoError(t, gdb.Where("comment_id = ?", commentID).First(&moderation).Error)
 		require.Equal(t, model.ModerationVerdictPass, moderation.Verdict)
+		require.EqualValues(t, 1, *moderation.ContentRevision)
 	}
 
 	var mentions []model.CommentMention
@@ -398,8 +400,9 @@ func testCommentEditVersion(
 	require.Equal(t, "@回复作者 编辑后的正文", stored.Content)
 	var histories []model.CommentHistory
 	require.NoError(t, gdb.Where("comment_id = ?", stored.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1}, commentRevisions(histories))
-	require.Equal(t, []string{"@被提及者 编辑前"}, commentContents(histories))
+	require.Equal(t, []int32{1, 2}, commentRevisions(histories))
+	require.Equal(t, []string{"@被提及者 编辑前", "@回复作者 编辑后的正文"}, commentContents(histories))
+	require.EqualValues(t, 2, stored.CurrentRevision)
 	var mentionIDs []uint64
 	require.NoError(t, gdb.Model(&model.CommentMention{}).Where("comment_id = ?", stored.ID).
 		Pluck("user_id", &mentionIDs).Error)
@@ -414,10 +417,11 @@ func testCommentEditVersion(
 	require.NoError(t, gdb.First(&stored, created.Comment.ID).Error)
 	require.Equal(t, "第四版正文", stored.Content)
 	require.NoError(t, gdb.Where("comment_id = ?", stored.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1, 2, 3}, commentRevisions(histories))
+	require.Equal(t, []int32{1, 2, 3, 4}, commentRevisions(histories))
 	require.Equal(t, []string{
-		"@被提及者 编辑前", "@回复作者 编辑后的正文", "第三版正文",
+		"@被提及者 编辑前", "@回复作者 编辑后的正文", "第三版正文", "第四版正文",
 	}, commentContents(histories))
+	require.EqualValues(t, 4, stored.CurrentRevision)
 	var moderationCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("comment_id = ?", stored.ID).Count(&moderationCount).Error)
@@ -433,11 +437,13 @@ func testCommentEditVersion(
 	require.Equal(t, http.StatusOK, status)
 	var historyList service.CommentHistoryList
 	decodeData(t, response, &historyList)
-	require.Equal(t, []int32{3, 2, 1}, []int32{
+	require.Equal(t, []int32{4, 3, 2, 1}, []int32{
 		historyList.Histories[0].Revision,
 		historyList.Histories[1].Revision,
 		historyList.Histories[2].Revision,
+		historyList.Histories[3].Revision,
 	})
+	require.True(t, historyList.Histories[0].IsCurrent)
 
 	status, _, _ = performJSON(t, engine, http.MethodPut, commentPath(stored.ID), map[string]any{
 		"content": "越权编辑",
@@ -538,13 +544,14 @@ func testConcurrentCommentEdits(
 	var histories []model.CommentHistory
 	require.NoError(t, gdb.Where("comment_id = ?", created.Comment.ID).
 		Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1, 2}, commentRevisions(histories),
-		"并发编辑必须从 1 开始且不得重复或跳号")
+	require.Equal(t, []int32{1, 2, 3}, commentRevisions(histories),
+		"并发编辑必须在创建版后连续追加且不得重复或跳号")
 	var stored model.Comment
 	require.NoError(t, gdb.First(&stored, created.Comment.ID).Error)
 	require.ElementsMatch(t, []string{"并发初始", "并发编辑 A", "并发编辑 B"}, []string{
-		histories[0].Content, histories[1].Content, stored.Content,
+		histories[0].Content, histories[1].Content, histories[2].Content,
 	})
+	require.EqualValues(t, 3, stored.CurrentRevision)
 }
 
 func testCommentHistoryFailureRollback(
@@ -578,7 +585,8 @@ func testCommentHistoryFailureRollback(
 	var historyCount int64
 	require.NoError(t, gdb.Model(&model.CommentHistory{}).
 		Where("comment_id = ?", stored.ID).Count(&historyCount).Error)
-	require.Zero(t, historyCount)
+	require.EqualValues(t, 1, historyCount, "失败编辑必须回滚，只保留创建时的 revision 1")
+	require.EqualValues(t, 1, stored.CurrentRevision)
 	var moderationCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("comment_id = ?", stored.ID).Count(&moderationCount).Error)
@@ -587,13 +595,13 @@ func testCommentHistoryFailureRollback(
 	installCommentHistoryFailureTrigger(t, gdb)
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("/api/v2/posts/%d/comments", post.ID),
-		map[string]any{"content": "创建不写历史"}, actors.Commenter.Token)
-	require.Equal(t, http.StatusOK, status, "新建评论不得触发 history insert")
+		map[string]any{"content": "创建历史失败"}, actors.Commenter.Token)
+	require.Equal(t, http.StatusInternalServerError, status, "新建评论必须写 history")
 	removeCommentHistoryFailureTrigger(t, gdb)
 	var failedCreateCount int64
 	require.NoError(t, gdb.Model(&model.Comment{}).
-		Where("post_id = ? AND content = ?", post.ID, "创建不写历史").Count(&failedCreateCount).Error)
-	require.EqualValues(t, 1, failedCreateCount)
+		Where("post_id = ? AND content = ?", post.ID, "创建历史失败").Count(&failedCreateCount).Error)
+	require.Zero(t, failedCreateCount)
 }
 
 func testCommentModerationReview(
@@ -758,7 +766,7 @@ func assertCommentModerationEvidence(
 		Where("comment_id = ?", commentID).Count(&historyCount).Error)
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("comment_id = ? AND verdict = ?", commentID, verdict).Count(&moderationCount).Error)
-	require.Zero(t, historyCount, "创建后的审核不应制造编辑历史")
+	require.EqualValues(t, 1, historyCount, "创建必须保留包含当前正文的 revision 1")
 	require.EqualValues(t, 1, moderationCount)
 }
 
@@ -776,6 +784,11 @@ func testCommentSoftDelete(
 	reply := createComment(t, engine, actors.Replier.Token, post.ID, map[string]any{
 		"content": "必须保留的回复", "parent_id": root.Comment.ID,
 	})
+	var rootHistoryCount, replyHistoryCount int64
+	require.NoError(t, gdb.Model(&model.CommentHistory{}).
+		Where("comment_id = ?", root.Comment.ID).Count(&rootHistoryCount).Error)
+	require.NoError(t, gdb.Model(&model.CommentHistory{}).
+		Where("comment_id = ?", reply.Comment.ID).Count(&replyHistoryCount).Error)
 	status, _, _ := performJSON(t, engine, http.MethodDelete,
 		commentPath(root.Comment.ID), nil, actors.Commenter.Token)
 	require.Equal(t, http.StatusOK, status)
@@ -789,6 +802,10 @@ func testCommentSoftDelete(
 	require.Equal(t, model.ModerationStatusPass, replyRow.Moderation)
 	require.Equal(t, rootRow.ID, *replyRow.RootID)
 	require.EqualValues(t, 1, rootRow.ReplyCount)
+	var rootHistoryCountAfterDelete int64
+	require.NoError(t, gdb.Model(&model.CommentHistory{}).
+		Where("comment_id = ?", root.Comment.ID).Count(&rootHistoryCountAfterDelete).Error)
+	require.Equal(t, rootHistoryCount, rootHistoryCountAfterDelete, "删除评论不得追加历史版本")
 	var postRow model.Post
 	require.NoError(t, gdb.First(&postRow, post.ID).Error)
 	require.Zero(t, postRow.CommentCount, "根评论隐藏后整层楼不得继续计入公开评论数")
@@ -819,6 +836,10 @@ func testCommentSoftDelete(
 	require.Zero(t, rootRow.ReplyCount)
 	require.NoError(t, gdb.First(&postRow, post.ID).Error)
 	require.Zero(t, postRow.CommentCount)
+	var replyHistoryCountAfterDelete int64
+	require.NoError(t, gdb.Model(&model.CommentHistory{}).
+		Where("comment_id = ?", reply.Comment.ID).Count(&replyHistoryCountAfterDelete).Error)
+	require.Equal(t, replyHistoryCount, replyHistoryCountAfterDelete, "删除回复不得追加历史版本")
 }
 
 func testCommentAscendingCursorWithoutPlaceholders(

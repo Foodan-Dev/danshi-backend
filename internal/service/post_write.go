@@ -17,8 +17,6 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-const historyRestoreProvider model.ModerationProvider = "history_restore"
-
 type resolvedPostPayload struct {
 	normalizedPostPayload
 	CanteenID   *uint64
@@ -50,7 +48,7 @@ type snapshotFlavor struct {
 	Stance model.FlavorStance `json:"stance"`
 }
 
-// Create 在一个 UoW 内创建主体、全部关联与审核流水；首次创建不写编辑历史。
+// Create 在一个 UoW 内创建主体、全部关联、revision 1 与审核流水。
 func (s *PostService) Create(
 	ctx context.Context,
 	input CreatePostInput,
@@ -75,6 +73,9 @@ func (s *PostService) Create(
 	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
 		return nil, apierr.Internal(err)
 	}
+	if err := appendPostHistory(ctx, s.posts, post, 1, authorID, nil, post.CreatedAt); err != nil {
+		return nil, historyWriteError(err)
+	}
 	status, err := s.finishModeration(ctx, post.ID, 1, resolved)
 	if err != nil {
 		return nil, err
@@ -85,7 +86,7 @@ func (s *PostService) Create(
 	return &PostCreateResult{ID: post.ID, PostType: post.PostType, Status: status}, nil
 }
 
-// Update 串行化同帖编辑，先追加被替换的当前版本，再更新主体与关联。
+// Update 串行化同帖编辑，更新主体与关联后追加新的完整版本。
 func (s *PostService) Update(
 	ctx context.Context,
 	postID uint64,
@@ -152,7 +153,7 @@ func (s *PostService) Delete(ctx context.Context, postID, authorID uint64) error
 	)
 }
 
-// RestoreHistory 把指定旧快照写成新的当前版本；有审核结论时继承，否则重新送审。
+// RestoreHistory 把当前指针移到指定版本并同步主表副本；无审核结论时重新送审。
 func (s *PostService) RestoreHistory(
 	ctx context.Context,
 	postID uint64,
@@ -215,26 +216,24 @@ func (s *PostService) RestoreHistory(
 		}
 	}
 	now := time.Now().UTC()
-	contentRevision, err := s.replacePostContentVersion(
-		ctx, post, authorID, resolved.EditReason, resolved, status, now,
-	)
-	if err != nil {
-		return nil, err
+	fields := contentFields(resolved, status, now)
+	fields["current_revision"] = revision
+	if err := s.posts.UpdateContent(ctx, postID, fields); err != nil {
+		return nil, postRepositoryError(err)
 	}
-	if sourceModeration == nil {
-		status, err = s.reviewRestoredPost(ctx, postID, contentRevision, resolved)
-	} else {
-		err = s.inheritRestoredPostModeration(
-			ctx, postID, contentRevision, revision, sourceModeration, now,
-		)
-	}
-	if err != nil {
-		return nil, err
+	if err := s.applyPostRelations(ctx, postID, &resolved); err != nil {
+		return nil, apierr.Internal(err)
 	}
 	if post.DeletedAt != nil {
 		if err := s.posts.Restore(ctx, postID); err != nil {
 			return nil, postRepositoryError(err)
 		}
+	}
+	if sourceModeration == nil {
+		status, err = s.reviewRestoredPost(ctx, postID, revision, resolved)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &PostCreateResult{ID: postID, PostType: post.PostType, Status: status}, nil
 }
@@ -255,28 +254,8 @@ func (s *PostService) reviewRestoredPost(
 	return status, nil
 }
 
-func (s *PostService) inheritRestoredPostModeration(
-	ctx context.Context,
-	postID uint64,
-	contentRevision int32,
-	sourceRevision int32,
-	source *model.ModerationRecord,
-	now time.Time,
-) error {
-	record, err := inheritedPostModerationRecord(
-		postID, contentRevision, sourceRevision, source, now,
-	)
-	if err != nil {
-		return apierr.Internal(err)
-	}
-	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
-		return apierr.Internal(err)
-	}
-	return nil
-}
-
-// replacePostContentVersion 是普通编辑与历史回退共用的内容写入路径。
-// 调用方必须已经锁定帖子主体；本函数先保存被替换版本，再重建主体与全部关联。
+// replacePostContentVersion 追加普通编辑产生的新版本。
+// 调用方必须已经锁定帖子主体；回退不得调用本函数。
 func (s *PostService) replacePostContentVersion(
 	ctx context.Context,
 	post *model.Post,
@@ -286,19 +265,29 @@ func (s *PostService) replacePostContentVersion(
 	status model.PostStatus,
 	now time.Time,
 ) (int32, error) {
-	previousRevision, err := appendCurrentPostHistory(
-		ctx, s.posts, post, editorID, editReason, now,
-	)
+	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
 	if err != nil {
 		return 0, historyWriteError(err)
 	}
-	if err := s.posts.UpdateContent(ctx, post.ID, contentFields(resolved, status, now)); err != nil {
+	fields := contentFields(resolved, status, now)
+	fields["current_revision"] = revision
+	if err := s.posts.UpdateContent(ctx, post.ID, fields); err != nil {
 		return 0, postRepositoryError(err)
 	}
 	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
 		return 0, apierr.Internal(err)
 	}
-	return previousRevision + 1, nil
+	version := newPostModel(resolved, post.AuthorID, status)
+	version.ID = post.ID
+	version.CurrentRevision = revision
+	version.CreatedAt = post.CreatedAt
+	version.UpdatedAt = now
+	if err := appendPostHistory(
+		ctx, s.posts, version, revision, editorID, editReason, now,
+	); err != nil {
+		return 0, historyWriteError(err)
+	}
+	return revision, nil
 }
 
 func (s *PostService) applyPostRelations(
@@ -325,34 +314,31 @@ func (s *PostService) applyPostRelations(
 	return nil
 }
 
-func appendCurrentPostHistory(
+func appendPostHistory(
 	ctx context.Context,
 	posts repository.PostRepository,
 	post *model.Post,
+	revision int32,
 	editorID uint64,
 	editReason *string,
 	editedAt time.Time,
-) (int32, error) {
+) error {
 	relations, err := posts.LoadSnapshotRelations(ctx, post.ID)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
 	if err != nil {
-		return 0, err
-	}
-	revision, err := posts.NextHistoryRevision(ctx, post.ID)
-	if err != nil {
-		return 0, err
+		return err
 	}
 	history := &model.PostHistory{
 		PostID: post.ID, Revision: revision, EditedBy: editorID, EditedAt: editedAt,
 		Snapshot: snapshot, EditReason: editReason,
 	}
 	if err := posts.CreateHistory(ctx, history); err != nil {
-		return 0, err
+		return err
 	}
-	return revision, nil
+	return nil
 }
 
 func deletePostWithHistoryAndImages(
@@ -371,9 +357,6 @@ func deletePostWithHistoryAndImages(
 	assets, err := posts.LockImagesByIDs(ctx, imageIDs)
 	if err != nil {
 		return apierr.Internal(err)
-	}
-	if _, err := appendCurrentPostHistory(ctx, posts, post, actorID, nil, now); err != nil {
-		return historyWriteError(err)
 	}
 	if err := posts.SoftDelete(ctx, post.ID, actorID, reason, now); err != nil {
 		return postRepositoryError(err)
@@ -500,33 +483,6 @@ func (s *PostService) restoreDeletedSnapshotImages(
 		return apierr.Internal(err)
 	}
 	return nil
-}
-
-func inheritedPostModerationRecord(
-	postID uint64,
-	contentRevision int32,
-	sourceRevision int32,
-	source *model.ModerationRecord,
-	now time.Time,
-) (*model.ModerationRecord, error) {
-	raw, err := json.Marshal(struct {
-		Action                   string `json:"action"`
-		SourceRevision           int32  `json:"source_revision"`
-		SourceModerationRecordID uint64 `json:"source_moderation_record_id"`
-	}{
-		Action: "restore_history", SourceRevision: sourceRevision,
-		SourceModerationRecordID: source.ID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	labels := append(pq.StringArray{}, source.Labels...)
-	return &model.ModerationRecord{
-		PostID: &postID, ContentRevision: &contentRevision,
-		Scene: model.ModerationSceneText, Provider: historyRestoreProvider,
-		Verdict: source.Verdict, Labels: labels, Score: source.Score,
-		RawResponse: raw, CreatedAt: now,
-	}, nil
 }
 
 func (s *PostService) finishModeration(
@@ -733,7 +689,8 @@ func newPostModel(
 	post := &model.Post{
 		AuthorID: authorID, PostType: resolved.PostType, ShareType: resolved.ShareType,
 		Status: status, Category: resolved.Category, Title: resolved.Title, Content: resolved.Content,
-		CanteenID: resolved.CanteenID, CanteenWindowID: resolved.CanteenWindowID,
+		CurrentRevision: 1,
+		CanteenID:       resolved.CanteenID, CanteenWindowID: resolved.CanteenWindowID,
 		CuisineID: resolved.CuisineID,
 	}
 	if resolved.Price != nil {

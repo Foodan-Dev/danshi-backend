@@ -247,10 +247,11 @@ func testJointDictionarySuggestions(
 	require.Equal(t, model.FlavorStanceHas, boundFlavor.Stance)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", postID).Order("revision").Find(&histories).Error)
-	require.Len(t, histories, 3, "餐厅/窗口/口味三次审批各保存被替换版本")
+	require.Len(t, histories, 4, "创建版本与餐厅/窗口/口味三次审批结果都必须进入历史")
 	for revision, history := range histories {
 		require.EqualValues(t, revision+1, history.Revision)
 	}
+	require.EqualValues(t, 4, storedPost.CurrentRevision)
 	var moderationAfter int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Count(&moderationAfter).Error)
 	require.Equal(t, moderationBefore, moderationAfter, "封闭词表及其回绑不应进入机审")

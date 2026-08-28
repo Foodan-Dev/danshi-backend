@@ -217,16 +217,18 @@ func testConcurrentRevisionSequences(
 	var postHistories []model.PostHistory
 	require.NoError(t, harness.Database.GORM.Where("post_id = ?", post.ID).
 		Order("revision").Find(&postHistories).Error)
-	require.Equal(t, continuousRevisions(concurrencyWidth), postRevisions(postHistories))
+	require.Equal(t, continuousRevisions(concurrencyWidth+1), postRevisions(postHistories))
 	var storedPost model.Post
 	require.NoError(t, harness.Database.GORM.First(&storedPost, post.ID).Error)
-	postTitles := make([]string, 0, len(postHistories)+1)
+	postTitles := make([]string, 0, len(postHistories))
 	for _, history := range postHistories {
 		postTitles = append(postTitles, decodePostSnapshot(t, history.Snapshot).Title)
 	}
-	postTitles = append(postTitles, storedPost.Title)
 	require.Len(t, postTitles, concurrencyWidth+1)
 	require.Contains(t, postTitles, "十六路帖子编辑")
+	require.EqualValues(t, concurrencyWidth+1, storedPost.CurrentRevision)
+	require.Equal(t, storedPost.Title,
+		decodePostSnapshot(t, postHistories[storedPost.CurrentRevision-1].Snapshot).Title)
 
 	comment := createComment(t, harness.Engine, author.Token, post.ID,
 		map[string]any{"content": "十六路评论编辑"})
@@ -247,16 +249,17 @@ func testConcurrentRevisionSequences(
 	var commentHistories []model.CommentHistory
 	require.NoError(t, harness.Database.GORM.Where("comment_id = ?", comment.Comment.ID).
 		Order("revision").Find(&commentHistories).Error)
-	require.Equal(t, continuousRevisions(concurrencyWidth), commentRevisions(commentHistories))
+	require.Equal(t, continuousRevisions(concurrencyWidth+1), commentRevisions(commentHistories))
 	var storedComment model.Comment
 	require.NoError(t, harness.Database.GORM.First(&storedComment, comment.Comment.ID).Error)
-	commentContents := make([]string, 0, len(commentHistories)+1)
+	commentContents := make([]string, 0, len(commentHistories))
 	for _, history := range commentHistories {
 		commentContents = append(commentContents, history.Content)
 	}
-	commentContents = append(commentContents, storedComment.Content)
 	require.Len(t, commentContents, concurrencyWidth+1)
 	require.Contains(t, commentContents, "十六路评论编辑")
+	require.EqualValues(t, concurrencyWidth+1, storedComment.CurrentRevision)
+	require.Equal(t, storedComment.Content, commentHistories[storedComment.CurrentRevision-1].Content)
 }
 
 func continuousRevisions(count int) []int32 {

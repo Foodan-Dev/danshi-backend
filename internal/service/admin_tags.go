@@ -74,7 +74,6 @@ type AdminHotTagList struct {
 type tagAffectedPost struct {
 	post     model.Post
 	revision int32
-	snapshot json.RawMessage
 }
 
 // Tags 返回话题标签管理列表。
@@ -107,7 +106,7 @@ func (s *AdminService) Tags(ctx context.Context, input AdminTagListInput) (*Admi
 	return &AdminTagList{Tags: items, Pagination: meta}, nil
 }
 
-// RenameTag 规范化新名称，并先为所有关联帖子保存仍含旧名称的被替换版本。
+// RenameTag 规范化新名称，并为所有关联帖子追加包含新名称的版本。
 func (s *AdminService) RenameTag(
 	ctx context.Context,
 	tagID uint64,
@@ -134,11 +133,6 @@ func (s *AdminService) RenameTag(
 		return nil, err
 	}
 	now := time.Now().UTC()
-	if err := s.appendTagChangeHistories(
-		ctx, affected, actorID, now, fmt.Sprintf("话题标签 #%d 重命名", tagID),
-	); err != nil {
-		return nil, err
-	}
 	if err := s.admin.RenameTag(ctx, tagID, name, now); err != nil {
 		if repository.IsSQLState(err, "23505") {
 			return nil, apierr.Conflict(
@@ -147,12 +141,17 @@ func (s *AdminService) RenameTag(
 		}
 		return nil, repository.ToAPIError(err, apierr.BizTagNotFound, "标签")
 	}
+	if err := s.appendTagChangeVersions(
+		ctx, affected, actorID, now, fmt.Sprintf("话题标签 #%d 重命名", tagID),
+	); err != nil {
+		return nil, err
+	}
 	tags[0].Name, tags[0].UpdatedAt = name, now
 	view := adminTagView(&tags[0])
 	return &view, nil
 }
 
-// MergeTag 单事务先保存受影响帖子的旧版本，再去重迁移关联并下架源标签。
+// MergeTag 单事务去重迁移关联，并为受影响帖子追加合并后的版本。
 func (s *AdminService) MergeTag(
 	ctx context.Context,
 	sourceID uint64,
@@ -186,14 +185,14 @@ func (s *AdminService) MergeTag(
 		return nil, err
 	}
 	now := time.Now().UTC()
-	if err := s.appendTagChangeHistories(
+	if err := s.admin.MergeTagRelations(ctx, sourceID, target.ID, now); err != nil {
+		return nil, repository.ToAPIError(err, apierr.BizTagNotFound, "标签")
+	}
+	if err := s.appendTagChangeVersions(
 		ctx, affected, actorID, now,
 		fmt.Sprintf("话题标签 #%d 合并到 #%d", sourceID, target.ID),
 	); err != nil {
 		return nil, err
-	}
-	if err := s.admin.MergeTagRelations(ctx, sourceID, target.ID, now); err != nil {
-		return nil, repository.ToAPIError(err, apierr.BizTagNotFound, "标签")
 	}
 	source.DeletedAt, source.UpdatedAt = &now, now
 	return &AdminTagMergeResult{
@@ -264,26 +263,16 @@ func (s *AdminService) prepareTagAffectedPosts(
 	}
 	affected := make([]tagAffectedPost, 0, len(posts))
 	for index := range posts {
-		relations, relationErr := s.posts.LoadSnapshotRelations(ctx, posts[index].ID)
-		if relationErr != nil {
-			return nil, apierr.Internal(relationErr)
-		}
-		snapshot, snapshotErr := json.Marshal(snapshotFromCurrent(&posts[index], relations))
-		if snapshotErr != nil {
-			return nil, apierr.Internal(snapshotErr)
-		}
 		revision, revisionErr := s.posts.NextHistoryRevision(ctx, posts[index].ID)
 		if revisionErr != nil {
 			return nil, apierr.Internal(revisionErr)
 		}
-		affected = append(affected, tagAffectedPost{
-			post: posts[index], revision: revision, snapshot: snapshot,
-		})
+		affected = append(affected, tagAffectedPost{post: posts[index], revision: revision})
 	}
 	return affected, nil
 }
 
-func (s *AdminService) appendTagChangeHistories(
+func (s *AdminService) appendTagChangeVersions(
 	ctx context.Context,
 	affected []tagAffectedPost,
 	actorID uint64,
@@ -292,15 +281,27 @@ func (s *AdminService) appendTagChangeHistories(
 ) error {
 	for index := range affected {
 		post := &affected[index].post
+		if err := s.posts.UpdateContent(ctx, post.ID, map[string]any{
+			"current_revision": affected[index].revision, "updated_at": now,
+		}); err != nil {
+			return postRepositoryError(err)
+		}
+		post.CurrentRevision = affected[index].revision
+		post.UpdatedAt = now
+		relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
+		if err != nil {
+			return apierr.Internal(err)
+		}
+		snapshot, err := json.Marshal(snapshotFromCurrent(post, relations))
+		if err != nil {
+			return apierr.Internal(err)
+		}
 		history := &model.PostHistory{
 			PostID: post.ID, Revision: affected[index].revision,
-			EditedBy: actorID, EditedAt: now, Snapshot: affected[index].snapshot, EditReason: &reason,
+			EditedBy: actorID, EditedAt: now, Snapshot: snapshot, EditReason: &reason,
 		}
 		if err := s.posts.CreateHistory(ctx, history); err != nil {
 			return historyWriteError(err)
-		}
-		if err := s.posts.UpdateContent(ctx, post.ID, map[string]any{"updated_at": now}); err != nil {
-			return postRepositoryError(err)
 		}
 	}
 	return nil

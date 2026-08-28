@@ -73,7 +73,7 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostRouteInventory(t, engine)
 	})
 
-	t.Run("create has no history and full contract", func(t *testing.T) {
+	t.Run("create writes revision one and full contract", func(t *testing.T) {
 		testPostCreateContract(t, engine, gdb, author, fixture)
 	})
 
@@ -93,7 +93,7 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostEditVersion(t, engine, gdb, author, fixture)
 	})
 
-	t.Run("history restore inherits moderation and authorization", func(t *testing.T) {
+	t.Run("history restore moves pointer and reuses moderation", func(t *testing.T) {
 		testPostHistoryRestore(t, engine, gdb, moderation, author, other, fixture)
 	})
 
@@ -117,7 +117,7 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostEditEdges(t, engine, gdb, author, other, fixture)
 	})
 
-	t.Run("concurrent revisions start at one without gaps", func(t *testing.T) {
+	t.Run("concurrent edits append after revision one without gaps", func(t *testing.T) {
 		testConcurrentPostEdits(t, engine, gdb, database, author, fixture)
 	})
 
@@ -149,7 +149,7 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostImageModeration(t, h, author, fixture)
 	})
 
-	t.Run("soft delete writes history protects image and stays author visible", func(t *testing.T) {
+	t.Run("soft delete preserves history protects image and stays author visible", func(t *testing.T) {
 		testPostSoftDelete(t, engine, gdb, author, other, fixture)
 	})
 
@@ -201,7 +201,10 @@ func testPostCreateContract(
 
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Empty(t, histories, "新建帖子不得写入编辑历史")
+	require.Len(t, histories, 1, "新建帖子必须写 revision 1")
+	require.EqualValues(t, 1, histories[0].Revision)
+	require.Equal(t, "第一版标题", decodePostSnapshot(t, histories[0].Snapshot).Title)
+	require.EqualValues(t, 1, stored.CurrentRevision)
 
 	var moderation model.ModerationRecord
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).First(&moderation).Error)
@@ -241,7 +244,8 @@ func testPostCreateContract(
 	require.Equal(t, http.StatusOK, status)
 	var historyResponse service.PostHistoryList
 	decodeData(t, response, &historyResponse)
-	require.Empty(t, historyResponse.Histories)
+	require.Len(t, historyResponse.Histories, 1)
+	require.True(t, historyResponse.Histories[0].IsCurrent)
 }
 
 func testPostValidationErrors(
@@ -532,12 +536,15 @@ func testPostEditVersion(
 
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Len(t, histories, 1, "首次编辑必须只保存被替换的创建版本")
+	require.Len(t, histories, 2, "首次编辑后必须同时保留创建版和新版本")
 	require.EqualValues(t, 1, histories[0].Revision)
 	first := decodePostSnapshot(t, histories[0].Snapshot)
 	require.Equal(t, "第一版标题", first.Title)
 	require.Equal(t, []string{"第一版标签"}, first.Tags)
-	require.Equal(t, "修正文案", *histories[0].EditReason)
+	require.Nil(t, histories[0].EditReason)
+	require.EqualValues(t, 2, histories[1].Revision)
+	require.Equal(t, "第二版标题", decodePostSnapshot(t, histories[1].Snapshot).Title)
+	require.Equal(t, "修正文案", *histories[1].EditReason)
 
 	for _, version := range []struct {
 		title string
@@ -556,11 +563,13 @@ func testPostEditVersion(
 	require.Equal(t, "第四版标题", stored.Title)
 	require.Equal(t, model.PostStatusApproved, stored.Status)
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1, 2, 3}, postRevisions(histories))
-	require.Equal(t, []string{"第一版标题", "第二版标题", "第三版标题"}, []string{
+	require.Equal(t, []int32{1, 2, 3, 4}, postRevisions(histories))
+	require.EqualValues(t, 4, stored.CurrentRevision)
+	require.Equal(t, []string{"第一版标题", "第二版标题", "第三版标题", "第四版标题"}, []string{
 		decodePostSnapshot(t, histories[0].Snapshot).Title,
 		decodePostSnapshot(t, histories[1].Snapshot).Title,
 		decodePostSnapshot(t, histories[2].Snapshot).Title,
+		decodePostSnapshot(t, histories[3].Snapshot).Title,
 	})
 
 	var moderationCount int64
@@ -646,7 +655,8 @@ func testPostHistoryRestore(
 	decodeData(t, response, &passed)
 	require.Equal(t, model.PostStatusApproved, passed.Status)
 	require.Equal(t, beforeRestoreCalls, len(moderation.ContentCalls()), "历史回退不得重新送审")
-	assertInheritedPostModeration(t, gdb, post.ID, 4, 1, model.ModerationVerdictPass)
+	assertPostPointerAndHistoryCount(t, gdb, post.ID, 1, 3)
+	assertSinglePostModerationRevision(t, gdb, post.ID, 1)
 
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		fmt.Sprintf("%s/history/2/restore", postPath(post.ID)), map[string]any{}, author.Token)
@@ -655,7 +665,8 @@ func testPostHistoryRestore(
 	decodeData(t, response, &failed)
 	require.Equal(t, model.PostStatusRejected, failed.Status)
 	require.Equal(t, beforeRestoreCalls, len(moderation.ContentCalls()), "未通过版本回退也不得重新送审")
-	assertInheritedPostModeration(t, gdb, post.ID, 5, 2, model.ModerationVerdictBlock)
+	assertPostPointerAndHistoryCount(t, gdb, post.ID, 2, 3)
+	assertSinglePostModerationRevision(t, gdb, post.ID, 2)
 
 	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
@@ -666,7 +677,7 @@ func testPostHistoryRestore(
 	require.Equal(t, model.PostStatusApproved, passed.Status)
 	require.Equal(t, beforeDeletedRestoreCalls, len(moderation.ContentCalls()),
 		"已删除帖子继承历史结论时也不得重新送审")
-	assertInheritedPostModeration(t, gdb, post.ID, 7, 1, model.ModerationVerdictPass)
+	assertPostPointerAndHistoryCount(t, gdb, post.ID, 1, 3)
 	var restored model.Post
 	require.NoError(t, gdb.First(&restored, post.ID).Error)
 	require.Nil(t, restored.DeletedAt, "已删除帖子应仅通过历史回退重新成为当前内容")
@@ -699,9 +710,7 @@ func testPostHistoryRestoreWithoutModeration(
 		t, engine, http.MethodPut, postPath(legacy.Post.ID), updatedPayload, author.Token,
 	)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
-	assertSinglePostModerationRevision(
-		t, gdb, legacy.Post.ID, 2, testutil.MockModerationProvider,
-	)
+	assertSinglePostModerationRevision(t, gdb, legacy.Post.ID, 2)
 
 	if deleteBeforeRestore {
 		status, response, _ = performJSON(
@@ -723,19 +732,14 @@ func testPostHistoryRestoreWithoutModeration(
 	require.Equal(t, beforeRestoreCalls+1, len(moderation.ContentCalls()),
 		"无可继承结论时必须像普通编辑一样重新送审")
 
-	expectedRevision := int32(3)
-	if deleteBeforeRestore {
-		expectedRevision = 4
-	}
-	assertSinglePostModerationRevision(
-		t, gdb, legacy.Post.ID, expectedRevision, testutil.MockModerationProvider,
-	)
+	assertSinglePostModerationRevision(t, gdb, legacy.Post.ID, 1)
+	assertPostPointerAndHistoryCount(t, gdb, legacy.Post.ID, 1, 2)
 	var sourceRevisionModerationCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
 		"post_id = ? AND content_revision = ?", legacy.Post.ID, 1,
 	).Count(&sourceRevisionModerationCount).Error)
-	require.Zero(t, sourceRevisionModerationCount,
-		"重新送审只记录新的当前版本，不得给迁移历史补写假流水")
+	require.EqualValues(t, 1, sourceRevisionModerationCount,
+		"无结论版本回退后应把真实新审核结论绑定到被指向版本")
 
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, legacy.Post.ID).Error)
@@ -743,51 +747,35 @@ func testPostHistoryRestoreWithoutModeration(
 	require.Nil(t, stored.DeletedAt, "已删除迁移帖应通过历史回退恢复")
 }
 
-func assertInheritedPostModeration(
+func assertPostPointerAndHistoryCount(
 	t *testing.T,
 	gdb *gorm.DB,
 	postID uint64,
-	contentRevision int32,
-	sourceRevision int32,
-	verdict model.ModerationVerdict,
+	currentRevision int32,
+	historyCount int64,
 ) {
 	t.Helper()
-	assertSinglePostModerationRevision(
-		t, gdb, postID, contentRevision, historyRestoreProviderForTest,
-	)
-	var record model.ModerationRecord
-	require.NoError(t, gdb.Where(
-		"post_id = ? AND content_revision = ? AND provider = ?",
-		postID, contentRevision, historyRestoreProviderForTest,
-	).First(&record).Error)
-	require.Equal(t, verdict, record.Verdict)
-	var raw struct {
-		Action         string `json:"action"`
-		SourceRevision int32  `json:"source_revision"`
-		SourceRecordID uint64 `json:"source_moderation_record_id"`
-	}
-	require.NoError(t, json.Unmarshal(record.RawResponse, &raw))
-	require.Equal(t, "restore_history", raw.Action)
-	require.Equal(t, sourceRevision, raw.SourceRevision)
-	require.NotZero(t, raw.SourceRecordID)
+	var post model.Post
+	require.NoError(t, gdb.First(&post, postID).Error)
+	require.Equal(t, currentRevision, post.CurrentRevision)
+	var count int64
+	require.NoError(t, gdb.Model(&model.PostHistory{}).Where("post_id = ?", postID).Count(&count).Error)
+	require.Equal(t, historyCount, count, "回退和删除都不得追加历史版本")
 }
-
-const historyRestoreProviderForTest model.ModerationProvider = "history_restore"
 
 func assertSinglePostModerationRevision(
 	t *testing.T,
 	gdb *gorm.DB,
 	postID uint64,
 	contentRevision int32,
-	provider model.ModerationProvider,
 ) {
 	t.Helper()
 	var records []model.ModerationRecord
 	require.NoError(t, gdb.Where(
 		"post_id = ? AND content_revision = ?", postID, contentRevision,
 	).Order("id").Find(&records).Error)
-	require.Len(t, records, 1, "新的当前版本必须恰有一条对应审核流水")
-	require.Equal(t, provider, records[0].Provider)
+	require.Len(t, records, 1, "目标版本必须恰有一条对应审核流水")
+	require.Equal(t, testutil.MockModerationProvider, records[0].Provider)
 }
 
 func testPostEditEdges(
@@ -819,8 +807,8 @@ func testPostEditEdges(
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1}, postRevisions(histories),
-		"全量 PUT 即使内容相同也必须记录被替换的当前版本")
+	require.Equal(t, []int32{1, 2}, postRevisions(histories),
+		"全量 PUT 即使内容相同也必须追加一个完整新版本")
 
 	clearPayload := map[string]any{
 		"post_type": model.PostTypeShare, "share_type": model.ShareTypeRecommend,
@@ -909,15 +897,16 @@ func testConcurrentPostEdits(
 	for _, history := range histories {
 		revisions = append(revisions, history.Revision)
 	}
-	require.Equal(t, []int32{1, 2}, revisions, "并发编辑必须从 1 开始且不得重复或跳号")
+	require.Equal(t, []int32{1, 2, 3}, revisions, "并发编辑必须在创建版后连续追加且不得重复或跳号")
 	var stored model.Post
 	require.NoError(t, gdb.First(&stored, post.ID).Error)
 	titles := []string{
 		decodePostSnapshot(t, histories[0].Snapshot).Title,
 		decodePostSnapshot(t, histories[1].Snapshot).Title,
-		stored.Title,
+		decodePostSnapshot(t, histories[2].Snapshot).Title,
 	}
 	require.ElementsMatch(t, []string{"并发初始", "并发编辑 A", "并发编辑 B"}, titles)
+	require.EqualValues(t, 3, stored.CurrentRevision)
 }
 
 func testHistoryFailureRollback(
@@ -941,7 +930,8 @@ func testHistoryFailureRollback(
 	require.Equal(t, "回滚前", stored.Title)
 	var historyCount int64
 	require.NoError(t, gdb.Model(&model.PostHistory{}).Where("post_id = ?", post.ID).Count(&historyCount).Error)
-	require.Zero(t, historyCount)
+	require.EqualValues(t, 1, historyCount, "失败编辑必须回滚，只保留创建时的 revision 1")
+	require.EqualValues(t, 1, stored.CurrentRevision)
 	var tagNames []string
 	require.NoError(t, gdb.Table("post_tags AS pt").Select("t.name").
 		Joins("JOIN tags AS t ON t.id = pt.tag_id").Where("pt.post_id = ?", post.ID).Scan(&tagNames).Error)
@@ -1282,8 +1272,9 @@ func testPostTextModeration(
 	require.Equal(t, "编辑后违规标题", stored.Title)
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("revision").Find(&histories).Error)
-	require.Equal(t, []int32{1}, postRevisions(histories))
+	require.Equal(t, []int32{1, 2}, postRevisions(histories))
 	require.Equal(t, "编辑前已发布帖子", decodePostSnapshot(t, histories[0].Snapshot).Title)
+	require.Equal(t, "编辑后违规标题", decodePostSnapshot(t, histories[1].Snapshot).Title)
 	var records []model.ModerationRecord
 	require.NoError(t, gdb.Where("post_id = ?", edited.ID).Order("id").Find(&records).Error)
 	require.Len(t, records, 2)
@@ -1461,6 +1452,10 @@ func testPostSoftDelete(
 	payload := sharePostPayload(fixture, "软删除帖子", []string{"删除"})
 	payload["images"] = []string{asset.PublicURL}
 	post := createPost(t, engine, author.Token, payload)
+	var historyCountBeforeDelete int64
+	require.NoError(t, gdb.Model(&model.PostHistory{}).
+		Where("post_id = ?", post.ID).Count(&historyCountBeforeDelete).Error)
+	require.EqualValues(t, 1, historyCountBeforeDelete)
 	status, response, _ := performJSON(
 		t, engine, http.MethodPost, postPath(post.ID)+"/favorite", nil, other.Token,
 	)
@@ -1488,7 +1483,7 @@ func testPostSoftDelete(
 	require.EqualValues(t, 1, imageRelationCount, "软删除必须保留图片关联")
 	var histories []model.PostHistory
 	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
-	require.Len(t, histories, 1)
+	require.Len(t, histories, int(historyCountBeforeDelete), "删除不得追加历史版本")
 	require.EqualValues(t, 1, histories[0].Revision)
 	require.Contains(t, string(histories[0].Snapshot), "软删除帖子")
 	assertAdminPostDeleteImageAccess(t, gdb, asset.ID, post.ID, author.User.ID)

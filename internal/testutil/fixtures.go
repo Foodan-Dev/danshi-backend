@@ -3,6 +3,7 @@ package testutil
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -266,7 +267,7 @@ func WithPostImages(images ...model.ImageAsset) PostOverride {
 	return func(spec *PostSpec) { spec.Images = append([]model.ImageAsset{}, images...) }
 }
 
-// PostFixture 是完整帖子主体与关联；新建内容没有编辑历史。
+// PostFixture 是完整帖子主体、关联与 revision 1。
 type PostFixture struct {
 	Post    model.Post
 	Tags    []model.Tag
@@ -283,9 +284,10 @@ func (f *Fixtures) CreatePost(authorID uint64, overrides ...PostOverride) PostFi
 		Post: model.Post{
 			AuthorID: authorID, PostType: model.PostTypeShare,
 			ShareType: &shareType, Status: model.PostStatusApproved,
-			Category: model.PostCategoryFood,
-			Title:    fmt.Sprintf("夹具帖子 %04d", sequence),
-			Content:  "夹具帖子正文",
+			CurrentRevision: 1,
+			Category:        model.PostCategoryFood,
+			Title:           fmt.Sprintf("夹具帖子 %04d", sequence),
+			Content:         "夹具帖子正文",
 		},
 	}
 	for _, override := range overrides {
@@ -332,6 +334,16 @@ func (f *Fixtures) CreatePost(authorID uint64, overrides ...PostOverride) PostFi
 			}
 			result.Images = append(result.Images, image)
 		}
+		snapshot, err := json.Marshal(fixturePostSnapshot(spec.Post, result, spec.Flavors))
+		if err != nil {
+			return err
+		}
+		if err := tx.Create(&model.PostHistory{
+			PostID: spec.Post.ID, Revision: 1, EditedBy: authorID,
+			EditedAt: spec.Post.CreatedAt, Snapshot: snapshot,
+		}).Error; err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -366,7 +378,7 @@ func WithCommentParent(parent model.Comment) CommentOverride {
 	}
 }
 
-// CommentFixture 是评论主体；新建内容没有编辑历史。
+// CommentFixture 是评论主体及 revision 1。
 type CommentFixture struct {
 	Comment model.Comment
 }
@@ -382,9 +394,10 @@ func (f *Fixtures) CreateComment(
 	spec := CommentSpec{
 		Comment: model.Comment{
 			PostID: post.ID, AuthorID: authorID,
-			ReplyToUserID: post.AuthorID,
-			Content:       fmt.Sprintf("夹具评论 %04d", sequence),
-			Moderation:    model.ModerationStatusPass,
+			ReplyToUserID:   post.AuthorID,
+			Content:         fmt.Sprintf("夹具评论 %04d", sequence),
+			CurrentRevision: 1,
+			Moderation:      model.ModerationStatusPass,
 		},
 	}
 	for _, override := range overrides {
@@ -395,6 +408,12 @@ func (f *Fixtures) CreateComment(
 		if err := tx.Create(&spec.Comment).Error; err != nil {
 			return err
 		}
+		if err := tx.Create(&model.CommentHistory{
+			CommentID: spec.Comment.ID, Revision: 1, EditedBy: authorID,
+			EditedAt: spec.Comment.CreatedAt, Content: spec.Comment.Content,
+		}).Error; err != nil {
+			return err
+		}
 		result.Comment = spec.Comment
 		return nil
 	})
@@ -402,6 +421,43 @@ func (f *Fixtures) CreateComment(
 		f.t.Fatalf("创建评论夹具失败: %v", err)
 	}
 	return result
+}
+
+func fixturePostSnapshot(
+	post model.Post,
+	fixture PostFixture,
+	postFlavors []PostFlavorFixture,
+) map[string]any {
+	var price any
+	if post.Price != nil {
+		price = post.Price.StringFixed(2)
+	}
+	tags := make([]string, 0, len(fixture.Tags))
+	for _, tag := range fixture.Tags {
+		tags = append(tags, tag.Name)
+	}
+	flavors := make([]map[string]any, 0, len(fixture.Flavors))
+	for index, flavor := range fixture.Flavors {
+		stance := model.FlavorStanceHas
+		if index < len(postFlavors) {
+			stance = postFlavors[index].Stance
+		}
+		flavors = append(flavors, map[string]any{
+			"name": flavor.Name, "stance": stance,
+		})
+	}
+	images := make([]string, 0, len(fixture.Images))
+	for _, image := range fixture.Images {
+		images = append(images, image.PublicURL)
+	}
+	return map[string]any{
+		"post_type": post.PostType, "share_type": post.ShareType,
+		"title": post.Title, "content": post.Content, "category": post.Category,
+		"canteen_id": post.CanteenID, "canteen_window_id": post.CanteenWindowID,
+		"cuisine_id": post.CuisineID, "price": price,
+		"budget_min": post.BudgetMin, "budget_max": post.BudgetMax,
+		"tags": tags, "flavors": flavors, "images": images,
+	}
 }
 
 // CompleteWorld 是一次性可用的用户、词表、帖子、图片和评论世界。

@@ -131,13 +131,14 @@ type CommentLikeResult struct {
 	LikeCount int32 `json:"like_count"`
 }
 
-// CommentHistoryView 是评论被替换的一版不可变正文。
+// CommentHistoryView 是评论的一版不可变正文。
 type CommentHistoryView struct {
 	ID         uint64                 `json:"id"`
 	Revision   int32                  `json:"revision"`
 	EditedBy   uint64                 `json:"edited_by"`
 	EditedAt   ptime.Time             `json:"edited_at"`
 	Content    string                 `json:"content"`
+	IsCurrent  bool                   `json:"is_current"`
 	Moderation *HistoryModerationView `json:"moderation"`
 }
 
@@ -242,7 +243,7 @@ func (s *CommentService) Replies(
 	return &CommentReplies{Replies: items, Pagination: meta}, nil
 }
 
-// Histories 允许作者与具备内容审核能力的管理员查看评论旧版本历史。
+// Histories 允许作者与具备内容审核能力的管理员查看评论全部不可变版本。
 func (s *CommentService) Histories(
 	ctx context.Context,
 	commentID uint64,
@@ -270,6 +271,7 @@ func (s *CommentService) Histories(
 		histories = append(histories, CommentHistoryView{
 			ID: row.ID, Revision: row.Revision, EditedBy: row.EditedBy,
 			EditedAt: ptime.Time(row.EditedAt), Content: row.Content,
+			IsCurrent:  row.Revision == comment.CurrentRevision,
 			Moderation: moderationByRevision[row.Revision],
 		})
 	}

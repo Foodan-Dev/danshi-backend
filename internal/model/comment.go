@@ -11,6 +11,7 @@ type Comment struct {
 	RootID                   *uint64
 	ReplyToUserID            uint64
 	Content                  string
+	CurrentRevision          int32 `gorm:"default:1"`
 	Moderation               ModerationStatus
 	LikeCount                int32 `gorm:"->"`
 	ReplyCount               int32 `gorm:"->"`
@@ -45,7 +46,7 @@ type CommentLike struct {
 // TableName 返回评论点赞表名。
 func (CommentLike) TableName() string { return "comment_likes" }
 
-// CommentHistory 是评论被编辑替换掉的一版正文快照。
+// CommentHistory 是评论的一版不可变正文快照，包括当前版本。
 type CommentHistory struct {
 	ID        uint64 `gorm:"primaryKey"`
 	CommentID uint64

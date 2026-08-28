@@ -123,5 +123,6 @@ func TestModerationContentRevisionMigrationBackfillsAndAllowsBlockReview(t *test
 		  AND table_row.relname = 'moderation_records'
 		  AND column_row.attname = 'content_revision'
 	`).Scan(&foreignKeys))
-	require.Zero(t, foreignKeys, "被审版本号不得添加历史表外键")
+	require.Equal(t, 2, foreignKeys,
+		"00017 把当前版本写入历史后，帖子与评论审核版本号都必须建立真实外键")
 }

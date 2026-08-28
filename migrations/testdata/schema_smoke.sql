@@ -74,18 +74,21 @@ UPDATE users SET avatar_image_asset_id=102 WHERE id=1;
 INSERT INTO canteen_windows (id,canteen_id,name) VALUES
  (201,(SELECT id FROM canteens WHERE code='canteen-nanqu'),'一楼麻辣烫'),
  (202,(SELECT id FROM canteens WHERE code='canteen-jiangwan'),'二楼盖浇饭');
-INSERT INTO posts (id,author_id,post_type,share_type,status,category,title,content,canteen_id,canteen_window_id,cuisine_id,price)
+BEGIN;
+INSERT INTO posts (id,author_id,post_type,share_type,status,category,title,content,canteen_id,canteen_window_id,cuisine_id,price,current_revision)
  VALUES (1001,1,'share','recommend','approved','food','测试','正文',
          (SELECT id FROM canteens WHERE code='canteen-nanqu'), 201,
-         (SELECT id FROM cuisines WHERE name='中式'), 18.50);
+         (SELECT id FROM cuisines WHERE name='中式'), 18.50,2);
 INSERT INTO post_images (post_id,position,image_asset_id) VALUES (1001,0,101);
 INSERT INTO tags (id,name) VALUES (301,'便宜'),(302,'Spicy');
 INSERT INTO post_tags (post_id,tag_id) VALUES (1001,301),(1001,302);
 INSERT INTO post_flavors (post_id,flavor_id,stance,post_type)
  SELECT 1001, id, 'has', 'share' FROM flavors WHERE name IN ('麻辣','香辣');
--- 历史表只保存编辑时被替换掉的旧版本；主表中的「测试」仍是当前版本。
 INSERT INTO post_histories (id,post_id,revision,edited_by,snapshot,edit_reason)
- VALUES (1,1001,1,1,'{"title":"测试（编辑前）","content":"旧正文","tags":["便宜"]}'::jsonb,'修正文案');
+ VALUES
+ (1,1001,1,1,'{"title":"测试（编辑前）","content":"旧正文","tags":["便宜"]}'::jsonb,'修正文案'),
+ (2,1001,2,1,'{"title":"测试","content":"正文","tags":["便宜","Spicy"]}'::jsonb,NULL);
+COMMIT;
 \echo 'OK'
 
 \echo ''
@@ -158,7 +161,10 @@ DO $$ BEGIN
 END $$;
 
 -- 草稿豁免：正例
+BEGIN;
 INSERT INTO posts (id,author_id,post_type,status,category,title,content) VALUES (1099,1,'share','draft','food','草稿','y');
+INSERT INTO post_histories (id,post_id,revision,edited_by,snapshot) VALUES (1099,1099,1,1,'{}');
+COMMIT;
 DO $$ BEGIN PERFORM _assert((SELECT count(*) FROM posts WHERE id=1099)=1, 'share 草稿可无 share_type'); END $$;
 -- 清理用例数据：日常路径是软删除，物理清除必须显式开运维逃生阀
 BEGIN; SET LOCAL danshi.allow_hard_delete='on'; DELETE FROM posts WHERE id=1099; COMMIT;
@@ -206,6 +212,8 @@ BEGIN
   -- 正例
   EXECUTE format($q$INSERT INTO posts (id,author_id,post_type,share_type,category,title,content,canteen_id) VALUES (1002,1,'share','recommend','food','只知餐厅','y',%s)$q$, nanqu);
   INSERT INTO posts (id,author_id,post_type,share_type,category,title,content) VALUES (1003,1,'share','recommend','food','都不知道','y');
+  INSERT INTO post_histories (id,post_id,revision,edited_by,snapshot) VALUES
+    (1002,1002,1,1,'{}'),(1003,1003,1,1,'{}');
   EXECUTE format($q$INSERT INTO canteen_windows (id,canteen_id,name) VALUES (203,%s,'一楼麻辣烫')$q$, jiangwan);
   PERFORM _assert((SELECT count(*) FROM posts WHERE id IN (1002,1003))=2, '餐厅/窗口均可留空');
   PERFORM _assert((SELECT count(*) FROM canteen_windows WHERE name='一楼麻辣烫')=2, '不同餐厅可有同名窗口');
@@ -215,10 +223,12 @@ DELETE FROM canteen_windows WHERE id IN (203,204,205);
 
 \echo ''
 \echo '########## 1d. comments：同帖 + 楼号一致，存真实链、展示拍扁 ##########'
+BEGIN;
 INSERT INTO posts (id,author_id,post_type,share_type,status,category,title,content) VALUES (1004,2,'share','recommend','approved','food','另一帖','y');
+INSERT INTO post_histories (id,post_id,revision,edited_by,snapshot) VALUES (1004,1004,1,2,'{}');
 -- 行为 1：点帖子的评论按钮 → 楼主评论
-INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
- VALUES (2001,1001,2,NULL,NULL,1,'楼主评论','pass');
+INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation,current_revision)
+ VALUES (2001,1001,2,NULL,NULL,1,'楼主评论','pass',2);
 -- 行为 2：点楼主评论的回复 → parent_id = root_id = 楼主评论
 INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
  VALUES (2002,1001,1,2001,2001,2,'回复楼主','pass');
@@ -227,6 +237,13 @@ INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,co
  VALUES (2003,1001,2,2002,2001,1,'回复楼内回复','pass');
 INSERT INTO comments (id,post_id,author_id,parent_id,root_id,reply_to_user_id,content,moderation)
  VALUES (2004,1001,1,2003,2001,2,'第四层，存储允许','pass');
+INSERT INTO comment_histories (id,comment_id,revision,edited_by,content) VALUES
+ (1,2001,1,2,'楼主评论（编辑前）'),
+ (2,2001,2,2,'楼主评论'),
+ (3,2002,1,1,'回复楼主'),
+ (4,2003,1,2,'回复楼内回复'),
+ (5,2004,1,1,'第四层，存储允许');
+COMMIT;
 DO $$ BEGIN
   PERFORM _assert((SELECT count(*) FROM comments WHERE root_id=2001)=3, '同一楼下 3 条回复（任意深度都拍扁到同一楼）');
   PERFORM _assert((SELECT effective_root_id FROM comments WHERE id=2001)=2001, '楼主评论 effective_root = 自身');
@@ -619,16 +636,19 @@ END $$;
 
 \echo ''
 \echo '########## 1d-5. 编辑历史快照 ##########'
-INSERT INTO comment_histories (id,comment_id,revision,edited_by,content) VALUES (1,2001,1,2,'楼主评论（编辑前）');
 DO $$ BEGIN
-  PERFORM _assert_rejects($q$INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (1001,2,1,'"not an object"'::jsonb)$q$,
+	PERFORM _assert_rejects($q$INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (1001,3,1,'"not an object"'::jsonb)$q$,
     ARRAY['23514'], '帖子快照必须是 JSON 对象');
-  PERFORM _assert_rejects($q$INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (1001,2,1,'[1,2]'::jsonb)$q$,
+	PERFORM _assert_rejects($q$INSERT INTO post_histories (post_id,revision,edited_by,snapshot) VALUES (1001,3,1,'[1,2]'::jsonb)$q$,
     ARRAY['23514'], '数组不算合法快照');
-  PERFORM _assert((SELECT snapshot->>'title' FROM post_histories WHERE post_id=1001)='测试（编辑前）',
-                  '帖子历史只保存被替换掉的旧版本');
-  PERFORM _assert((SELECT content FROM comment_histories WHERE comment_id=2001)='楼主评论（编辑前）',
-                  '评论历史只保存被替换掉的旧正文');
+  PERFORM _assert((SELECT snapshot->>'title' FROM post_histories WHERE post_id=1001 AND revision=1)='测试（编辑前）',
+				  '帖子历史保留旧版本');
+  PERFORM _assert((SELECT snapshot->>'title' FROM post_histories WHERE post_id=1001 AND revision=2)='测试',
+				  '帖子历史同时保存当前版本');
+  PERFORM _assert((SELECT content FROM comment_histories WHERE comment_id=2001 AND revision=1)='楼主评论（编辑前）',
+				  '评论历史保留旧正文');
+  PERFORM _assert((SELECT content FROM comment_histories WHERE comment_id=2001 AND revision=2)='楼主评论',
+				  '评论历史同时保存当前正文');
   PERFORM _assert((SELECT title FROM posts WHERE id=1001)='测试', '帖子主表保存当前版本');
   PERFORM _assert((SELECT content FROM comments WHERE id=2001)='楼主评论', '评论主表保存当前版本');
   PERFORM _assert(NOT EXISTS (
@@ -637,13 +657,13 @@ DO $$ BEGIN
        AND column_name IN ('post_history_id','comment_history_id')
   ), '审核流水不再包含内容历史锚定列');
   PERFORM _assert((SELECT content_revision FROM moderation_records WHERE id=601)=2,
-                  '帖子审核以整数版本号绑定被审内容，不依赖历史行外键');
+                  '帖子审核以整数版本号和复合外键绑定被审历史版本');
   PERFORM _assert((SELECT content_revision FROM moderation_records WHERE id=602)=1,
-                  '评论无历史时的当前版本号为 1');
-  PERFORM _assert(NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_schema='public' AND table_name IN ('posts','comments') AND column_name='revision'
-  ), '帖子与评论主表不引入 revision 计数器');
+                  '评论创建版本与审核都从 revision 1 开始');
+  PERFORM _assert((SELECT current_revision FROM posts WHERE id=1001)=2,
+				  '帖子主表指针指向当前历史版本');
+  PERFORM _assert((SELECT current_revision FROM comments WHERE id=2001)=2,
+				  '评论主表指针指向当前历史版本');
   PERFORM _assert_rejects($q$DELETE FROM users WHERE id=1$q$, ARRAY['23001'], '编辑过内容的用户仍受软删除防线保护');
   -- 计数列只读
   PERFORM _assert_rejects($q$UPDATE posts SET comment_count=99 WHERE id=1001$q$,

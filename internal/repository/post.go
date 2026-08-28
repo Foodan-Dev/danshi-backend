@@ -44,7 +44,7 @@ type PostRecord struct {
 	WindowName      *string    `gorm:"column:window_name"`
 	WindowFloor     *string    `gorm:"column:window_floor"`
 	CuisineName     *string    `gorm:"column:cuisine_name"`
-	Revision        int32      `gorm:"column:revision"`
+	MaxRevision     int32      `gorm:"column:max_revision"`
 }
 
 // PostModerationIssueRow 是作者可见的当前非 pass 审核部分。
@@ -108,7 +108,8 @@ func (PostRepository) FindModerationIssues(
 		WITH latest_text AS (
 			SELECT mr.*
 			FROM moderation_records AS mr
-			WHERE mr.post_id = ?
+			JOIN posts AS current_post ON current_post.id = mr.post_id
+			WHERE mr.post_id = ? AND mr.content_revision = current_post.current_revision
 			ORDER BY mr.created_at DESC, mr.id DESC
 			LIMIT 1
 		)
@@ -265,7 +266,7 @@ func (PostRepository) IncrementView(ctx context.Context, postID uint64) error {
 	return nil
 }
 
-// UpdateContent 写入一版帖子主体内容。调用方必须先锁主体，并在同事务追加历史。
+// UpdateContent 写入帖子主体副本。内容版本写路径必须同时维护 current_revision。
 func (PostRepository) UpdateContent(ctx context.Context, postID uint64, fields map[string]any) error {
 	result := db.FromContext(ctx).Model(&model.Post{}).Where("id = ?", postID).Updates(fields)
 	if result.Error != nil {
@@ -320,25 +321,34 @@ func (PostRepository) Restore(ctx context.Context, postID uint64) error {
 	return nil
 }
 
-// CurrentContentRevision 返回主表当前内容的版本号，即最大历史 revision + 1。
+// CurrentContentRevision 读取主表当前指针。
 func (PostRepository) CurrentContentRevision(ctx context.Context, postID uint64) (int32, error) {
+	var revision int32
+	result := db.FromContext(ctx).Model(&model.Post{}).Select("current_revision").
+		Where("id = ?", postID).Scan(&revision)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return 0, ErrNotFound
+	}
+	return revision, nil
+}
+
+// NextHistoryRevision 返回下一条新版本快照的连续 revision。调用方必须已锁定帖子主体。
+func (PostRepository) NextHistoryRevision(ctx context.Context, postID uint64) (int32, error) {
 	var revision int32
 	err := db.FromContext(ctx).Model(&model.PostHistory{}).
 		Select("COALESCE(max(revision), 0) + 1").Where("post_id = ?", postID).Scan(&revision).Error
 	return revision, err
 }
 
-// NextHistoryRevision 返回下一条旧版本快照的连续 revision。调用方必须已锁定帖子主体。
-func (r PostRepository) NextHistoryRevision(ctx context.Context, postID uint64) (int32, error) {
-	return r.CurrentContentRevision(ctx, postID)
-}
-
-// CreateHistory 追加一条被替换版本的完整快照。
+// CreateHistory 追加一条新版本的完整快照。
 func (PostRepository) CreateHistory(ctx context.Context, history *model.PostHistory) error {
 	return db.FromContext(ctx).Create(history).Error
 }
 
-// ListHistories 按版本倒序返回帖子被替换的旧版本。
+// ListHistories 按版本倒序返回帖子的全部版本。
 func (PostRepository) ListHistories(ctx context.Context, postID uint64) ([]model.PostHistory, error) {
 	histories := make([]model.PostHistory, 0)
 	err := db.FromContext(ctx).Where("post_id = ?", postID).
@@ -346,7 +356,7 @@ func (PostRepository) ListHistories(ctx context.Context, postID uint64) ([]model
 	return histories, err
 }
 
-// FindHistory 返回指定帖子的一版不可变旧快照。
+// FindHistory 返回指定帖子的一版不可变快照。
 func (PostRepository) FindHistory(
 	ctx context.Context,
 	postID uint64,
@@ -377,7 +387,7 @@ func (PostRepository) LatestPostModerationForRevision(
 	return &record, nil
 }
 
-// ListHistoryModeration 返回每个旧版本最新一次机器文本审核结论。
+// ListHistoryModeration 返回每个版本最新一次机器文本审核结论。
 func (PostRepository) ListHistoryModeration(
 	ctx context.Context,
 	postID uint64,
@@ -403,7 +413,7 @@ func addPostRecordJoins(query *gorm.DB) *gorm.DB {
 		Joins("LEFT JOIN canteens AS canteen ON canteen.id = p.canteen_id").
 		Joins("LEFT JOIN canteen_windows AS cw ON cw.id = p.canteen_window_id").
 		Joins("LEFT JOIN cuisines AS cuisine ON cuisine.id = p.cuisine_id").
-		Joins("LEFT JOIN LATERAL (SELECT max(revision) AS revision FROM post_histories WHERE post_id = p.id) AS history ON true")
+		Joins("LEFT JOIN LATERAL (SELECT max(revision) AS max_revision FROM post_histories WHERE post_id = p.id) AS history ON true")
 }
 
 func applyPostFilter(query *gorm.DB, filter PostFilter) *gorm.DB {
@@ -476,4 +486,4 @@ const postRecordColumns = `
 	cw.name AS window_name,
 	cw.floor AS window_floor,
 	cuisine.name AS cuisine_name,
-	COALESCE(history.revision, 0) AS revision`
+	COALESCE(history.max_revision, 0) AS max_revision`

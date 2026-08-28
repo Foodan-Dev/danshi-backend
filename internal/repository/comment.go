@@ -164,15 +164,18 @@ func visibleCommentQuery(ctx context.Context, currentUserID uint64) *gorm.DB {
 	)
 }
 
-// UpdateContent 写入评论主体的新正文。调用方必须先锁行并在同事务追加历史。
+// UpdateContent 写入评论主体的新正文副本和当前版本指针。
 func (CommentRepository) UpdateContent(
 	ctx context.Context,
 	commentID uint64,
 	content string,
+	currentRevision int32,
 	updatedAt time.Time,
 ) error {
 	result := db.FromContext(ctx).Model(&model.Comment{}).Where("id = ?", commentID).
-		Updates(map[string]any{"content": content, "updated_at": updatedAt})
+		Updates(map[string]any{
+			"content": content, "current_revision": currentRevision, "updated_at": updatedAt,
+		})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -232,25 +235,34 @@ func (CommentRepository) SoftDelete(
 	return nil
 }
 
-// CurrentContentRevision 返回主表当前正文的版本号，即最大历史 revision + 1。
+// CurrentContentRevision 读取主表当前指针。
 func (CommentRepository) CurrentContentRevision(ctx context.Context, commentID uint64) (int32, error) {
+	var revision int32
+	result := db.FromContext(ctx).Model(&model.Comment{}).Select("current_revision").
+		Where("id = ?", commentID).Scan(&revision)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return 0, ErrNotFound
+	}
+	return revision, nil
+}
+
+// NextHistoryRevision 返回下一条新版本正文的连续 revision。调用方必须已锁定评论主体。
+func (CommentRepository) NextHistoryRevision(ctx context.Context, commentID uint64) (int32, error) {
 	var revision int32
 	err := db.FromContext(ctx).Model(&model.CommentHistory{}).
 		Select("COALESCE(max(revision), 0) + 1").Where("comment_id = ?", commentID).Scan(&revision).Error
 	return revision, err
 }
 
-// NextHistoryRevision 返回下一条旧版本正文的连续 revision。调用方必须已锁定评论主体。
-func (r CommentRepository) NextHistoryRevision(ctx context.Context, commentID uint64) (int32, error) {
-	return r.CurrentContentRevision(ctx, commentID)
-}
-
-// CreateHistory 追加不可篡改的被替换评论正文。
+// CreateHistory 追加不可篡改的新版本评论正文。
 func (CommentRepository) CreateHistory(ctx context.Context, history *model.CommentHistory) error {
 	return db.FromContext(ctx).Create(history).Error
 }
 
-// ListHistories 按版本倒序返回评论被替换的旧正文。
+// ListHistories 按版本倒序返回评论的全部正文版本。
 func (CommentRepository) ListHistories(ctx context.Context, commentID uint64) ([]model.CommentHistory, error) {
 	histories := make([]model.CommentHistory, 0)
 	err := db.FromContext(ctx).Where("comment_id = ?", commentID).
@@ -258,7 +270,7 @@ func (CommentRepository) ListHistories(ctx context.Context, commentID uint64) ([
 	return histories, err
 }
 
-// ListHistoryModeration 返回每个旧版本最新一次机器文本审核结论。
+// ListHistoryModeration 返回每个版本最新一次机器文本审核结论。
 func (CommentRepository) ListHistoryModeration(
 	ctx context.Context,
 	commentID uint64,

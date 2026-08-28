@@ -65,8 +65,8 @@ func (PostRepository) LoadRelations(
 	return relations, nil
 }
 
-// LoadSnapshotRelations 加载旧版本快照所需的完整当前关联。
-// 与展示查询不同，这里包含已下架标签，因为关联仍然属于被替换的当前版本。
+// LoadSnapshotRelations 加载完整版本快照所需的当前关联。
+// 与展示查询不同，这里包含已下架标签，因为关联仍然属于当前版本真源的一部分。
 func (PostRepository) LoadSnapshotRelations(
 	ctx context.Context,
 	postID uint64,
