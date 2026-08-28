@@ -44,11 +44,8 @@ func (s *CommentService) Create(
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if post.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
-	}
-	if post.Status != model.PostStatusApproved {
-		return nil, apierr.Conflict(apierr.BizPostNotPublished, "帖子尚未发布")
+	if err := ensurePostWritable(post); err != nil {
+		return nil, err
 	}
 	parent, rootID, replyToUserID, err := s.resolveCommentParent(ctx, postID, post.AuthorID, input)
 	if err != nil {
@@ -155,6 +152,13 @@ func (s *CommentService) Delete(ctx context.Context, commentID, authorID uint64)
 	}
 	if comment.AuthorID != authorID {
 		return apierr.Forbidden(apierr.BizNotOwner, "只能删除自己的评论")
+	}
+	post, err := s.posts.FindByID(ctx, comment.PostID, repository.QueryOptions{IncludeDeleted: true})
+	if err != nil {
+		return repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+	}
+	if post.DeletedAt != nil {
+		return apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
 	now := time.Now().UTC()
 	if err := s.comments.SoftDelete(

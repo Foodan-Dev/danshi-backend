@@ -154,7 +154,7 @@ func (s *CommentService) List(
 	sortBy string,
 	request pagination.CursorRequest,
 ) (*CommentList, error) {
-	post, err := s.visiblePost(ctx, postID, currentUserID)
+	post, err := s.readablePost(ctx, postID, currentUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func (s *CommentService) Replies(
 	if root.RootID != nil {
 		return nil, apierr.InvalidField("comment_id", apierr.FieldConflict, "只能查询楼主评论的回复")
 	}
-	post, err := s.visiblePost(ctx, root.PostID, currentUserID)
+	post, err := s.readablePost(ctx, root.PostID, currentUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func (s *CommentService) Unlike(ctx context.Context, commentID, userID uint64) (
 	return &CommentLikeResult{IsLiked: false, LikeCount: count}, nil
 }
 
-func (s *CommentService) visiblePost(
+func (s *CommentService) readablePost(
 	ctx context.Context,
 	postID uint64,
 	currentUserID uint64,
@@ -326,11 +326,8 @@ func (s *CommentService) visiblePost(
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if post.DeletedAt != nil {
-		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
-	}
-	if post.Status != model.PostStatusApproved && post.AuthorID != currentUserID {
-		return nil, apierr.NotFound(apierr.BizPostNotPublished, "帖子")
+	if err := ensurePostReadable(&post.Post, currentUserID); err != nil {
+		return nil, err
 	}
 	return post, nil
 }
