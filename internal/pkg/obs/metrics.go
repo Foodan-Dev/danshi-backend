@@ -25,24 +25,31 @@ const (
 // Metrics 持有应用自己的 Prometheus registry。每次初始化都创建独立 registry，
 // 避免测试和同进程多实例因重复注册全局 collector 而 panic。
 type Metrics struct {
-	registry        *prometheus.Registry
-	requestTotal    *prometheus.CounterVec
-	requestDuration *prometheus.HistogramVec
-	responseSize    *prometheus.HistogramVec
-	moderation      moderationMetrics
-	verification    verificationMetrics
-	reviewQueue     *reviewQueueCollector
-	imageAccess     *imageAccessCollector
+	registry             *prometheus.Registry
+	requestTotal         *prometheus.CounterVec
+	requestDuration      *prometheus.HistogramVec
+	responseSize         *prometheus.HistogramVec
+	moderation           moderationMetrics
+	verification         verificationMetrics
+	reviewQueue          *reviewQueueCollector
+	imageAccess          *imageAccessCollector
+	imageModerationRetry *imageModerationRetryCollector
 }
 
 type metricsOptions struct {
-	reviewQueueCounter ReviewQueueCounter
-	imageAccessCounter ImageAccessStateCounter
+	reviewQueueCounter          ReviewQueueCounter
+	imageAccessCounter          ImageAccessStateCounter
+	imageModerationRetryCounter ImageModerationRetryStateCounter
 }
 
 // WithImageAccessStateCounter 注册固定状态的 durable image-access backlog 计数函数。
 func WithImageAccessStateCounter(counter ImageAccessStateCounter) MetricsOption {
 	return func(options *metricsOptions) { options.imageAccessCounter = counter }
+}
+
+// WithImageModerationRetryStateCounter 注册固定状态的图片补审队列计数函数。
+func WithImageModerationRetryStateCounter(counter ImageModerationRetryStateCounter) MetricsOption {
+	return func(options *metricsOptions) { options.imageModerationRetryCounter = counter }
 }
 
 // MetricsOption 配置可选的应用指标 collector。
@@ -110,6 +117,12 @@ func NewMetrics(pool *sql.DB, opts ...MetricsOption) (*Metrics, error) {
 		m.imageAccess = newImageAccessCollector(options.imageAccessCounter)
 		metricCollectors = append(metricCollectors, m.imageAccess)
 	}
+	if options.imageModerationRetryCounter != nil {
+		m.imageModerationRetry = newImageModerationRetryCollector(
+			options.imageModerationRetryCounter,
+		)
+		metricCollectors = append(metricCollectors, m.imageModerationRetry)
+	}
 	for _, collector := range metricCollectors {
 		if err := m.registry.Register(collector); err != nil {
 			return nil, fmt.Errorf("注册 Prometheus collector 失败: %w", err)
@@ -147,6 +160,9 @@ func (m *Metrics) handle(ctx context.Context, c *app.RequestContext) {
 	}
 	if m.imageAccess != nil {
 		m.imageAccess.Refresh(ctx)
+	}
+	if m.imageModerationRetry != nil {
+		m.imageModerationRetry.Refresh(ctx)
 	}
 	families, err := m.registry.Gather()
 	if err != nil {

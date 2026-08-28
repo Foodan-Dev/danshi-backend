@@ -164,6 +164,7 @@ make schema-test
 | `MODERATION_CALLBACK_AUTH_FAILURE_WINDOW_SECONDS` | `60` | 错误回调令牌聚合窗口，单位秒，必须为正数 |
 | `MODERATION_REVIEW_BACKLOG_THRESHOLD` | `100` | 帖子粒度待复核队列达到此条目数时告警，必须为正数 |
 | `MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS` | `3600` | 持续积压的重复告警冷却时间，单位秒，必须为正数 |
+| `IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS` | `30` | server 内图片补审 worker 扫描间隔；默认 30 秒，必须为正数 |
 
 ### 日志与遥测
 
@@ -202,6 +203,13 @@ worker 用 `FOR UPDATE SKIP LOCKED` 有界领取并始终设置 COS ACL；只有
 进程在写回 JobId 前崩溃时只做时间窗对账，不自动重放；重试预算耗尽进入可观测
 `dead_letter`。`/metrics` 每 15 秒最多用一条只读分组查询刷新六个固定状态的缓存计数，
 不把图片 ID、URL、对象键、JobId 或供应商错误正文写入 label。
+
+图片首次送审失败不会回滚已经验证完成的上传；服务在同一事务登记
+`image_moderation_retries`，图片保持 `moderation=pending`，因此引用它的帖子只能进入
+`pending` 而不能公开。server 启动的补审 goroutine 默认每 30 秒扫描一次，使用租约与
+`SKIP LOCKED` 支持多副本，总尝试预算为 8 次，退避从 30 秒指数增长并封顶 30 分钟。
+成功受理或审核回调到达后删除记录，预算耗尽保留 `dead_letter`；固定状态数量暴露为
+`danshi_image_moderation_retry_cached_items{state="pending|dead_letter"}`。空批次不写日志。
 
 ## API 文档
 

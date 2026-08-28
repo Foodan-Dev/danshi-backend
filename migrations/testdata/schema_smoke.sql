@@ -557,6 +557,30 @@ DO $$ BEGIN
     ARRAY['23514'], '无需刷新 CDN 的 delivery 不得进入提交状态');
 END $$;
 
+\echo ''
+\echo '########## 1d-4b. 图片送审失败补审队列 ##########'
+INSERT INTO image_moderation_retries
+  (image_asset_id,state,attempts,next_attempt_at,last_error_code)
+VALUES (101,'pending',1,now(),'submit_failed');
+DO $$ BEGIN
+  PERFORM _assert_rejects($q$UPDATE image_moderation_retries
+    SET attempts=0 WHERE image_asset_id=101$q$,
+    ARRAY['23514'], '补审尝试次数必须为正数');
+  PERFORM _assert_rejects($q$UPDATE image_moderation_retries
+    SET state='dead_letter' WHERE image_asset_id=101$q$,
+    ARRAY['23514'], '死信必须清空下次尝试并记录时间');
+END $$;
+UPDATE image_moderation_retries
+   SET state='dead_letter',next_attempt_at=NULL,dead_lettered_at=now(),
+       last_error_code='submit_exhausted'
+ WHERE image_asset_id=101;
+DO $$ BEGIN
+  PERFORM _assert((SELECT state='dead_letter' AND attempts=1
+                     FROM image_moderation_retries WHERE image_asset_id=101),
+                  '补审预算耗尽后保留可观测死信');
+END $$;
+DELETE FROM image_moderation_retries WHERE image_asset_id=101;
+
 -- 管理员误杀恢复不是人工复核，不 supersede 机审行，但必须能按实际操作人列检索。
 INSERT INTO moderation_records
   (id,post_id,scene,provider,verdict,labels,raw_response,reviewer_id,reviewed_at)
@@ -1110,6 +1134,7 @@ BEGIN
     'idx_posts_title_trgm','idx_posts_content_trgm','idx_users_name_trgm',
     'idx_ds_pending','idx_user_sessions_active','idx_user_sessions_expires',
     'idx_user_roles_role','idx_user_ban_records_user','idx_user_role_records_user',
+    'idx_image_moderation_retries_due',
     'uq_users_email_lower','uq_tags_name_lower','uq_user_sessions_digest',
     'uq_image_assets_object_key','uq_image_assets_public_url','uq_evc_email_purpose'
   ] LOOP
@@ -1212,7 +1237,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 30, '业务表共 30 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 31, '业务表共 31 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

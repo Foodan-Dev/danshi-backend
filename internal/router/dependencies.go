@@ -16,7 +16,10 @@ const (
 )
 
 func withDefaultDomainDeps(deps Deps) Deps {
-	provider := configuredTencentProvider(deps)
+	var provider *tencentcloud.Provider
+	if deps.ContentModerator == nil || deps.ImageStorage == nil || deps.ImageModerator == nil {
+		provider = configuredTencentProvider(deps)
+	}
 	if deps.ContentModerator == nil {
 		switch {
 		case provider != nil && deps.Config.TencentCIConfigured():

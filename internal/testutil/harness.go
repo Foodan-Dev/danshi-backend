@@ -100,6 +100,7 @@ func DefaultConfig() appconfig.Config {
 		ModerationCallbackAuthFailureWindowS:   60,
 		ModerationReviewBacklogThreshold:       100,
 		ModerationReviewBacklogCooldownS:       3600,
+		ImageModerationRetryScanIntervalS:      30,
 	}
 }
 

@@ -155,6 +155,7 @@ type UploadService struct {
 	presignTTL     time.Duration
 	presignGetTTL  time.Duration
 	assets         repository.UploadRepository
+	retries        repository.ImageModerationRetryRepository
 }
 
 // NewUploadService 创建上传服务。
@@ -254,14 +255,20 @@ func (s *UploadService) Complete(
 		ImageAssetID: asset.ID, ObjectKey: asset.ObjectKey,
 	})
 	if err != nil {
-		return nil, err
+		if enqueueErr := s.enqueueModerationRetry(ctx, asset.ID, "submit_failed"); enqueueErr != nil {
+			return nil, enqueueErr
+		}
+		return uploadCompletePendingResult(asset, publicURL), nil
 	}
 	if submission.Immediate != nil {
 		if _, err := s.moderation.ApplyImageResult(ctx, *submission.Immediate); err != nil {
 			return nil, err
 		}
 	} else if submission.ProviderJobID == nil || strings.TrimSpace(*submission.ProviderJobID) == "" {
-		return nil, apierr.Internal(errImmediateImageResultMissingJobID)
+		if enqueueErr := s.enqueueModerationRetry(ctx, asset.ID, "invalid_submission"); enqueueErr != nil {
+			return nil, enqueueErr
+		}
+		return uploadCompletePendingResult(asset, publicURL), nil
 	}
 	moderation := model.ModerationStatusPending
 	if submission.Immediate != nil {
@@ -275,6 +282,30 @@ func (s *UploadService) Complete(
 		result.PublicURL = ""
 	}
 	return result, nil
+}
+
+func (s *UploadService) enqueueModerationRetry(
+	ctx context.Context,
+	imageAssetID uint64,
+	errorCode string,
+) error {
+	now := time.Now().UTC()
+	if err := s.retries.Enqueue(
+		ctx, imageAssetID, initialImageModerationRetryAt(now), errorCode, now,
+	); err != nil {
+		return apierr.Internal(fmt.Errorf("登记图片补审失败: %w", err))
+	}
+	return nil
+}
+
+func uploadCompletePendingResult(
+	asset *model.ImageAsset,
+	publicURL string,
+) *UploadCompleteResult {
+	return &UploadCompleteResult{
+		UploadID: asset.ID, ObjectKey: asset.ObjectKey, PublicURL: publicURL,
+		Status: asset.Status, Moderation: model.ModerationStatusPending,
+	}
 }
 
 // ExpirePending 回收一批过期且没有引用的上传；持锁中的 complete/引用写入会被跳过。

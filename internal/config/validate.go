@@ -145,6 +145,9 @@ func validateModerationAlerting(c Config, add func(string, ...any)) {
 	if c.ModerationReviewBacklogCooldownS <= 0 {
 		add("MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS 必须为正数")
 	}
+	if c.ImageModerationRetryScanIntervalS <= 0 {
+		add("IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS 必须为正数")
+	}
 }
 
 func validateEdgeOne(c Config, add func(string, ...any)) {
