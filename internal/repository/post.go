@@ -201,15 +201,19 @@ func (PostRepository) FindLatestPage(
 	return records, hasMore, nil
 }
 
-// FindAuthorPage 返回指定作者的未删除帖子；status 为 nil 时不限制审核状态。
+// FindAuthorPage 返回指定作者的帖子；是否包含软删除行由调用者身份显式决定。
 func (PostRepository) FindAuthorPage(
 	ctx context.Context,
 	authorID uint64,
 	status *model.PostStatus,
+	includeDeleted bool,
 	params pagination.Params,
 ) ([]PostRecord, pagination.Meta, error) {
 	query := db.FromContext(ctx).Table("posts AS p").
-		Where("p.author_id = ? AND p.deleted_at IS NULL", authorID)
+		Where("p.author_id = ?", authorID)
+	if !includeDeleted {
+		query = query.Where("p.deleted_at IS NULL")
+	}
 	if status != nil {
 		query = query.Where("p.status = ?", *status)
 	}
@@ -279,12 +283,33 @@ func (PostRepository) UpdateStatus(ctx context.Context, postID uint64, status mo
 		Where("id = ?", postID).UpdateColumn("status", status).Error
 }
 
-// SoftDelete 标记作者删除；删除不改写内容更新时间。
-func (PostRepository) SoftDelete(ctx context.Context, postID, actorID uint64, now time.Time) error {
-	reason := model.DeleteReasonAuthor
+// SoftDelete 按明确来源软删除帖子；删除不改写内容更新时间。
+func (PostRepository) SoftDelete(
+	ctx context.Context,
+	postID uint64,
+	actorID uint64,
+	reason model.DeleteReason,
+	now time.Time,
+) error {
 	result := db.FromContext(ctx).Model(&model.Post{}).Where("id = ? AND deleted_at IS NULL", postID).
 		UpdateColumns(map[string]any{
 			"deleted_at": now, "deleted_reason": reason, "deleted_by": actorID,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Restore 清除任意来源的帖子软删除标记，内容与关联保持原样。
+func (PostRepository) Restore(ctx context.Context, postID uint64) error {
+	result := db.FromContext(ctx).Model(&model.Post{}).
+		Where("id = ? AND deleted_at IS NOT NULL", postID).
+		UpdateColumns(map[string]any{
+			"deleted_at": nil, "deleted_reason": nil, "deleted_by": nil,
 		})
 	if result.Error != nil {
 		return result.Error
@@ -319,6 +344,37 @@ func (PostRepository) ListHistories(ctx context.Context, postID uint64) ([]model
 	err := db.FromContext(ctx).Where("post_id = ?", postID).
 		Order("revision DESC").Find(&histories).Error
 	return histories, err
+}
+
+// FindHistory 返回指定帖子的一版不可变旧快照。
+func (PostRepository) FindHistory(
+	ctx context.Context,
+	postID uint64,
+	revision int32,
+) (*model.PostHistory, error) {
+	var history model.PostHistory
+	err := db.FromContext(ctx).Where("post_id = ? AND revision = ?", postID, revision).
+		First(&history).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &history, nil
+}
+
+// LatestPostModerationForRevision 返回指定内容版本当前生效的最新文本审核结论。
+func (PostRepository) LatestPostModerationForRevision(
+	ctx context.Context,
+	postID uint64,
+	revision int32,
+) (*model.ModerationRecord, error) {
+	var record model.ModerationRecord
+	err := db.FromContext(ctx).
+		Where("post_id = ? AND content_revision = ?", postID, revision).
+		Order("created_at DESC, id DESC").First(&record).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &record, nil
 }
 
 // ListHistoryModeration 返回每个旧版本最新一次机器文本审核结论。

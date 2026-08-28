@@ -11,7 +11,7 @@ import (
 func registerPost(api *route.RouterGroup, deps Deps) {
 	postService := service.NewPostServiceWithCursorSecret(
 		deps.ContentModerator, deps.Config.JWTSecretKey, deps.ModerationAlerter,
-	)
+	).WithImageAccessController(service.NewDurableImageAccessController())
 	postHandler := handler.NewPost(postService)
 	authService := service.NewAuthService(deps.Config, service.UnavailableVerificationEmailSender{})
 	requireAuth := middleware.RequireAuth(authService)
@@ -23,6 +23,7 @@ func registerPost(api *route.RouterGroup, deps Deps) {
 	posts.PUT("/:post_id", requireAuth, postHandler.Update)
 	posts.DELETE("/:post_id", requireAuth, postHandler.Delete)
 	posts.GET("/:post_id/history", requireAuth, postHandler.Histories)
+	posts.POST("/:post_id/history/:revision/restore", requireAuth, postHandler.RestoreHistory)
 	posts.POST("/:post_id/like", requireAuth, postHandler.Like)
 	posts.DELETE("/:post_id/like", requireAuth, postHandler.Unlike)
 	posts.POST("/:post_id/favorite", requireAuth, postHandler.Favorite)

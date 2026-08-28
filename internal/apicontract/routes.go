@@ -102,6 +102,7 @@ var routes = []Route{
 	{Method: http.MethodPut, Path: "/api/v2/posts/:post_id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodDelete, Path: "/api/v2/posts/:post_id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodGet, Path: "/api/v2/posts/:post_id/history", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
+	{Method: http.MethodPost, Path: "/api/v2/posts/:post_id/history/:revision/restore", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodPost, Path: "/api/v2/posts/:post_id/like", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodDelete, Path: "/api/v2/posts/:post_id/like", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodPost, Path: "/api/v2/posts/:post_id/favorite", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},

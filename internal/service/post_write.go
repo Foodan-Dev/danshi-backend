@@ -13,8 +13,11 @@ import (
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/money"
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
+
+const historyRestoreProvider model.ModerationProvider = "history_restore"
 
 type resolvedPostPayload struct {
 	normalizedPostPayload
@@ -116,19 +119,13 @@ func (s *PostService) Update(
 		initialStatus = model.PostStatusDraft
 	}
 	now := time.Now().UTC()
-	previousRevision, err := s.appendCurrentPostHistory(
-		ctx, post, authorID, resolved.EditReason, now,
+	contentRevision, err := s.replacePostContentVersion(
+		ctx, post, authorID, resolved.EditReason, resolved, initialStatus, now,
 	)
 	if err != nil {
-		return nil, historyWriteError(err)
+		return nil, err
 	}
-	if err := s.posts.UpdateContent(ctx, postID, contentFields(resolved, initialStatus, now)); err != nil {
-		return nil, postRepositoryError(err)
-	}
-	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
-		return nil, apierr.Internal(err)
-	}
-	status, err := s.finishModeration(ctx, postID, previousRevision+1, resolved)
+	status, err := s.finishModeration(ctx, postID, contentRevision, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +135,7 @@ func (s *PostService) Update(
 	return &PostCreateResult{ID: postID, PostType: post.PostType, Status: status}, nil
 }
 
-// Delete 软删除帖子，并在解除图片引用前锁定全部目标资产。
+// Delete 以作者来源软删除帖子，保留关联并处置失去全部未删除帖子引用的图片。
 func (s *PostService) Delete(ctx context.Context, postID, authorID uint64) error {
 	post, err := s.posts.LockByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
@@ -150,20 +147,117 @@ func (s *PostService) Delete(ctx context.Context, postID, authorID uint64) error
 	if post.AuthorID != authorID {
 		return apierr.Forbidden(apierr.BizNotOwner, "只能删除自己的帖子")
 	}
-	imageIDs, err := s.posts.PostImageIDs(ctx, postID)
+	return deletePostWithHistoryAndImages(
+		ctx, s.posts, s.moderation, post, authorID, model.DeleteReasonAuthor, time.Now().UTC(),
+	)
+}
+
+// RestoreHistory 把指定旧快照写成新的当前版本，并继承该版本已有的审核结论。
+func (s *PostService) RestoreHistory(
+	ctx context.Context,
+	postID uint64,
+	revision int32,
+	input RestorePostHistoryInput,
+	authorID uint64,
+) (*PostCreateResult, error) {
+	post, err := s.posts.LockByID(ctx, postID, repository.QueryOptions{IncludeDeleted: true})
 	if err != nil {
-		return apierr.Internal(err)
+		return nil, postRepositoryError(err)
 	}
-	if _, err := s.posts.LockImagesByIDs(ctx, imageIDs); err != nil {
-		return apierr.Internal(err)
+	if post.AuthorID != authorID {
+		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能恢复自己的帖子历史版本")
 	}
-	if err := s.posts.ReplaceImages(ctx, postID, nil); err != nil {
-		return apierr.Internal(err)
+	history, err := s.posts.FindHistory(ctx, postID, revision)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, apierr.NotFound(apierr.BizNotFound, "帖子历史版本")
+		}
+		return nil, apierr.Internal(err)
 	}
-	if err := s.posts.SoftDelete(ctx, postID, authorID, time.Now().UTC()); err != nil {
-		return postRepositoryError(err)
+	sourceModeration, err := s.posts.LatestPostModerationForRevision(ctx, postID, revision)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, apierr.Conflict(
+				apierr.BizContentNotRestorable, "该历史版本没有可继承的审核结论",
+			)
+		}
+		return nil, apierr.Internal(err)
 	}
-	return nil
+	updateInput, snapshot, err := s.updateInputFromSnapshot(ctx, history.Snapshot, input.EditReason)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeUpdatePost(updateInput, post)
+	if err != nil {
+		return nil, err
+	}
+	oldImageIDs, err := s.posts.PostImageIDs(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if post.DeletedAt != nil {
+		if err := s.restoreDeletedSnapshotImages(
+			ctx, postID, authorID, snapshot.Images, oldImageIDs,
+		); err != nil {
+			return nil, err
+		}
+	}
+	resolved, err := s.resolvePostPayload(ctx, normalized, authorID, oldImageIDs)
+	if err != nil {
+		return nil, err
+	}
+	status, err := aggregatePostModeration(sourceModeration.Verdict, resolved.ImageAssets)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	contentRevision, err := s.replacePostContentVersion(
+		ctx, post, authorID, resolved.EditReason, resolved, status, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	record, err := inheritedPostModerationRecord(
+		postID, contentRevision, revision, sourceModeration, now,
+	)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if err := s.posts.CreateModerationRecord(ctx, record); err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if post.DeletedAt != nil {
+		if err := s.posts.Restore(ctx, postID); err != nil {
+			return nil, postRepositoryError(err)
+		}
+	}
+	return &PostCreateResult{ID: postID, PostType: post.PostType, Status: status}, nil
+}
+
+// replacePostContentVersion 是普通编辑与历史回退共用的内容写入路径。
+// 调用方必须已经锁定帖子主体；本函数先保存被替换版本，再重建主体与全部关联。
+func (s *PostService) replacePostContentVersion(
+	ctx context.Context,
+	post *model.Post,
+	editorID uint64,
+	editReason *string,
+	resolved resolvedPostPayload,
+	status model.PostStatus,
+	now time.Time,
+) (int32, error) {
+	previousRevision, err := appendCurrentPostHistory(
+		ctx, s.posts, post, editorID, editReason, now,
+	)
+	if err != nil {
+		return 0, historyWriteError(err)
+	}
+	if err := s.posts.UpdateContent(ctx, post.ID, contentFields(resolved, status, now)); err != nil {
+		return 0, postRepositoryError(err)
+	}
+	if err := s.applyPostRelations(ctx, post.ID, &resolved); err != nil {
+		return 0, apierr.Internal(err)
+	}
+	return previousRevision + 1, nil
 }
 
 func (s *PostService) applyPostRelations(
@@ -190,14 +284,15 @@ func (s *PostService) applyPostRelations(
 	return nil
 }
 
-func (s *PostService) appendCurrentPostHistory(
+func appendCurrentPostHistory(
 	ctx context.Context,
+	posts repository.PostRepository,
 	post *model.Post,
 	editorID uint64,
 	editReason *string,
 	editedAt time.Time,
 ) (int32, error) {
-	relations, err := s.posts.LoadSnapshotRelations(ctx, post.ID)
+	relations, err := posts.LoadSnapshotRelations(ctx, post.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -205,7 +300,7 @@ func (s *PostService) appendCurrentPostHistory(
 	if err != nil {
 		return 0, err
 	}
-	revision, err := s.posts.NextHistoryRevision(ctx, post.ID)
+	revision, err := posts.NextHistoryRevision(ctx, post.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -213,10 +308,184 @@ func (s *PostService) appendCurrentPostHistory(
 		PostID: post.ID, Revision: revision, EditedBy: editorID, EditedAt: editedAt,
 		Snapshot: snapshot, EditReason: editReason,
 	}
-	if err := s.posts.CreateHistory(ctx, history); err != nil {
+	if err := posts.CreateHistory(ctx, history); err != nil {
 		return 0, err
 	}
 	return revision, nil
+}
+
+func deletePostWithHistoryAndImages(
+	ctx context.Context,
+	posts repository.PostRepository,
+	moderation *ModerationService,
+	post *model.Post,
+	actorID uint64,
+	reason model.DeleteReason,
+	now time.Time,
+) error {
+	imageIDs, err := posts.PostImageIDs(ctx, post.ID)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	assets, err := posts.LockImagesByIDs(ctx, imageIDs)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if _, err := appendCurrentPostHistory(ctx, posts, post, actorID, nil, now); err != nil {
+		return historyWriteError(err)
+	}
+	if err := posts.SoftDelete(ctx, post.ID, actorID, reason, now); err != nil {
+		return postRepositoryError(err)
+	}
+	imageIDsToBlock, err := posts.ImageIDsWithoutUndeletedPostReferences(ctx, imageIDs)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	assetsByID := make(map[uint64]*model.ImageAsset, len(assets))
+	for index := range assets {
+		assetsByID[assets[index].ID] = &assets[index]
+	}
+	for _, imageID := range imageIDsToBlock {
+		if assetsByID[imageID] != nil &&
+			assetsByID[imageID].Moderation == model.ModerationStatusBlock {
+			continue
+		}
+		if err := moderation.applyAdminPostDeleteImage(
+			ctx, post.ID, actorID, assetsByID[imageID], now,
+		); err != nil {
+			return apierr.Internal(err)
+		}
+	}
+	return nil
+}
+
+func (s *PostService) updateInputFromSnapshot(
+	ctx context.Context,
+	raw json.RawMessage,
+	editReason *string,
+) (UpdatePostInput, postSnapshot, error) {
+	var snapshot postSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return UpdatePostInput{}, snapshot, apierr.Internal(err)
+	}
+	payload := PostPayload{
+		Title: snapshot.Title, Content: snapshot.Content, Category: string(snapshot.Category),
+		CanteenWindowID: snapshot.CanteenWindowID, Tags: append([]string{}, snapshot.Tags...),
+		Images: append([]string{}, snapshot.Images...),
+	}
+	if snapshot.ShareType != nil {
+		value := string(*snapshot.ShareType)
+		payload.ShareType = &value
+	}
+	if snapshot.CanteenID != nil {
+		canteen, err := s.posts.FindActiveCanteenByID(ctx, *snapshot.CanteenID)
+		if err != nil {
+			return UpdatePostInput{}, snapshot, dictionaryError(err, "餐厅")
+		}
+		payload.CanteenCode = &canteen.Code
+	}
+	if snapshot.CuisineID != nil {
+		cuisine, err := s.posts.FindActiveCuisineByID(ctx, *snapshot.CuisineID)
+		if err != nil {
+			return UpdatePostInput{}, snapshot, dictionaryError(err, "菜系")
+		}
+		payload.Cuisine = &cuisine.Name
+	}
+	if snapshot.Price != nil {
+		price, err := money.Parse(*snapshot.Price)
+		if err != nil {
+			return UpdatePostInput{}, snapshot, apierr.Internal(err)
+		}
+		payload.Price = &price
+	}
+	if snapshot.BudgetMin != nil && snapshot.BudgetMax != nil {
+		payload.BudgetRange = &BudgetRangeInput{Min: *snapshot.BudgetMin, Max: *snapshot.BudgetMax}
+	}
+	if snapshot.PostType == model.PostTypeShare {
+		for _, flavor := range snapshot.Flavors {
+			payload.Flavors = append(payload.Flavors, flavor.Name)
+		}
+	} else {
+		preferences := &PreferencesInput{}
+		for _, flavor := range snapshot.Flavors {
+			switch flavor.Stance {
+			case model.FlavorStancePrefer:
+				preferences.PreferFlavors = append(preferences.PreferFlavors, flavor.Name)
+			case model.FlavorStanceAvoid:
+				preferences.AvoidFlavors = append(preferences.AvoidFlavors, flavor.Name)
+			}
+		}
+		if len(preferences.PreferFlavors) > 0 || len(preferences.AvoidFlavors) > 0 {
+			payload.Preferences = preferences
+		}
+	}
+	postType := string(snapshot.PostType)
+	publishStatus := string(model.PostStatusPending)
+	return UpdatePostInput{
+		PostPayload: payload, PostType: &postType, Status: &publishStatus, EditReason: editReason,
+	}, snapshot, nil
+}
+
+func (s *PostService) restoreDeletedSnapshotImages(
+	ctx context.Context,
+	postID uint64,
+	actorID uint64,
+	urls []string,
+	oldImageIDs []uint64,
+) error {
+	assets, err := s.posts.FindImagesByURLs(ctx, urls)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	targetIDs := make(map[uint64]struct{}, len(assets))
+	allIDs := append([]uint64{}, oldImageIDs...)
+	for index := range assets {
+		targetIDs[assets[index].ID] = struct{}{}
+		allIDs = append(allIDs, assets[index].ID)
+	}
+	locked, err := s.posts.LockImagesByIDs(ctx, allIDs)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	targets := make([]model.ImageAsset, 0, len(targetIDs))
+	for index := range locked {
+		if _, exists := targetIDs[locked[index].ID]; exists {
+			targets = append(targets, locked[index])
+		}
+	}
+	if err := restoreAdminPostDeleteImages(
+		ctx, s.posts, s.moderation, postID, actorID, targets, time.Now().UTC(),
+	); err != nil {
+		return apierr.Internal(err)
+	}
+	return nil
+}
+
+func inheritedPostModerationRecord(
+	postID uint64,
+	contentRevision int32,
+	sourceRevision int32,
+	source *model.ModerationRecord,
+	now time.Time,
+) (*model.ModerationRecord, error) {
+	raw, err := json.Marshal(struct {
+		Action                   string `json:"action"`
+		SourceRevision           int32  `json:"source_revision"`
+		SourceModerationRecordID uint64 `json:"source_moderation_record_id"`
+	}{
+		Action: "restore_history", SourceRevision: sourceRevision,
+		SourceModerationRecordID: source.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	labels := append(pq.StringArray{}, source.Labels...)
+	return &model.ModerationRecord{
+		PostID: &postID, ContentRevision: &contentRevision,
+		Scene: model.ModerationSceneText, Provider: historyRestoreProvider,
+		Verdict: source.Verdict, Labels: labels, Score: source.Score,
+		RawResponse: raw, CreatedAt: now,
+	}, nil
 }
 
 func (s *PostService) finishModeration(
@@ -393,6 +662,9 @@ func validateAndOrderImages(
 		asset, exists := byURL[url]
 		if !exists || model.IsPurgedImageURL(asset.PublicURL) {
 			return nil, nil, apierr.NotFound(apierr.BizImageNotFound, "图片")
+		}
+		if asset.Status != model.ImageStatusPending && asset.Status != model.ImageStatusReady {
+			return nil, nil, apierr.Conflict(apierr.BizImageNotApproved, "图片当前不可引用")
 		}
 		if asset.UploaderID == nil || *asset.UploaderID != authorID {
 			return nil, nil, apierr.Forbidden(apierr.BizImageNotOwned, "只能引用自己上传的图片")

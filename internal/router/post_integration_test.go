@@ -93,6 +93,10 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostEditVersion(t, engine, gdb, author, fixture)
 	})
 
+	t.Run("history restore inherits moderation and authorization", func(t *testing.T) {
+		testPostHistoryRestore(t, engine, gdb, moderation, author, other, fixture)
+	})
+
 	t.Run("tag canonical case remains editable", func(t *testing.T) {
 		testTagCanonicalCaseRemainsEditable(t, engine, author, fixture)
 	})
@@ -133,8 +137,8 @@ func TestPostDomainAgainstPostgres(t *testing.T) {
 		testPostImageModeration(t, h, author, fixture)
 	})
 
-	t.Run("soft delete retires unreferenced image", func(t *testing.T) {
-		testPostSoftDelete(t, engine, gdb, author, fixture)
+	t.Run("soft delete writes history protects image and stays author visible", func(t *testing.T) {
+		testPostSoftDelete(t, engine, gdb, author, other, fixture)
 	})
 
 	t.Run("concurrent image delete and reference preserves invariant", func(t *testing.T) {
@@ -157,6 +161,7 @@ func testPostRouteInventory(t *testing.T, engine *server.Hertz) {
 		"PUT /api/v2/posts/:post_id",
 		"DELETE /api/v2/posts/:post_id",
 		"GET /api/v2/posts/:post_id/history",
+		"POST /api/v2/posts/:post_id/history/:revision/restore",
 		"POST /api/v2/posts/:post_id/like",
 		"DELETE /api/v2/posts/:post_id/like",
 		"POST /api/v2/posts/:post_id/favorite",
@@ -579,6 +584,102 @@ func testTagCanonicalCaseRemainsEditable(
 	payload = sharePostPayload(fixture, "再改一次", []string{"Ramen"})
 	status, response, _ = performJSON(t, engine, http.MethodPut, postPath(post.ID), payload, author.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+}
+
+func testPostHistoryRestore(
+	t *testing.T,
+	engine *server.Hertz,
+	gdb *gorm.DB,
+	moderation *testutil.MockModeration,
+	author service.AuthResult,
+	other service.AuthResult,
+	fixture postFixture,
+) {
+	t.Helper()
+	post := createPost(t, engine, author.Token,
+		sharePostPayload(fixture, "回退通过第一版", []string{"回退通过"}))
+
+	blockedPayload := sharePostPayload(fixture, "编辑后违规标题", []string{"回退未通过"})
+	status, response, _ := performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), blockedPayload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	var blocked service.PostCreateResult
+	decodeData(t, response, &blocked)
+	require.Equal(t, model.PostStatusRejected, blocked.Status)
+
+	passedPayload := sharePostPayload(fixture, "回退前第三版", []string{"回退第三版"})
+	status, response, _ = performJSON(
+		t, engine, http.MethodPut, postPath(post.ID), passedPayload, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+
+	beforeRestoreCalls := len(moderation.ContentCalls())
+	restorePath := fmt.Sprintf("%s/history/1/restore", postPath(post.ID))
+	status, response, _ = performJSON(t, engine, http.MethodPost, restorePath,
+		map[string]any{"edit_reason": "恢复已通过版本"}, other.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("%s/history/99999/restore", postPath(post.ID)), map[string]any{}, author.Token)
+	require.Equal(t, http.StatusNotFound, status)
+
+	status, response, _ = performJSON(
+		t, engine, http.MethodPost, restorePath,
+		map[string]any{"edit_reason": "恢复已通过版本"}, author.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var passed service.PostCreateResult
+	decodeData(t, response, &passed)
+	require.Equal(t, model.PostStatusApproved, passed.Status)
+	require.Equal(t, beforeRestoreCalls, len(moderation.ContentCalls()), "历史回退不得重新送审")
+	assertInheritedPostModeration(t, gdb, post.ID, 4, 1, model.ModerationVerdictPass)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("%s/history/2/restore", postPath(post.ID)), map[string]any{}, author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	var failed service.PostCreateResult
+	decodeData(t, response, &failed)
+	require.Equal(t, model.PostStatusRejected, failed.Status)
+	require.Equal(t, beforeRestoreCalls, len(moderation.ContentCalls()), "未通过版本回退也不得重新送审")
+	assertInheritedPostModeration(t, gdb, post.ID, 5, 2, model.ModerationVerdictBlock)
+
+	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
+	status, response, _ = performJSON(t, engine, http.MethodPost, restorePath, map[string]any{}, author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	decodeData(t, response, &passed)
+	require.Equal(t, model.PostStatusApproved, passed.Status)
+	var restored model.Post
+	require.NoError(t, gdb.First(&restored, post.ID).Error)
+	require.Nil(t, restored.DeletedAt, "已删除帖子应仅通过历史回退重新成为当前内容")
+}
+
+func assertInheritedPostModeration(
+	t *testing.T,
+	gdb *gorm.DB,
+	postID uint64,
+	contentRevision int32,
+	sourceRevision int32,
+	verdict model.ModerationVerdict,
+) {
+	t.Helper()
+	var record model.ModerationRecord
+	require.NoError(t, gdb.Where(
+		"post_id = ? AND content_revision = ? AND provider = ?",
+		postID, contentRevision, "history_restore",
+	).First(&record).Error)
+	require.Equal(t, verdict, record.Verdict)
+	var raw struct {
+		Action         string `json:"action"`
+		SourceRevision int32  `json:"source_revision"`
+		SourceRecordID uint64 `json:"source_moderation_record_id"`
+	}
+	require.NoError(t, json.Unmarshal(record.RawResponse, &raw))
+	require.Equal(t, "restore_history", raw.Action)
+	require.Equal(t, sourceRevision, raw.SourceRevision)
+	require.NotZero(t, raw.SourceRecordID)
 }
 
 func testPostEditEdges(
@@ -1244,6 +1345,7 @@ func testPostSoftDelete(
 	engine *server.Hertz,
 	gdb *gorm.DB,
 	author service.AuthResult,
+	other service.AuthResult,
 	fixture postFixture,
 ) {
 	t.Helper()
@@ -1251,10 +1353,14 @@ func testPostSoftDelete(
 	payload := sharePostPayload(fixture, "软删除帖子", []string{"删除"})
 	payload["images"] = []string{asset.PublicURL}
 	post := createPost(t, engine, author.Token, payload)
+	status, response, _ := performJSON(
+		t, engine, http.MethodPost, postPath(post.ID)+"/favorite", nil, other.Token,
+	)
+	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	require.NoError(t, gdb.First(&asset, asset.ID).Error)
 	require.Equal(t, model.ImageStatusReady, asset.Status)
 
-	status, response, _ := performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, "")
+	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, "")
 	require.Equal(t, http.StatusUnauthorized, status)
 	require.Equal(t, apierr.BizUnauthorized, response.ErrorCode)
 
@@ -1265,9 +1371,26 @@ func testPostSoftDelete(
 	require.NotNil(t, stored.DeletedAt)
 	require.Equal(t, model.DeleteReasonAuthor, *stored.DeletedReason)
 	require.NoError(t, gdb.First(&asset, asset.ID).Error)
-	require.Equal(t, model.ImageStatusRetired, asset.Status)
+	require.Equal(t, model.ImageStatusReady, asset.Status, "保留图片关联时资产不得退役")
+	require.Equal(t, model.ModerationStatusBlock, asset.Moderation)
+	var imageRelationCount int64
+	require.NoError(t, gdb.Model(&model.PostImage{}).
+		Where("post_id = ? AND image_asset_id = ?", post.ID, asset.ID).
+		Count(&imageRelationCount).Error)
+	require.EqualValues(t, 1, imageRelationCount, "软删除必须保留图片关联")
+	var histories []model.PostHistory
+	require.NoError(t, gdb.Where("post_id = ?", post.ID).Order("revision").Find(&histories).Error)
+	require.Len(t, histories, 1)
+	require.EqualValues(t, 1, histories[0].Revision)
+	require.Contains(t, string(histories[0].Snapshot), "软删除帖子")
+	assertAdminPostDeleteImageAccess(t, gdb, asset.ID, post.ID, author.User.ID)
 
 	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status, "作者本人必须能查看已删除帖子")
+	var deletedDetail service.PostDetail
+	decodeData(t, response, &deletedDetail)
+	require.True(t, deletedDetail.IsDeleted)
+	status, response, _ = performJSON(t, engine, http.MethodGet, postPath(post.ID), nil, other.Token)
 	require.Equal(t, http.StatusNotFound, status)
 	require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 	status, response, _ = performJSON(t, engine, http.MethodDelete, postPath(post.ID), nil, author.Token)
@@ -1293,6 +1416,30 @@ func testPostSoftDelete(
 		require.NotEqual(t, post.ID, item.ID)
 	}
 
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/users/%d/posts?limit=100", author.User.ID), nil, author.Token)
+	require.Equal(t, http.StatusOK, status)
+	var ownPosts service.PostList
+	decodeData(t, response, &ownPosts)
+	require.Contains(t, postListIDs(ownPosts.Posts), post.ID)
+	for _, item := range ownPosts.Posts {
+		if item.ID == post.ID {
+			require.True(t, item.IsDeleted)
+		}
+	}
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/users/%d/posts?limit=100", author.User.ID), nil, other.Token)
+	require.Equal(t, http.StatusOK, status)
+	var otherView service.PostList
+	decodeData(t, response, &otherView)
+	require.NotContains(t, postListIDs(otherView.Posts), post.ID, "他人主页不得泄漏已删除帖子")
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		fmt.Sprintf("/api/v2/users/%d/favorites?limit=100", other.User.ID), nil, other.Token)
+	require.Equal(t, http.StatusOK, status)
+	var favorites service.PostList
+	decodeData(t, response, &favorites)
+	require.NotContains(t, postListIDs(favorites.Posts), post.ID, "收藏列表不得泄漏已删除帖子")
+
 	for _, suffix := range []string{"/like", "/favorite"} {
 		status, response, _ = performJSON(
 			t, engine, http.MethodPost, postPath(post.ID)+suffix, nil, author.Token,
@@ -1300,6 +1447,11 @@ func testPostSoftDelete(
 		require.Equal(t, http.StatusNotFound, status)
 		require.Equal(t, apierr.BizPostDeleted, response.ErrorCode)
 	}
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		fmt.Sprintf("%s/history/1/restore", postPath(post.ID)), map[string]any{}, author.Token)
+	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
+	assertAdminPostRestoreImageAccess(t, gdb, asset.ID, author.User.ID)
 }
 
 func testConcurrentImageReferences(
@@ -1340,20 +1492,30 @@ func testConcurrentImageReferences(
 	}()
 	wait.Wait()
 	close(errorsCh)
+	failedCreate := false
 	for err := range errorsCh {
-		require.NoError(t, err)
+		if err != nil {
+			failedCreate = true
+			require.Contains(t, err.Error(), "未通过审核")
+		}
 	}
-	newPostID := <-createdCh
 
 	var referenceCount int64
 	require.NoError(t, gdb.Model(&model.PostImage{}).
 		Where("image_asset_id = ?", asset.ID).Count(&referenceCount).Error)
-	require.EqualValues(t, 1, referenceCount)
-	var relation model.PostImage
-	require.NoError(t, gdb.Where("image_asset_id = ?", asset.ID).First(&relation).Error)
-	require.Equal(t, newPostID, relation.PostID)
 	require.NoError(t, gdb.First(&asset, asset.ID).Error)
-	require.Equal(t, model.ImageStatusReady, asset.Status, "存在引用时资产必须为 ready")
+	if failedCreate {
+		require.EqualValues(t, 1, referenceCount, "删除帖自身的图片关联必须保留")
+		require.Equal(t, model.ModerationStatusBlock, asset.Moderation)
+		return
+	}
+	newPostID := <-createdCh
+	require.EqualValues(t, 2, referenceCount, "删除帖与并发新帖都保留各自图片关联")
+	var relation model.PostImage
+	require.NoError(t, gdb.Where("post_id = ? AND image_asset_id = ?", newPostID, asset.ID).
+		First(&relation).Error)
+	require.Equal(t, model.ImageStatusReady, asset.Status, "存在未删除引用时资产必须为 ready")
+	require.Equal(t, model.ModerationStatusPass, asset.Moderation)
 }
 
 func loadPostFixture(t *testing.T, gdb *gorm.DB) postFixture {

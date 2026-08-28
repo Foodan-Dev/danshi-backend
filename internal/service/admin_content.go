@@ -12,7 +12,7 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
-// DeletePost 以管理员来源软删除帖子，并收紧已无其他未软删帖子引用的附图访问状态。
+// DeletePost 按最低身份判定删除来源；作者删除自己的帖子始终记 author。
 func (s *AdminService) DeletePost(
 	ctx context.Context,
 	postID uint64,
@@ -25,32 +25,15 @@ func (s *AdminService) DeletePost(
 	if post.DeletedAt != nil {
 		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
-	imageIDs, err := s.posts.PostImageIDs(ctx, postID)
-	if err != nil {
-		return nil, apierr.Internal(err)
-	}
-	assets, err := s.posts.LockImagesByIDs(ctx, imageIDs)
-	if err != nil {
-		return nil, apierr.Internal(err)
+	reason := model.DeleteReasonAdmin
+	if post.AuthorID == actorID {
+		reason = model.DeleteReasonAuthor
 	}
 	now := time.Now().UTC()
-	if err := s.admin.SoftDeletePost(ctx, postID, actorID, now); err != nil {
-		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
-	}
-	imageIDsToBlock, err := s.posts.ImageIDsWithoutUndeletedPostReferences(ctx, imageIDs)
-	if err != nil {
-		return nil, apierr.Internal(err)
-	}
-	assetsByID := make(map[uint64]*model.ImageAsset, len(assets))
-	for index := range assets {
-		assetsByID[assets[index].ID] = &assets[index]
-	}
-	for _, imageID := range imageIDsToBlock {
-		if err := s.moderation.applyAdminPostDeleteImage(
-			ctx, postID, actorID, assetsByID[imageID], now,
-		); err != nil {
-			return nil, apierr.Internal(err)
-		}
+	if err := deletePostWithHistoryAndImages(
+		ctx, s.posts, s.moderation, post, actorID, reason, now,
+	); err != nil {
+		return nil, err
 	}
 	return &AdminPostDeleteResult{PostID: postID}, nil
 }
@@ -76,7 +59,7 @@ func (s *AdminService) DeleteComment(
 	return &AdminCommentDeleteResult{CommentID: commentID}, nil
 }
 
-// RestorePost 只恢复机审软删除，并拒绝恢复出已发布但图片未通过的帖子。
+// RestorePost 恢复三种来源的软删除，并先逆转确由下架产生的图片封禁。
 func (s *AdminService) RestorePost(
 	ctx context.Context,
 	postID uint64,
@@ -86,8 +69,26 @@ func (s *AdminService) RestorePost(
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if !isModerationDeletion(post.DeletedAt, post.DeletedReason) {
-		return nil, apierr.Conflict(apierr.BizContentNotRestorable, "只有机审软删除的帖子可以恢复")
+	if !isRestorablePostDeletion(post.DeletedAt, post.DeletedReason) {
+		return nil, apierr.Conflict(apierr.BizContentNotRestorable, "帖子当前不处于可恢复的软删除状态")
+	}
+	if post.AuthorID == actorID {
+		return nil, apierr.Conflict(
+			apierr.BizContentNotRestorable, "作者请通过历史版本回退恢复自己的帖子",
+		)
+	}
+	imageIDs, err := s.posts.PostImageIDs(ctx, postID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	assets, err := s.posts.LockImagesByIDs(ctx, imageIDs)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	if err := restoreAdminPostDeleteImages(
+		ctx, s.posts, s.moderation, postID, actorID, assets, time.Now().UTC(),
+	); err != nil {
+		return nil, apierr.Internal(err)
 	}
 	if post.Status == model.PostStatusApproved {
 		approved, checkErr := s.lockApprovedPostImages(ctx, postID)
@@ -109,7 +110,7 @@ func (s *AdminService) RestorePost(
 	if err := s.admin.CreateRestorationRecord(ctx, record); err != nil {
 		return nil, apierr.Internal(err)
 	}
-	if err := s.admin.RestorePost(ctx, postID); err != nil {
+	if err := s.posts.Restore(ctx, postID); err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
 	return &AdminPostRestoreResult{PostID: postID, ModerationRecordID: record.ID}, nil
@@ -168,6 +169,52 @@ func isModerationDeletion(deletedAt *time.Time, reason *model.DeleteReason) bool
 	return deletedAt != nil && reason != nil && *reason == model.DeleteReasonModeration
 }
 
+func isRestorablePostDeletion(deletedAt *time.Time, reason *model.DeleteReason) bool {
+	if deletedAt == nil || reason == nil {
+		return false
+	}
+	return *reason == model.DeleteReasonAuthor || *reason == model.DeleteReasonAdmin ||
+		*reason == model.DeleteReasonModeration
+}
+
+func restoreAdminPostDeleteImages(
+	ctx context.Context,
+	posts repository.PostRepository,
+	moderation *ModerationService,
+	postID uint64,
+	actorID uint64,
+	assets []model.ImageAsset,
+	now time.Time,
+) error {
+	blockedIDs := make([]uint64, 0, len(assets))
+	for index := range assets {
+		if assets[index].Moderation == model.ModerationStatusBlock {
+			blockedIDs = append(blockedIDs, assets[index].ID)
+		}
+	}
+	latest, err := posts.LatestImageModerationByAssetIDs(ctx, blockedIDs)
+	if err != nil {
+		return err
+	}
+	for index := range assets {
+		asset := &assets[index]
+		if asset.Moderation != model.ModerationStatusBlock {
+			continue
+		}
+		record, exists := latest[asset.ID]
+		if !exists || record.Provider != adminPostDeleteProvider {
+			continue
+		}
+		if err := moderation.applyAdminPostRestoreImage(
+			ctx, postID, actorID, asset, record.ID, now,
+		); err != nil {
+			return err
+		}
+		asset.Moderation = model.ModerationStatusPass
+	}
+	return nil
+}
+
 func (s *ModerationService) applyAdminPostDeleteImage(
 	ctx context.Context,
 	postID uint64,
@@ -200,6 +247,42 @@ func (s *ModerationService) applyAdminPostDeleteImage(
 		return err
 	}
 	return s.applyImageAccess(ctx, asset, record.ID, model.ModerationVerdictBlock)
+}
+
+func (s *ModerationService) applyAdminPostRestoreImage(
+	ctx context.Context,
+	postID uint64,
+	actorID uint64,
+	asset *model.ImageAsset,
+	sourceRecordID uint64,
+	now time.Time,
+) error {
+	if asset == nil {
+		return nil
+	}
+	raw, err := json.Marshal(struct {
+		Action         string `json:"action"`
+		PostID         uint64 `json:"post_id"`
+		SourceRecordID uint64 `json:"source_record_id"`
+	}{Action: "restore_post_image", PostID: postID, SourceRecordID: sourceRecordID})
+	if err != nil {
+		return err
+	}
+	record := model.ModerationRecord{
+		ImageAssetID: &asset.ID, Scene: model.ModerationSceneImage,
+		Provider: adminRestoreProvider, Verdict: model.ModerationVerdictPass,
+		Labels: pq.StringArray{}, RawResponse: raw,
+		ReviewerID: &actorID, ReviewedAt: &now, CreatedAt: now,
+	}
+	if err := s.moderation.CreateAdministrativeRecord(ctx, &record); err != nil {
+		return err
+	}
+	if err := s.moderation.UpdateImageModeration(
+		ctx, asset.ID, model.ModerationStatusPass,
+	); err != nil {
+		return err
+	}
+	return s.applyImageAccess(ctx, asset, record.ID, model.ModerationVerdictPass)
 }
 
 func restorationRecord(

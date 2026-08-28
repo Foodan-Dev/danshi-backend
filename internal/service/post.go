@@ -59,6 +59,11 @@ type UpdatePostInput struct {
 	EditReason *string
 }
 
+// RestorePostHistoryInput 是按旧版本回退时唯一允许由客户端补充的元数据。
+type RestorePostHistoryInput struct {
+	EditReason *string
+}
+
 // ListPostsInput 是公开信息流筛选条件。
 type ListPostsInput struct {
 	PostType    string
@@ -154,6 +159,7 @@ type PostListItem struct {
 	IsLiked       bool               `json:"is_liked"`
 	IsFavorited   bool               `json:"is_favorited"`
 	IsEdited      bool               `json:"is_edited"`
+	IsDeleted     bool               `json:"is_deleted"`
 	Status        model.PostStatus   `json:"status"`
 	CreatedAt     ptime.Time         `json:"created_at"`
 	UpdatedAt     ptime.Time         `json:"updated_at"`
@@ -218,6 +224,7 @@ type PostHistoryList struct {
 type PostService struct {
 	moderator     ContentModerator
 	alerter       ModerationAlerter
+	moderation    *ModerationService
 	posts         repository.PostRepository
 	notifications repository.NotificationRepository
 	cursor        *pagination.CursorCodec
@@ -254,8 +261,19 @@ func newPostService(
 		alerter = alerters[0]
 	}
 	return &PostService{
-		moderator: moderator, alerter: alerter, cursor: cursor,
+		moderator: moderator, alerter: alerter,
+		moderation: NewModerationService(alerter, DiscardImageAccessController{}),
+		cursor:     cursor,
 	}
+}
+
+// WithImageAccessController 为删帖与恢复路径注入事务性图片访问意图写入器。
+func (s *PostService) WithImageAccessController(controller ImageAccessController) *PostService {
+	if controller == nil {
+		controller = DiscardImageAccessController{}
+	}
+	s.moderation = NewModerationService(s.alerter, controller)
+	return s
 }
 
 // List 返回公开且未删除的信息流，并批量预加载全部关联。
@@ -350,10 +368,12 @@ func (s *PostService) Get(
 	if err != nil {
 		return nil, err
 	}
-	if err := s.posts.IncrementView(ctx, postID); err != nil {
-		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+	if record.DeletedAt == nil {
+		if err := s.posts.IncrementView(ctx, postID); err != nil {
+			return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
+		}
+		record.ViewCount++
 	}
-	record.ViewCount++
 	relations, err := s.loadRelations(ctx, []repository.PostRecord{*record}, currentUserID)
 	if err != nil {
 		return nil, err
@@ -504,7 +524,7 @@ func (s *PostService) visibleRecord(
 	if err != nil {
 		return nil, repository.ToAPIError(err, apierr.BizPostNotFound, "帖子")
 	}
-	if record.DeletedAt != nil {
+	if record.DeletedAt != nil && record.AuthorID != currentUserID {
 		return nil, apierr.NotFound(apierr.BizPostDeleted, "帖子")
 	}
 	if record.Status != model.PostStatusApproved && record.AuthorID != currentUserID {

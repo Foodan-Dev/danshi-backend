@@ -23,7 +23,7 @@ import (
 
 const (
 	pythonBusinessOperations = 48
-	goBusinessRoutes         = 96
+	goBusinessRoutes         = 97
 )
 
 var operationPattern = regexp.MustCompile(
