@@ -329,18 +329,18 @@ func (p *Provider) ProbeImageModeration(ctx context.Context) (err error) {
 	)
 	defer func() { obs.EndExternalCall(span, p.redactor.redact(err)) }()
 
-	result, _, err := p.client.CI.GetCIService(ctx)
-	if err != nil {
-		kind := service.ImageModerationProbeTransient
+	// 探测的职责是验证凭据与权限，不是断言服务已开通：该接口返回 JSON
+	// {"CIStatus":"on"}，而 SDK 的 CIServiceResult 是 XML 结构体，解不出值。
+	// 据此判「未开通」会把一次成功调用误判成配置错误并拒绝启动，
+	// 而调用能返回本身就已经证明凭据和权限可用。
+	if _, _, err := p.client.CI.GetCIService(ctx); err != nil {
 		if isImageModerationAuthorizationError(err) {
-			kind = service.ImageModerationProbeAuthorization
+			return service.NewImageModerationProbeError(
+				service.ImageModerationProbeAuthorization, p.redactor.redact(err),
+			)
 		}
-		return service.NewImageModerationProbeError(kind, p.redactor.redact(err))
-	}
-	if result == nil || !strings.EqualFold(strings.TrimSpace(result.CIStatus), "on") {
 		return service.NewImageModerationProbeError(
-			service.ImageModerationProbeConfiguration,
-			errors.New("腾讯 CI 服务未开通"),
+			service.ImageModerationProbeTransient, p.redactor.redact(err),
 		)
 	}
 	return nil

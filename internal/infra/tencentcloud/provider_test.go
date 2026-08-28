@@ -328,6 +328,22 @@ func TestProviderImageModerationProbeClassifiesAuthorizationAndNetworkFailures(t
 		require.Empty(t, request.URL.RawQuery)
 	})
 
+	t.Run("real JSON body still passes", func(t *testing.T) {
+		// 该接口实际返回 JSON，而 SDK 的 CIServiceResult 是 XML 结构体，
+		// 解不出 CIStatus。生产曾因此把一次成功调用判成「服务未开通」而拒绝启动。
+		// 探测只负责验证凭据与权限，响应能否解析不得影响结论。
+		provider, err := NewProvider(providerTestConfig(), &http.Client{
+			Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, Status: "200 OK", Request: request,
+					Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"CIStatus":"on"}`)),
+				}, nil
+			}),
+		})
+		require.NoError(t, err)
+		require.NoError(t, provider.ProbeImageModeration(context.Background()))
+	})
+
 	t.Run("HTTP 403 AccessDenied is authorization", func(t *testing.T) {
 		provider, err := NewProvider(providerTestConfig(), &http.Client{
 			Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
