@@ -25,6 +25,8 @@ func base() config.Config {
 		ModerationReviewBacklogThreshold:       100,
 		ModerationReviewBacklogCooldownS:       3600,
 		ImageModerationRetryScanIntervalS:      30,
+		ImagePendingExpirationScanIntervalS:    3600,
+		ImagePendingExpirationRetentionS:       86400,
 		LogLevel:                               "info",
 	}
 }
@@ -94,6 +96,12 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"图片补审扫描间隔非正", func(c *config.Config) {
 			c.ImageModerationRetryScanIntervalS = 0
 		}, "IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS"},
+		{"待回收图片扫描间隔非正", func(c *config.Config) {
+			c.ImagePendingExpirationScanIntervalS = 0
+		}, "IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS"},
+		{"待回收图片保留期非正", func(c *config.Config) {
+			c.ImagePendingExpirationRetentionS = 0
+		}, "IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -177,6 +185,8 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("MODERATION_REVIEW_BACKLOG_THRESHOLD", "250")
 	t.Setenv("MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS", "7200")
 	t.Setenv("IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS", "45")
+	t.Setenv("IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS", "1800")
+	t.Setenv("IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS", "172800")
 	t.Setenv("PORT", "9001")
 	cfg, err := config.Load()
 	if err != nil {
@@ -203,7 +213,9 @@ func TestLoadFromEnv(t *testing.T) {
 		cfg.ModerationCallbackAuthFailureWindow() != 90*time.Second ||
 		cfg.ModerationReviewBacklogThreshold != 250 ||
 		cfg.ModerationReviewBacklogCooldown() != 2*time.Hour ||
-		cfg.ImageModerationRetryScanInterval() != 45*time.Second {
+		cfg.ImageModerationRetryScanInterval() != 45*time.Second ||
+		cfg.ImagePendingExpirationScanInterval() != 30*time.Minute ||
+		cfg.ImagePendingExpirationRetention() != 48*time.Hour {
 		t.Fatalf("审核告警环境变量未完整加载: %+v", cfg)
 	}
 }

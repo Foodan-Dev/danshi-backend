@@ -91,3 +91,34 @@ func TestRunImageModerationRetryLoopStopsCleanlyWithoutLoggingEmptyBatches(t *te
 	}, time.Second, time.Millisecond)
 	require.Empty(t, output.String())
 }
+
+type emptyPendingUploadExpirationWorker struct{ calls atomic.Int64 }
+
+func (w *emptyPendingUploadExpirationWorker) RunBatch(
+	context.Context,
+) (service.PendingUploadExpirationWorkerResult, error) {
+	w.calls.Add(1)
+	return service.PendingUploadExpirationWorkerResult{}, nil
+}
+
+func TestStartPendingUploadExpirationLoopRunsImmediatelyAndStopsCleanlyWithoutLoggingEmptyBatches(
+	t *testing.T,
+) {
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &emptyPendingUploadExpirationWorker{}
+	var output bytes.Buffer
+	done := startPendingUploadExpirationLoop(
+		ctx, worker, time.Millisecond, slog.New(slog.NewTextHandler(&output, nil)),
+	)
+	require.Eventually(t, func() bool { return worker.calls.Load() >= 2 }, time.Second, time.Millisecond)
+	cancel()
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
+	require.Empty(t, output.String())
+}

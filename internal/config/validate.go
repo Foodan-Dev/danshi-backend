@@ -148,6 +148,12 @@ func validateModerationAlerting(c Config, add func(string, ...any)) {
 	if c.ImageModerationRetryScanIntervalS <= 0 {
 		add("IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS 必须为正数")
 	}
+	if c.ImagePendingExpirationScanIntervalS <= 0 {
+		add("IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS 必须为正数")
+	}
+	if c.ImagePendingExpirationRetentionS <= 0 {
+		add("IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS 必须为正数")
+	}
 }
 
 func validateEdgeOne(c Config, add func(string, ...any)) {
