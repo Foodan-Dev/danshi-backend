@@ -101,6 +101,8 @@ func DefaultConfig() appconfig.Config {
 		ModerationReviewBacklogThreshold:       100,
 		ModerationReviewBacklogCooldownS:       3600,
 		ImageModerationRetryScanIntervalS:      30,
+		ImagePendingExpirationScanIntervalS:    3600,
+		ImagePendingExpirationRetentionS:       86400,
 	}
 }
 

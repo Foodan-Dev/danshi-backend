@@ -6,7 +6,7 @@
 //  3. **核对 schema 版本**——迁移没跑完就拒绝启动，
 //     否则会连上旧 schema，报出「字段不存在」这类难查的运行时错误
 //  4. 生产环境只读探测图片审核凭据与权限
-//  5. 装配路由、启动补审 worker 并监听
+//  5. 装配路由、启动补审/过期回收 worker 并监听
 package main
 
 import (
@@ -126,6 +126,9 @@ func run() error {
 	retryWorkerDone := startImageModerationRetryWorker(
 		ctx, cfg, database, tencentProvider, log,
 	)
+	expirationWorkerDone := startPendingUploadExpirationWorker(
+		ctx, cfg, database, tencentProvider, log,
+	)
 
 	go func() {
 		<-ctx.Done()
@@ -140,10 +143,16 @@ func run() error {
 	log.Info("服务启动", slog.Int("port", cfg.Port), slog.String("prefix", router.APIPrefix))
 	h.Spin()
 	stop()
-	if retryWorkerDone != nil {
-		<-retryWorkerDone
-	}
+	waitForWorkers(retryWorkerDone, expirationWorkerDone)
 	return nil
+}
+
+func waitForWorkers(workers ...<-chan struct{}) {
+	for _, done := range workers {
+		if done != nil {
+			<-done
+		}
+	}
 }
 
 func newTencentProvider(
@@ -229,6 +238,40 @@ func startImageModerationRetryWorker(
 	return done
 }
 
+func startPendingUploadExpirationWorker(
+	ctx context.Context,
+	cfg config.Config,
+	database *db.DB,
+	provider *tencentcloud.Provider,
+	log *slog.Logger,
+) <-chan struct{} {
+	if provider == nil {
+		return nil
+	}
+	uploads := service.NewUploadService(
+		provider, nil, nil, cfg.COSMaxImageBytes, cfg.COSPresignTTL(), cfg.COSPresignGetTTL(),
+	)
+	worker := service.NewPendingUploadExpirationWorker(
+		database, uploads, service.PendingUploadExpirationWorkerOptions{
+			Retention: cfg.ImagePendingExpirationRetention(),
+		},
+	)
+	return startPendingUploadExpirationLoop(
+		ctx, worker, cfg.ImagePendingExpirationScanInterval(), log,
+	)
+}
+
+func startPendingUploadExpirationLoop(
+	ctx context.Context,
+	worker pendingUploadExpirationBatchWorker,
+	interval time.Duration,
+	log *slog.Logger,
+) <-chan struct{} {
+	done := make(chan struct{})
+	go runPendingUploadExpirationLoop(ctx, worker, interval, log, done)
+	return done
+}
+
 func assertImageModerationAvailable(
 	ctx context.Context,
 	cfg config.Config,
@@ -299,6 +342,66 @@ func runImageModerationRetryLoop(
 			slog.Int("rescheduled", result.Rescheduled),
 			slog.Int("dead_lettered", result.DeadLettered),
 			slog.Int("superseded", result.Superseded),
+			slog.Duration("duration", time.Since(startedAt)),
+		)
+	}
+
+	runBatch()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runBatch()
+		}
+	}
+}
+
+type pendingUploadExpirationBatchWorker interface {
+	RunBatch(context.Context) (service.PendingUploadExpirationWorkerResult, error)
+}
+
+func runPendingUploadExpirationLoop(
+	ctx context.Context,
+	worker pendingUploadExpirationBatchWorker,
+	interval time.Duration,
+	log *slog.Logger,
+	done chan<- struct{},
+) {
+	defer close(done)
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	runBatch := func() {
+		startedAt := time.Now()
+		result, err := worker.RunBatch(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.WarnContext(ctx, "图片过期回收批次失败", slog.Any("err", err))
+			}
+			return
+		}
+		if result.Selected == 0 {
+			return
+		}
+		for _, failure := range result.Failures {
+			log.ErrorContext(ctx, "删除过期图片对象失败",
+				slog.Uint64("image_asset_id", failure.ImageAssetID),
+				slog.String("object_key", failure.ObjectKey),
+				slog.Any("err", failure.Err),
+			)
+		}
+		level := slog.LevelInfo
+		if len(result.Failures) > 0 {
+			level = slog.LevelWarn
+		}
+		log.LogAttrs(ctx, level, "图片过期回收批次完成",
+			slog.Time("created_before", result.Before),
+			slog.Int("selected", result.Selected),
+			slog.Int("retired", result.Retired),
+			slog.Int("failed", len(result.Failures)),
 			slog.Duration("duration", time.Since(startedAt)),
 		)
 	}

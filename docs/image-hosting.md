@@ -18,6 +18,9 @@
 
 图片审核还需要 `TENCENT_CI_BIZ_TYPE`、`TENCENT_CI_CALLBACK_URL` 和 `MODERATION_CALLBACK_TOKEN`。
 server 内补审扫描间隔由 `IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS` 控制，默认 30 秒。
+server 内过期回收的扫描间隔与保留期分别由
+`IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS` 和
+`IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS` 控制，默认为 1 小时与 24 小时。
 
 配置不完整时适配器 fail closed：不会签发伪造凭证或假定对象已存在，上传端点返回服务不可用。
 生产 profile 在监听端口前用只读 `GetCIService` 探测 CI：401/403、`AccessDenied` 等鉴权或
@@ -211,8 +214,13 @@ URL 表示对象已经验证。回收已删除对象时，原公开 URL 会替�
 
 `SKIP LOCKED` 避免与正在执行 complete 的事务争用，从而防止对象刚被 complete 验证又被清理任务删除。
 
-仓库提供一次性命令 `danshi-jobs expire-pending`，由 cron、Kubernetes CronJob 等外部
-调度器触发。过期时长没有业务默认值，调用方必须显式给出；上线前先 dry-run：
+server 进程启动后会立即运行一个有界批次，之后按配置的间隔周期扫描。
+默认保留 24 小时：这远长于 10 分钟的预签名有效期，为选图、裁剪、网络重试和暂时离开编辑流程留出宽裕时间；
+默认每小时扫描则把实际回收时间控制在约 24–25 小时，又不会频繁轮询数据库。
+空批次不记日志。
+
+仓库仍保留一次性命令 `danshi-jobs expire-pending`，供运维用不同保留期临时执行。
+命令的过期时长没有默认值，调用方必须显式给出；先 dry-run：
 
 ```bash
 danshi-jobs expire-pending -older-than 24h -batch-size 100 -dry-run

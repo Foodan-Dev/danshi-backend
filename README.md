@@ -165,6 +165,8 @@ make schema-test
 | `MODERATION_REVIEW_BACKLOG_THRESHOLD` | `100` | 帖子粒度待复核队列达到此条目数时告警，必须为正数 |
 | `MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS` | `3600` | 持续积压的重复告警冷却时间，单位秒，必须为正数 |
 | `IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS` | `30` | server 内图片补审 worker 扫描间隔；默认 30 秒，必须为正数 |
+| `IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS` | `3600` | server 内待回收图片 worker 扫描间隔；默认 1 小时，必须为正数 |
+| `IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS` | `86400` | 无引用 pending 上传的最短保留期；默认 24 小时，必须为正数 |
 
 ### 日志与遥测
 

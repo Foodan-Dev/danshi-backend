@@ -26,6 +26,12 @@ const (
 	ProfileProd Profile = "prod"
 
 	defaultTencentSESSubject = "旦食注册验证码"
+	// 待回收上传不需要秒级处理：每小时扫描足以限制孤儿堆积，
+	// 同时避免 server 实例频繁轮询数据库。
+	defaultImagePendingExpirationScanIntervalS = 60 * 60
+	// 预签名只有 10 分钟，但用户可能在选图、裁剪或提交帖子前离开；
+	// 24 小时为这些正常流程留出宽裕时间，又不会让孤儿长期滞留 COS。
+	defaultImagePendingExpirationRetentionS = 24 * 60 * 60
 )
 
 // Config 是启动后注入各层的完整应用配置。
@@ -73,6 +79,8 @@ type Config struct {
 	ModerationReviewBacklogThreshold       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_THRESHOLD"`
 	ModerationReviewBacklogCooldownS       int    `mapstructure:"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS"`
 	ImageModerationRetryScanIntervalS      int    `mapstructure:"IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS"`
+	ImagePendingExpirationScanIntervalS    int    `mapstructure:"IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS"`
+	ImagePendingExpirationRetentionS       int    `mapstructure:"IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS"`
 
 	OTLPEndpoint string `mapstructure:"OTLP_ENDPOINT"`
 	LogLevel     string `mapstructure:"LOG_LEVEL"`
@@ -119,6 +127,16 @@ func (c Config) ModerationReviewBacklogCooldown() time.Duration {
 // ImageModerationRetryScanInterval 返回 server 内补审 goroutine 的空闲扫描间隔。
 func (c Config) ImageModerationRetryScanInterval() time.Duration {
 	return time.Duration(c.ImageModerationRetryScanIntervalS) * time.Second
+}
+
+// ImagePendingExpirationScanInterval 返回 server 内待回收图片 worker 的扫描间隔。
+func (c Config) ImagePendingExpirationScanInterval() time.Duration {
+	return time.Duration(c.ImagePendingExpirationScanIntervalS) * time.Second
+}
+
+// ImagePendingExpirationRetention 返回 pending 上传可被回收前的最短保留期。
+func (c Config) ImagePendingExpirationRetention() time.Duration {
+	return time.Duration(c.ImagePendingExpirationRetentionS) * time.Second
 }
 
 // COSConfigured 报告对象存储是否具备完整的运行配置。
@@ -209,6 +227,8 @@ var bindings = map[string]any{
 	"MODERATION_REVIEW_BACKLOG_THRESHOLD":             100,
 	"MODERATION_REVIEW_BACKLOG_COOLDOWN_SECONDS":      3600,
 	"IMAGE_MODERATION_RETRY_SCAN_INTERVAL_SECONDS":    30,
+	"IMAGE_PENDING_EXPIRATION_SCAN_INTERVAL_SECONDS":  defaultImagePendingExpirationScanIntervalS,
+	"IMAGE_PENDING_EXPIRATION_RETENTION_SECONDS":      defaultImagePendingExpirationRetentionS,
 
 	"OTLP_ENDPOINT": "",
 	"LOG_LEVEL":     "info",
