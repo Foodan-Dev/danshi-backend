@@ -13,7 +13,13 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 )
 
-var errMalformedAuthorization = errors.New("authorization header malformed")
+// 两种失败要分开：日志里只有一个 malformed，排查时分不出「客户端根本没带令牌」
+// 和「带了但格式坏了」——前者通常是前端把凭据弄丢了，后者才是请求构造有问题。
+// 对客户端两者仍是同一个 401、同一句文案，区别只体现在服务端日志的 cause 上。
+var (
+	errMissingAuthorization   = errors.New("authorization header missing")
+	errMalformedAuthorization = errors.New("authorization header malformed")
+)
 
 // Authenticator 是鉴权中间件所需的 service 边界。
 type Authenticator interface {
@@ -56,13 +62,15 @@ func RequireCapability(capability authz.Capability) app.HandlerFunc {
 
 func bearerToken(header string) (string, error) {
 	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", errMissingAuthorization
+	}
 	scheme, token, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, "bearer") {
 		return "", errMalformedAuthorization
 	}
-	token = strings.TrimSpace(token)
-	if token == "" {
+	if strings.TrimSpace(token) == "" {
 		return "", errMalformedAuthorization
 	}
-	return token, nil
+	return strings.TrimSpace(token), nil
 }
