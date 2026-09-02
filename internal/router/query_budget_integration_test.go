@@ -138,7 +138,7 @@ func seedQueryBudgetFixture(
 
 		user := model.User{
 			Email: fmt.Sprintf("query-budget-user-%d@fdueat.com", index), PasswordHash: "$2b$12$test",
-			Name: fmt.Sprintf("查询预算用户 %d", index),
+			Name: fmt.Sprintf("查询预算用户%d", index),
 		}
 		require.NoError(t, gdb.Create(&user).Error)
 		require.NoError(t, gdb.Create(&model.Follow{

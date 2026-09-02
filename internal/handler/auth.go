@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -41,9 +42,29 @@ type registerRequest struct {
 }
 
 type loginRequest struct {
-	Email       string `json:"email"`
+	Identifier  string `json:"identifier"`
 	Password    string `json:"password"`
 	DeviceLabel string `json:"device_label"`
+	legacyEmail string
+}
+
+// UnmarshalJSON 接受旧客户端的 email 字段，但 OpenAPI 只声明语义正确的 identifier。
+func (r *loginRequest) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Identifier  string `json:"identifier"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		DeviceLabel string `json:"device_label"`
+	}
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	r.Identifier = value.Identifier
+	r.legacyEmail = value.Email
+	r.Password = value.Password
+	r.DeviceLabel = value.DeviceLabel
+	return nil
 }
 
 type refreshRequest struct {
@@ -101,9 +122,14 @@ func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
+	identifier, err := loginIdentifier(request)
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
 	result, err := h.service.Login(
 		ctx,
-		service.LoginInput{Email: request.Email, Password: request.Password},
+		service.LoginInput{Identifier: identifier, Password: request.Password},
 		clientInfo(c, request.DeviceLabel),
 	)
 	if err != nil {
@@ -111,6 +137,16 @@ func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK("登录成功", result))
+}
+
+func loginIdentifier(request loginRequest) (string, error) {
+	if request.Identifier != "" && request.legacyEmail != "" {
+		return "", apierr.InvalidField("identifier", apierr.FieldConflict, "identifier 与 email 不能同时提供")
+	}
+	if request.Identifier != "" {
+		return request.Identifier, nil
+	}
+	return request.legacyEmail, nil
 }
 
 // Refresh 校验 refresh 会话并换发 access token。

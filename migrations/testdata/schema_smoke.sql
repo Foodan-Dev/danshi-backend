@@ -96,12 +96,18 @@ COMMIT;
 DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO user_roles (user_id,role) VALUES (1,'admin')$q$,
     ARRAY['23514'], 'user_roles.role 枚举收敛且 admin 已消失');
-  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash) VALUES ('noatsign','x')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('noatsign','x','bad_email')$q$,
     ARRAY['23514'], 'users.email 必须含 @');
-  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,gender) VALUES ('g@fdueat.com','x','男')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name,gender) VALUES ('g@fdueat.com','x','bad_gender','男')$q$,
     ARRAY['23514'], 'users.gender 枚举收敛(male/female/other)');
-  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash) VALUES ('ALICE@m.fudan.edu.cn','x')$q$,
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('ALICE@m.fudan.edu.cn','x','alice_email')$q$,
     ARRAY['23505'], 'users.email 大小写不敏感唯一');
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('empty-name@fdueat.com','x','')$q$,
+    ARRAY['23514'], 'users.name 不接受空串');
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-case@fdueat.com','x','ALICE')$q$,
+    ARRAY['23505'], 'users.name 大小写不敏感唯一');
+  PERFORM _assert((SELECT count(*) FROM user_name_claims WHERE user_id IN (1,2,3))=3,
+                  '直接创建用户同时追加 name 占用记录');
 
   PERFORM _assert_rejects($q$INSERT INTO image_assets (purpose,object_key,public_url,content_type) VALUES ('post','k1','u1','image/jpeg') $q$ ||
     $q$; INSERT INTO image_assets (purpose,object_key,public_url,content_type,status) VALUES ('post','k2','u2','image/jpeg','gone')$q$,
@@ -141,6 +147,18 @@ DO $$ BEGIN
     ARRAY['23514'], 'post_images.position < 9');
   PERFORM _assert_rejects($q$INSERT INTO follows (follower_id,following_id) VALUES (1,1)$q$,
     ARRAY['23514'], '禁止自关注');
+END $$;
+
+UPDATE users SET name='bob2' WHERE id=2;
+DO $$ BEGIN
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('old-name@fdueat.com','x','bob')$q$,
+    ARRAY['23505'], '历史 name 不得被另一账号接管');
+  PERFORM _assert((SELECT count(*) FROM user_name_claims WHERE user_id=2)=2,
+                  'name 修改追加占用记录而不覆盖旧值');
+  PERFORM _assert_rejects($q$UPDATE user_name_claims SET name='rewrite' WHERE user_id=2$q$,
+    ARRAY['23001'], 'name 占用记录不可修改');
+  PERFORM _assert_rejects($q$DELETE FROM user_name_claims WHERE user_id=2$q$,
+    ARRAY['23001'], 'name 占用记录不可删除');
 END $$;
 
 \echo ''
@@ -420,11 +438,11 @@ DO $$ BEGIN
     ARRAY['23001','23503'], '执行过封禁的管理员不可删除（留痕不能丢）');
 END $$;
 -- 永久封禁：ban_is_permanent=true 且 banned_until 必须为空
-INSERT INTO users (id,email,password_hash,ban_is_permanent,ban_reason,banned_by)
- VALUES (8,'spam@fdueat.com','$2b$12$x',true,'违法内容',3);
+INSERT INTO users (id,email,password_hash,name,ban_is_permanent,ban_reason,banned_by)
+ VALUES (8,'spam@fdueat.com','$2b$12$x','spam',true,'违法内容',3);
 -- 已过期的封禁：应自动视为解封，不需要定时任务
-INSERT INTO users (id,email,password_hash,banned_until,ban_reason,banned_by)
- VALUES (7,'served@fdueat.com','$2b$12$x',now()-interval '1 day','刷屏',3);
+INSERT INTO users (id,email,password_hash,name,banned_until,ban_reason,banned_by)
+ VALUES (7,'served@fdueat.com','$2b$12$x','served',now()-interval '1 day','刷屏',3);
 DO $$ BEGIN
   PERFORM _assert((SELECT ban_is_permanent OR banned_until > now() FROM users WHERE id=2), '限时封禁生效中');
   PERFORM _assert((SELECT ban_is_permanent AND banned_until IS NULL FROM users WHERE id=8), '永久封禁用显式布尔表达，不用 infinity');
@@ -885,7 +903,7 @@ DO $$ BEGIN
   PERFORM _assert((SELECT count(*) FROM user_sessions WHERE revoked_at IS NOT NULL)=2, '撤销是打标记，行保留');
 END $$;
 
-INSERT INTO users (id,email,password_hash) VALUES (9,'gone@fdueat.com','$2b$12$x');
+INSERT INTO users (id,email,password_hash,name) VALUES (9,'gone@fdueat.com','$2b$12$x','gone');
 INSERT INTO user_sessions (user_id,refresh_token_digest,expires_at) VALUES (9,repeat('f',64),now()+interval '1 day');
 -- 注销是软删除：账号不可登录，但内容与会话记录保留
 UPDATE users SET deleted_at=now() WHERE id=9;
@@ -1136,7 +1154,7 @@ DECLARE next_id bigint;
 BEGIN
   -- 非空表：setval 到 max(id)
   PERFORM setval(pg_get_serial_sequence('users','id'), (SELECT max(id) FROM users));
-  INSERT INTO users (email,password_hash) VALUES ('next@fdueat.com','x') RETURNING id INTO next_id;
+  INSERT INTO users (email,password_hash,name) VALUES ('next@fdueat.com','x','next_user') RETURNING id INTO next_id;
   PERFORM _assert(next_id > 3, '非空表 setval 后不撞主键');
   -- 空表：max(id) 为 NULL，必须走 setval(seq, 1, false)，直接传 NULL 会报错
   PERFORM _assert((SELECT count(*) FROM comment_mentions)=0, 'comment_mentions 为空（空表分支前提）');
@@ -1159,8 +1177,9 @@ BEGIN
     'idx_ds_pending','idx_user_sessions_active','idx_user_sessions_expires',
     'idx_user_roles_role','idx_user_ban_records_user','idx_user_role_records_user',
     'idx_image_moderation_retries_due',
-    'uq_users_email_lower','uq_tags_name_lower','uq_user_sessions_digest',
-    'uq_image_assets_object_key','uq_image_assets_public_url','uq_evc_email_purpose'
+    'uq_users_email_lower','uq_users_name_lower','uq_user_name_claims_name_lower',
+    'uq_tags_name_lower','uq_user_sessions_digest','uq_image_assets_object_key',
+    'uq_image_assets_public_url','uq_evc_email_purpose'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=want) THEN
       missing := missing || want;
@@ -1242,6 +1261,7 @@ BEGIN
     'trg_post_likes_sync_count','trg_favorites_sync_count','trg_comment_likes_sync_count','trg_comments_sync_counts',
     'trg_post_likes_keys_immutable','trg_favorites_keys_immutable','trg_comment_likes_keys_immutable','trg_comments_keys_immutable',
     'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_users_activate_avatar_asset','trg_image_assets_forbid_delete'
+    ,'trg_users_claim_name','trg_user_name_claims_forbid_update','trg_user_name_claims_forbid_delete'
     ,'trg_user_ban_records_immutable','trg_user_ban_records_forbid_delete'
     ,'trg_user_role_records_immutable','trg_user_role_records_forbid_delete'
     ,'trg_image_access_intents_validate','trg_image_access_intents_immutable'
@@ -1261,7 +1281,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 31, '业务表共 31 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 32, '业务表共 32 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

@@ -47,7 +47,7 @@ up;        echo "   再up $(tables) 表"
 
 echo "== C 断言可失败性 =="
 reset; up
-sed "s/= 31, '业务表共 31 张'/= 999, '业务表共 31 张'/" migrations/testdata/schema_smoke.sql > "$TMP/broken.sql"
+sed "s/= 32, '业务表共 32 张'/= 999, '业务表共 32 张'/" migrations/testdata/schema_smoke.sql > "$TMP/broken.sql"
 docker cp "$TMP/broken.sql" "$CT:/tmp/" >/dev/null
 if docker exec "$CT" psql -X -v ON_ERROR_STOP=1 -U postgres -d danshi -f /tmp/broken.sql >/dev/null 2>&1; then
   echo "   ✗ 故意改错的断言竟然通过了——门禁失效" >&2

@@ -915,6 +915,7 @@
           "unauthorized",
           "service_unavailable",
           "email_taken",
+          "name_taken",
           "email_domain_not_allow",
           "credentials_invalid",
           "verify_code_invalid",
@@ -3187,7 +3188,7 @@
           "device_label": {
             "type": "string"
           },
-          "email": {
+          "identifier": {
             "type": "string"
           },
           "password": {

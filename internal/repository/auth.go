@@ -36,9 +36,48 @@ func (UserRepository) FindByEmail(
 	return &user, nil
 }
 
+// FindByName 按大小写不敏感的公开 name 查找可登录用户。
+func (UserRepository) FindByName(ctx context.Context, name string) (*model.User, error) {
+	var user model.User
+	err := db.FromContext(ctx).
+		Where("lower(name) = lower(?) AND deleted_at IS NULL", name).
+		First(&user).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &user, nil
+}
+
 // Create 创建用户，唯一性依赖 schema 的 lower(email) 唯一索引。
 func (UserRepository) Create(ctx context.Context, user *model.User) error {
 	return db.FromContext(ctx).Create(user).Error
+}
+
+// ClaimName 追加一条 name 占用记录。同一账号回用自己的历史 name 是幂等的；
+// 其他账号已占用时由唯一约束拒绝。
+func (UserRepository) ClaimName(ctx context.Context, userID uint64, name string, now time.Time) error {
+	result := db.FromContext(ctx).Exec(`
+		INSERT INTO user_name_claims (user_id, name, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT DO NOTHING
+	`, userID, name, now)
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.Error
+	}
+	var ownerID uint64
+	result = db.FromContext(ctx).Raw(
+		"SELECT user_id FROM user_name_claims WHERE lower(name) = lower(?)", name,
+	).Scan(&ownerID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	if ownerID != userID {
+		return ErrAlreadyExists
+	}
+	return nil
 }
 
 // FindRoles 返回用户当前绑定的全部管理角色，顺序稳定。

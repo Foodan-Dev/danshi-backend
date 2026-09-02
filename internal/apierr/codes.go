@@ -56,6 +56,7 @@ const (
 	// 账号与会话
 
 	BizEmailTaken          BizCode = "email_taken"            // 邮箱已被注册
+	BizNameTaken           BizCode = "name_taken"             // name 已被当前或历史账号占用
 	BizEmailDomainNotAllow BizCode = "email_domain_not_allow" // 域名不在白名单
 	BizCredentialsInvalid  BizCode = "credentials_invalid"    // 邮箱或密码错误
 	BizVerifyCodeInvalid   BizCode = "verify_code_invalid"    // 验证码错误或已失效

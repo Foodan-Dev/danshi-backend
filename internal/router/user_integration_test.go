@@ -252,6 +252,12 @@ func testUserProfileUpdate(
 		"name": "越权更新",
 	}, viewer.Token)
 	require.Equal(t, http.StatusForbidden, status)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(viewer.User.ID), map[string]any{
+		"name": "资料主人",
+	}, viewer.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizNameTaken, response.ErrorCode, "旧 name 必须继续归原账号占用")
 }
 
 func testUserSelfDeletion(
@@ -315,7 +321,7 @@ func testUserSelfDeletion(
 	require.Equal(t, http.StatusUnauthorized, status, "注销账号不得再次登录")
 
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": "123456",
+		"email": email, "password": "password-123", "verification_code": "123456", "name": "deleted_name",
 	}, "")
 	require.Equal(t, http.StatusConflict, status, "注销不得释放邮箱唯一性")
 	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode)
@@ -470,7 +476,7 @@ func testUserProfileBoundaries(
 	moderation := testutil.NewMockModeration()
 	engine := newUserTestEngine(t, cfg, database, sender, moderation)
 
-	maxName := strings.Repeat("界", 100)
+	maxName := strings.Repeat("界", 24)
 	maxBio := strings.Repeat("文", 500)
 	status, response, _ := performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
 		"name": maxName, "bio": maxBio, "gender": model.GenderOther,
@@ -505,9 +511,8 @@ func testUserProfileBoundaries(
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
 		"name": "   ",
 	}, actor.Token)
-	require.Equal(t, http.StatusOK, status)
-	decodeData(t, response, &updated)
-	require.Empty(t, updated.User.Name, "昵称空白输入按现有契约归一为空字符串")
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "name", apierr.FieldRequired)
 	moderation.RequireContentCalls(t, 2)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
@@ -623,7 +628,7 @@ func testUserAvatarSafety(
 			<-start
 			status, response, raw, err := performJSONRequest(
 				concurrentEngine, http.MethodPut, userPath(owner.User.ID), map[string]any{
-					"name": fmt.Sprintf("并发头像昵称 %d", index), "avatar_url": asset.PublicURL,
+					"name": fmt.Sprintf("并发头像昵称%d", index), "avatar_url": asset.PublicURL,
 				}, owner.Token,
 			)
 			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}

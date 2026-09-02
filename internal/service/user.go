@@ -198,6 +198,15 @@ func (s *UserService) Update(
 		return nil, userNotFoundError(err)
 	}
 	fields, moderated := changedUserFields(user, input)
+	if input.NameSet && input.Name != nil && user.Name != *input.Name {
+		if err := s.users.ClaimName(ctx, userID, *input.Name, time.Now().UTC()); err != nil {
+			if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
+				errors.Is(err, repository.ErrAlreadyExists) {
+				return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+			}
+			return nil, apierr.Internal(err)
+		}
+	}
 	if input.AvatarURLSet {
 		avatarID, avatarErr := s.resolveAvatar(ctx, user, input.AvatarURL)
 		if avatarErr != nil {
@@ -384,9 +393,9 @@ func normalizeUserUpdate(input UpdateUserInput) (UpdateUserInput, error) {
 		if input.Name == nil {
 			return input, apierr.InvalidField("name", apierr.FieldInvalidFormat, "name 不能是 null")
 		}
-		value := strings.TrimSpace(*input.Name)
-		if utf8.RuneCountInString(value) > 100 {
-			return input, apierr.InvalidField("name", apierr.FieldTooLong, "昵称不能超过 100 个字符")
+		value, err := normalizeName(*input.Name)
+		if err != nil {
+			return input, err
 		}
 		input.Name = &value
 	}

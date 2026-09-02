@@ -24,6 +24,18 @@ type User struct {
 // TableName 返回用户表名。
 func (User) TableName() string { return "users" }
 
+// UserNameClaim 是一个不可篡改的 name 占用记录。users.name 保存当前公开身份，
+// 本表保留当前与历史 name，避免改名或注销后被其他账号冒用。
+type UserNameClaim struct {
+	ID        uint64 `gorm:"primaryKey"`
+	UserID    uint64
+	Name      string
+	CreatedAt time.Time
+}
+
+// TableName 返回用户 name 占用记录表名。
+func (UserNameClaim) TableName() string { return "user_name_claims" }
+
 // UserRoleBinding 是用户当前生效的一项管理角色绑定。
 type UserRoleBinding struct {
 	UserID    uint64   `gorm:"primaryKey;autoIncrement:false"`

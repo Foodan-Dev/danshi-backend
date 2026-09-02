@@ -21,7 +21,7 @@ func TestSearchDomainAgainstPostgres(t *testing.T) {
 	cfg := authTestConfig()
 	sender := newCaptureEmailSender()
 	engine := authTestEngine(cfg, database, sender)
-	author := registerPostTestUser(t, engine, sender, "search-author@fdueat.com", "CaseSearch 作者")
+	author := registerPostTestUser(t, engine, sender, "search-author@fdueat.com", "CaseSearch作者")
 	viewer := registerPostTestUser(t, engine, sender, "search-viewer@fdueat.com", "搜索访客")
 	fixture := loadPostFixture(t, gdb)
 
