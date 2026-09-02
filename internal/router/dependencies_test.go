@@ -118,7 +118,7 @@ func completeSESConfig(profile config.Profile) config.Config {
 		TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
 		TencentRegion: "ap-guangzhou", TencentSESFromEmail: "sender@example.com",
 		TencentSESFromName: "旦食", TencentSESSubject: "旦食注册验证码",
-		TencentSESTemplateID: 123,
+		TencentSESTemplateID: 123, TencentSESResetSubject: "旦食密码重置验证码", TencentSESResetTemplateID: 124,
 	}
 }
 

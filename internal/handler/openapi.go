@@ -22,6 +22,10 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
 		binding(http.MethodPost, "/api/v2/auth/email-verification-codes", sendVerificationCodeRequest{}, nil,
 			http.StatusTooManyRequests, http.StatusServiceUnavailable),
+		binding(http.MethodPost, "/api/v2/auth/password-reset-codes", passwordResetRequest{}, nil,
+			http.StatusTooManyRequests, http.StatusServiceUnavailable),
+		binding(http.MethodPost, "/api/v2/auth/password-resets", passwordResetConfirmRequest{}, nil,
+			http.StatusBadRequest),
 		binding(http.MethodPost, "/api/v2/auth/register", registerRequest{}, service.AuthResult{},
 			http.StatusBadRequest, http.StatusConflict),
 		binding(http.MethodPost, "/api/v2/auth/login", loginRequest{}, service.AuthResult{},

@@ -51,6 +51,13 @@ type LoginInput struct {
 	Password   string
 }
 
+// PasswordResetInput 是匿名密码重置的提交输入。
+type PasswordResetInput struct {
+	Email            string
+	VerificationCode string
+	NewPassword      string
+}
+
 // ClientInfo 描述一次登录所在设备。
 type ClientInfo struct {
 	DeviceLabel string
@@ -180,7 +187,7 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	} else {
 		code, err = generateVerificationCode()
 		if err == nil {
-			challenge.CodeDigest = s.codeDigest(email, code)
+			challenge.CodeDigest = s.codeDigest(model.VerificationPurposeRegistration, email, code)
 		}
 	}
 	if err != nil {
@@ -200,6 +207,93 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	}
 	if err := s.sender.SendRegistrationCode(ctx, email, code); err != nil {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
+	}
+	return nil
+}
+
+// SendPasswordResetCode 向存在且未注销的账号发送找回密码验证码；响应不泄露账号状态。
+func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string) error {
+	email, err := normalizeEmail(rawEmail)
+	if err != nil {
+		return err
+	}
+	if !s.cfg.EmailVerificationRequired {
+		return apierr.ServiceUnavailable("密码重置暂不可用")
+	}
+	user, err := s.users.FindByEmail(ctx, email)
+	exists := err == nil
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return apierr.Internal(err)
+	}
+	now := time.Now().UTC()
+	challenge, err := s.codes.LockOrCreate(ctx, email, model.VerificationPurposePasswordReset, now)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := enforceSendRate(challenge, now); err != nil {
+		return err
+	}
+	code, err := generateVerificationCode()
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if exists {
+		challenge.CodeDigest = s.codeDigest(model.VerificationPurposePasswordReset, email, code)
+	} else {
+		challenge.CodeDigest, err = randomDigest()
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	challenge.ExpiresAt = now.Add(verificationCodeTTL)
+	challenge.LastSentAt = &now
+	challenge.SendCount++
+	challenge.FailedAttempts = 0
+	challenge.ConsumedAt = nil
+	if err := s.codes.SaveState(ctx, challenge, now); err != nil {
+		return apierr.Internal(err)
+	}
+	if !exists {
+		return nil
+	}
+	if err := s.sender.SendPasswordResetCode(ctx, user.Email, code); err != nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
+	}
+	return nil
+}
+
+// ResetPassword 消费密码重置验证码，更新密码并在同一事务撤销全部会话。
+func (s *AuthService) ResetPassword(ctx context.Context, input PasswordResetInput) error {
+	email, err := normalizeEmail(input.Email)
+	if err != nil {
+		return err
+	}
+	if err := validatePassword(input.NewPassword, true); err != nil {
+		return err
+	}
+	if err := validateVerificationCode(&input.VerificationCode); err != nil {
+		return err
+	}
+	user, err := s.users.FindByEmail(ctx, email)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := s.consumeVerification(ctx, model.VerificationPurposePasswordReset, email, input.VerificationCode); err != nil {
+		return err
+	}
+	hash, err := passwordx.Hash(input.NewPassword)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.users.UpdatePassword(ctx, user.ID, hash, now); err != nil {
+		return apierr.Internal(err)
+	}
+	if err := s.sessions.RevokeAll(ctx, user.ID, now); err != nil {
+		return apierr.Internal(err)
 	}
 	return nil
 }
@@ -248,7 +342,7 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 	if s.cfg.EmailVerificationRequired {
-		if err := s.consumeVerification(ctx, input.Email, *input.VerificationCode); err != nil {
+		if err := s.consumeVerification(ctx, model.VerificationPurposeRegistration, input.Email, *input.VerificationCode); err != nil {
 			return nil, err
 		}
 	}
@@ -498,9 +592,9 @@ func (s *AuthService) userView(ctx context.Context, user *model.User) (UserView,
 	}, nil
 }
 
-func (s *AuthService) consumeVerification(ctx context.Context, email, code string) error {
+func (s *AuthService) consumeVerification(ctx context.Context, purpose model.VerificationPurpose, email, code string) error {
 	now := time.Now().UTC()
-	challenge, err := s.codes.LockExisting(ctx, email, model.VerificationPurposeRegistration)
+	challenge, err := s.codes.LockExisting(ctx, email, purpose)
 	if errors.Is(err, repository.ErrNotFound) {
 		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
 	}
@@ -511,7 +605,7 @@ func (s *AuthService) consumeVerification(ctx context.Context, email, code strin
 		challenge.FailedAttempts >= maxFailedAttempts {
 		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
 	}
-	if !hmac.Equal([]byte(challenge.CodeDigest), []byte(s.codeDigest(email, code))) {
+	if !hmac.Equal([]byte(challenge.CodeDigest), []byte(s.codeDigest(purpose, email, code))) {
 		challenge.FailedAttempts++
 		if err := s.codes.SaveState(ctx, challenge, now); err != nil {
 			return apierr.Internal(err)
@@ -537,8 +631,8 @@ func (s *AuthService) domainAllowed(email string) bool {
 	return false
 }
 
-func (s *AuthService) codeDigest(email, code string) string {
-	payload := fmt.Sprintf("%s:%s:%s", model.VerificationPurposeRegistration, email, code)
+func (s *AuthService) codeDigest(purpose model.VerificationPurpose, email, code string) string {
+	payload := fmt.Sprintf("%s:%s:%s", purpose, email, code)
 	digest := hmac.New(sha256.New, []byte(s.cfg.EmailVerificationSecret))
 	_, _ = digest.Write([]byte(payload))
 	return fmt.Sprintf("%x", digest.Sum(nil))

@@ -16,6 +16,8 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 	auth := api.Group("/auth")
 
 	auth.POST("/email-verification-codes", authHandler.SendVerificationCode)
+	auth.POST("/password-reset-codes", authHandler.SendPasswordResetCode)
+	auth.POST("/password-resets", authHandler.ResetPassword)
 	auth.POST("/register", authHandler.Register)
 	auth.POST("/login", authHandler.Login)
 	auth.POST("/refresh", authHandler.Refresh)

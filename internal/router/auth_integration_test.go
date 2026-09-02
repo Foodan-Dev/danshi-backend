@@ -225,6 +225,10 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	t.Run("concurrent registration is single winner", func(t *testing.T) {
 		testConcurrentRegistration(t, engine, sender, gdb)
 	})
+
+	t.Run("password reset revokes all sessions", func(t *testing.T) {
+		testPasswordReset(t, engine, sender)
+	})
 }
 
 func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
@@ -237,6 +241,8 @@ func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
 	}
 	require.ElementsMatch(t, []string{
 		"POST /api/v2/auth/email-verification-codes",
+		"POST /api/v2/auth/password-reset-codes",
+		"POST /api/v2/auth/password-resets",
 		"POST /api/v2/auth/register",
 		"POST /api/v2/auth/login",
 		"POST /api/v2/auth/refresh",
@@ -246,6 +252,32 @@ func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
 		"GET /api/v2/auth/sessions",
 		"DELETE /api/v2/auth/sessions/:id",
 	}, operations)
+}
+
+func testPasswordReset(t *testing.T, engine *server.Hertz, sender *captureEmailSender) {
+	t.Helper()
+	email := "password-reset@fdueat.com"
+	sendCode(t, engine, email)
+	registered := registerUser(t, engine, sender, email, "reset-device")
+	status, response, _ := performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/password-reset-codes", map[string]any{"email": email}, "")
+	require.Equal(t, http.StatusOK, status, response.Message)
+	code := capturedCode(t, sender, email)
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/password-resets", map[string]any{
+			"email": email, "verification_code": code, "new_password": "new-password-123",
+		}, "")
+	require.Equal(t, http.StatusOK, status, response.Message)
+	status, _, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, registered.Token)
+	require.Equal(t, http.StatusUnauthorized, status)
+	status, _, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	status, _, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "new-password-123",
+	}, "")
+	require.Equal(t, http.StatusOK, status)
 }
 
 func testVerificationInFlightLimit(

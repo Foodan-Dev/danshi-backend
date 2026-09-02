@@ -79,6 +79,8 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/health", ExpectedStatus: http.StatusOK},
 	{Method: http.MethodGet, Path: "/ready", ExpectedStatus: http.StatusOK},
 	{Method: http.MethodPost, Path: "/api/v2/auth/email-verification-codes", ExpectedStatus: http.StatusUnprocessableEntity},
+	{Method: http.MethodPost, Path: "/api/v2/auth/password-reset-codes", ExpectedStatus: http.StatusUnprocessableEntity},
+	{Method: http.MethodPost, Path: "/api/v2/auth/password-resets", ExpectedStatus: http.StatusUnprocessableEntity},
 	{Method: http.MethodPost, Path: "/api/v2/auth/register", ExpectedStatus: http.StatusUnprocessableEntity},
 	{Method: http.MethodPost, Path: "/api/v2/auth/login", ExpectedStatus: http.StatusUnprocessableEntity},
 	{Method: http.MethodPost, Path: "/api/v2/auth/refresh", ExpectedStatus: http.StatusUnauthorized},

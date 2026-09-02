@@ -125,6 +125,16 @@ func (s observedVerificationSender) SendRegistrationCode(
 	return nil
 }
 
+func (s observedVerificationSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	err := s.next.SendPasswordResetCode(ctx, email, code)
+	if err != nil {
+		s.metrics.RecordVerification(ctx, s.provider, "provider_failure", "provider_error")
+		return err
+	}
+	s.metrics.RecordVerification(ctx, s.provider, "send", "none")
+	return nil
+}
+
 func moderationProvider(value any) string {
 	switch value.(type) {
 	case *tencentcloud.Provider:

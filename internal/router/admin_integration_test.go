@@ -127,7 +127,7 @@ func TestAdminDomainAgainstPostgres(t *testing.T) {
 
 func testAdminRouteInventory(t *testing.T, engine *server.Hertz) {
 	t.Helper()
-	require.Len(t, engine.Routes(), 100, "应注册 98 条业务路由与 2 条 runtime 路由")
+	require.Len(t, engine.Routes(), 102, "应注册 100 条业务路由与 2 条 runtime 路由")
 	operations := make([]string, 0, 24)
 	for _, route := range engine.Routes() {
 		if isAdminDomainPath(route.Path) {

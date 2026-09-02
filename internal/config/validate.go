@@ -214,11 +214,17 @@ func validateProdSES(c Config, add func(string, ...any)) {
 	if c.TencentSESTemplateID == 0 {
 		add("生产环境必须配置正数 TENCENT_SES_TEMPLATE_ID")
 	}
+	if c.TencentSESResetTemplateID == 0 {
+		add("生产环境必须配置正数 TENCENT_SES_RESET_TEMPLATE_ID")
+	}
 }
 
 func validateSESSubject(c Config, add func(string, ...any)) {
 	if !validEmailHeaderValue(c.TencentSESSubject) {
 		add("TENCENT_SES_SUBJECT 不能为空且不能包含控制字符")
+	}
+	if !validEmailHeaderValue(c.TencentSESResetSubject) {
+		add("TENCENT_SES_RESET_SUBJECT 不能为空且不能包含控制字符")
 	}
 }
 

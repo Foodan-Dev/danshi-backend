@@ -103,6 +103,6 @@ func sesTestConfig() config.Config {
 		TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
 		TencentRegion: "ap-guangzhou", TencentSESFromEmail: "no-reply@danshi.fdueat.com",
 		TencentSESFromName: "旦食", TencentSESSubject: "旦食注册验证码",
-		TencentSESTemplateID: 9876,
+		TencentSESTemplateID: 9876, TencentSESResetSubject: "旦食密码重置验证码", TencentSESResetTemplateID: 9877,
 	}
 }

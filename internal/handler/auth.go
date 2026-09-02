@@ -32,6 +32,16 @@ type sendVerificationCodeRequest struct {
 	Email string `json:"email"`
 }
 
+type passwordResetRequest struct {
+	Email string `json:"email"`
+}
+
+type passwordResetConfirmRequest struct {
+	Email            string `json:"email"`
+	VerificationCode string `json:"verification_code"`
+	NewPassword      string `json:"new_password"`
+}
+
 type registerRequest struct {
 	Email            string  `json:"email"`
 	Password         string  `json:"password"`
@@ -95,6 +105,34 @@ func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) 
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK[any]("如果该邮箱可以注册，验证码将发送到该邮箱", nil))
+}
+
+// SendPasswordResetCode 发起匿名密码重置；成功响应对账号是否存在保持一致。
+func (h *Auth) SendPasswordResetCode(ctx context.Context, c *app.RequestContext) {
+	var request passwordResetRequest
+	if err := bindJSON(c, &request); err != nil {
+		httpx.Fail(ctx, c, err)
+		return
+	}
+	if err := h.service.SendPasswordResetCode(ctx, request.Email); err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK[any]("如果该邮箱已绑定可用账号，验证码将发送到该邮箱", nil))
+}
+
+// ResetPassword 提交验证码和新密码，不创建新会话。
+func (h *Auth) ResetPassword(ctx context.Context, c *app.RequestContext) {
+	var request passwordResetConfirmRequest
+	if err := bindJSON(c, &request); err != nil {
+		httpx.Fail(ctx, c, err)
+		return
+	}
+	if err := h.service.ResetPassword(ctx, service.PasswordResetInput{Email: request.Email, VerificationCode: request.VerificationCode, NewPassword: request.NewPassword}); err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK[any]("密码重置成功，请使用新密码登录", nil))
 }
 
 // Register 注册并创建首个会话。

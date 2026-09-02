@@ -12,6 +12,13 @@ var errVerificationEmailSenderUnconfigured = errors.New("verification email send
 // 前提下替换本实现。
 type VerificationEmailSender interface {
 	SendRegistrationCode(ctx context.Context, email, code string) error
+	SendPasswordResetCode(ctx context.Context, email, code string) error
+}
+
+// SendPasswordResetCode 记录一封本应发送的密码重置验证码邮件。
+func (s *LogVerificationEmailSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	s.log.InfoContext(ctx, "开发环境密码重置验证码", slog.String("email", email), slog.String("verification_code", code))
+	return nil
 }
 
 // LogVerificationEmailSender 是开发环境实现。验证码只写开发日志，不用于生产。
@@ -45,5 +52,10 @@ func (UnavailableVerificationEmailSender) SendRegistrationCode(
 	string,
 	string,
 ) error {
+	return errVerificationEmailSenderUnconfigured
+}
+
+// SendPasswordResetCode 始终拒绝未配置的生产投递。
+func (UnavailableVerificationEmailSender) SendPasswordResetCode(context.Context, string, string) error {
 	return errVerificationEmailSenderUnconfigured
 }

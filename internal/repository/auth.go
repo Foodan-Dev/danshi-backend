@@ -80,6 +80,12 @@ func (UserRepository) ClaimName(ctx context.Context, userID uint64, name string,
 	return nil
 }
 
+// UpdatePassword 在调用方已锁定用户行后更新密码摘要。
+func (UserRepository) UpdatePassword(ctx context.Context, userID uint64, passwordHash string, now time.Time) error {
+	return db.FromContext(ctx).Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", userID).
+		Updates(map[string]any{"password_hash": passwordHash, "updated_at": now}).Error
+}
+
 // FindRoles 返回用户当前绑定的全部管理角色，顺序稳定。
 func (UserRepository) FindRoles(ctx context.Context, userID uint64) ([]model.UserRole, error) {
 	var row struct {
