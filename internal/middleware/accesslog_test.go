@@ -87,6 +87,33 @@ func TestAccessLogRecordsStatusRenderedByErrorHandler(t *testing.T) {
 	assertAccessLogField(t, record, "status", float64(http.StatusForbidden))
 }
 
+// panic 的请求同样要出现在访问日志里。挂载顺序必须让 AccessLog 在 Recovery
+// 外层，否则 panic 展开栈时会跳过写日志那行，崩掉的请求就静默消失了——
+// 而这恰恰是最需要在日志里看到的一类请求。
+func TestAccessLogRecordsPanicRecoveredAs500(t *testing.T) {
+	var output bytes.Buffer
+	h := newAccessLogTestEngine()
+	h.Use(AccessLog(slog.New(slog.NewJSONHandler(&output, nil))))
+	h.Use(Recovery(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	h.Use(RequestID())
+	h.GET("/boom", func(context.Context, *app.RequestContext) {
+		panic("测试用 panic")
+	})
+
+	response := ut.PerformRequest(h.Engine, http.MethodGet, "/boom", nil).Result()
+	if response.StatusCode() != http.StatusInternalServerError {
+		t.Fatalf("响应状态码 = %d，期望 %d",
+			response.StatusCode(), http.StatusInternalServerError)
+	}
+
+	record := decodeAccessLog(t, output.Bytes())
+	assertAccessLogField(t, record, "path", "/boom")
+	assertAccessLogField(t, record, "status", float64(http.StatusInternalServerError))
+	if id, _ := record["request_id"].(string); id == "" {
+		t.Fatalf("panic 请求的访问日志缺少 request_id: %#v", record)
+	}
+}
+
 func newAccessLogTestEngine() *server.Hertz {
 	return server.New(hertzconfig.Option{F: func(*hertzconfig.Options) {}})
 }
