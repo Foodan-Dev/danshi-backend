@@ -231,7 +231,7 @@ func seedFollowPlanRows(t *testing.T, gdb *gorm.DB, ownerID uint64, following bo
 		WITH seeded AS (
 			INSERT INTO users (email, password_hash, name)
 			SELECT CAST(? AS text) || '-plan-' || value || '@fdueat.com',
-				'$2b$12$test', 'plan user'
+				'$2b$12$test', CAST(? AS text) || 'planuser' || value
 			FROM generate_series(1, 600) AS value
 			RETURNING id
 		)
@@ -244,8 +244,8 @@ func seedFollowPlanRows(t *testing.T, gdb *gorm.DB, ownerID uint64, following bo
 		insert = `
 			WITH seeded AS (
 				INSERT INTO users (email, password_hash, name)
-				SELECT CAST(? AS text) || '-plan-' || value || '@fdueat.com',
-					'$2b$12$test', 'plan user'
+			SELECT CAST(? AS text) || '-plan-' || value || '@fdueat.com',
+				'$2b$12$test', CAST(? AS text) || 'planuser' || value
 				FROM generate_series(1, 600) AS value
 				RETURNING id
 			)
@@ -254,7 +254,7 @@ func seedFollowPlanRows(t *testing.T, gdb *gorm.DB, ownerID uint64, following bo
 			FROM seeded
 		`
 	}
-	require.NoError(t, gdb.Exec(insert, prefix, int64(ownerID)).Error)
+	require.NoError(t, gdb.Exec(insert, prefix, prefix, int64(ownerID)).Error)
 }
 
 func assertFollowPlanUsesIndex(t *testing.T, gdb *gorm.DB, query string, ownerID uint64, indexName string) {
