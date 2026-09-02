@@ -65,14 +65,16 @@ type Deps struct {
 // 转换后的 500；以下顺序描述会改变请求行为的路由中间件：
 //  1. Recovery     最外层，要能兜住后面所有业务中间件里的 panic
 //  2. RequestID    尽早分配，后续日志才带得上
-//  3. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
-//  4. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
-//  5. CORS         在业务之前，预检请求不该进到 UoW
-//  6. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
+//  3. AccessLog    在 RequestID 之后、ErrorHandler 之外，才能记录请求 ID 与最终状态码
+//  4. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
+//  5. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
+//  6. CORS         在业务之前，预检请求不该进到 UoW
+//  7. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
 func Register(h *server.Hertz, d Deps) {
 	d = withDefaultDomainDeps(d)
 	h.Use(middleware.Recovery(d.Log))
 	h.Use(middleware.RequestID())
+	h.Use(middleware.AccessLog(d.Log, "/metrics", "/health", "/ready"))
 	h.Use(middleware.ErrorHandler(d.Log))
 	h.Use(moderationFailureAlerting(d.DB, d.ModerationAlerter, d.Log))
 	h.Use(middleware.LimitInFlight(
