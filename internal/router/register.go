@@ -63,14 +63,19 @@ type Deps struct {
 //
 // main 在调用 Register 前挂载只读的 metrics/tracing wrapper，以便观测 Recovery
 // 转换后的 500；以下顺序描述会改变请求行为的路由中间件：
-//  1. Recovery     最外层，要能兜住后面所有业务中间件里的 panic
-//  2. RequestID    尽早分配，后续日志才带得上
-//  3. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
-//  4. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
-//  5. CORS         在业务之前，预检请求不该进到 UoW
-//  6. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
+//  1. AccessLog    比 Recovery 还外层：panic 会一路展开栈，若 AccessLog 在内层，
+//     它写日志那行根本执行不到，崩掉的请求就会从访问日志里凭空消失。放在外层，
+//     c.Next 返回时 Recovery 已经把状态码改写成 500，记到的就是最终结果。
+//     请求 ID 由内层的 RequestID 写进 RequestContext，返回时同样读得到。
+//  2. Recovery     兜住后面所有业务中间件里的 panic
+//  3. RequestID    尽早分配，后续日志才带得上
+//  4. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
+//  5. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
+//  6. CORS         在业务之前，预检请求不该进到 UoW
+//  7. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
 func Register(h *server.Hertz, d Deps) {
 	d = withDefaultDomainDeps(d)
+	h.Use(middleware.AccessLog(d.Log, "/metrics", "/health", "/ready"))
 	h.Use(middleware.Recovery(d.Log))
 	h.Use(middleware.RequestID())
 	h.Use(middleware.ErrorHandler(d.Log))
