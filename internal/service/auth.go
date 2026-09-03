@@ -244,7 +244,7 @@ func (s *AuthService) Register(
 	return s.issueSession(ctx, user, client, time.Now().UTC())
 }
 
-// Login 校验邮箱密码；存量非白名单邮箱不受注册白名单影响。
+// Login 校验邮箱密码，并强制要求邮箱域名在白名单内。
 func (s *AuthService) Login(
 	ctx context.Context,
 	input LoginInput,
@@ -253,6 +253,9 @@ func (s *AuthService) Login(
 	email, err := normalizeEmail(input.Email)
 	if err != nil {
 		return nil, err
+	}
+	if !s.domainAllowed(email) {
+		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
 	}
 	if err := validatePassword(input.Password, false); err != nil {
 		return nil, err
