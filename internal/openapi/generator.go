@@ -524,7 +524,7 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 	if value == nil {
 		return nil, nil
 	}
-	return openapi3gen.NewSchemaRefForValue(
+	ref, err := openapi3gen.NewSchemaRefForValue(
 		value,
 		schemas,
 		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
@@ -534,6 +534,53 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 		}),
 		openapi3gen.SchemaCustomizer(customizeSchema),
 	)
+	if err != nil {
+		return nil, err
+	}
+	applyRequiredJSONFields(value, ref, schemas)
+	return ref, nil
+}
+
+// applyRequiredJSONFields 把请求 DTO 上显式声明的必填字段同步到 OpenAPI。
+// 绑定层仍由业务校验负责；这里仅保证客户端契约与请求结构的必填语义一致。
+func applyRequiredJSONFields(value any, ref *openapi3.SchemaRef, schemas openapi3.Schemas) {
+	if ref == nil {
+		return
+	}
+	typ := reflect.TypeOf(value)
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return
+	}
+	required := make([]string, 0)
+	for index := 0; index < typ.NumField(); index++ {
+		field := typ.Field(index)
+		if field.PkgPath != "" || field.Tag.Get("openapi") != "required" {
+			continue
+		}
+		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonName == "" || jsonName == "-" {
+			continue
+		}
+		required = append(required, jsonName)
+	}
+	if len(required) == 0 {
+		return
+	}
+	target := ref.Value
+	if target == nil && ref.Ref != "" {
+		const componentPrefix = "#/components/schemas/"
+		if name, ok := strings.CutPrefix(ref.Ref, componentPrefix); ok {
+			if component := schemas[name]; component != nil {
+				target = component.Value
+			}
+		}
+	}
+	if target != nil {
+		target.WithRequired(required)
+	}
 }
 
 func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, schema *openapi3.Schema) error {

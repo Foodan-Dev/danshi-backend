@@ -22,6 +22,10 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 	return []apicontract.TypedRoute{
 		binding(http.MethodPost, "/api/v2/auth/email-verification-codes", sendVerificationCodeRequest{}, nil,
 			http.StatusTooManyRequests, http.StatusServiceUnavailable),
+		binding(http.MethodPost, "/api/v2/auth/password-reset-codes", passwordResetRequest{}, nil,
+			http.StatusTooManyRequests, http.StatusServiceUnavailable),
+		binding(http.MethodPost, "/api/v2/auth/password-resets", passwordResetConfirmRequest{}, nil,
+			http.StatusBadRequest),
 		binding(http.MethodPost, "/api/v2/auth/register", registerRequest{}, service.AuthResult{},
 			http.StatusBadRequest, http.StatusConflict),
 		binding(http.MethodPost, "/api/v2/auth/login", loginRequest{}, service.AuthResult{},
@@ -35,6 +39,8 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 		binding(http.MethodDelete, "/api/v2/auth/sessions/:id", nil, nil),
 
 		getBinding("/api/v2/users/:user_id", apicontract.NoQuery{}, service.UserProfile{}),
+		getBinding("/api/v2/users/:user_id/name-history", apicontract.NoQuery{}, service.UserNameChangeHistory{},
+			http.StatusForbidden),
 		binding(http.MethodPut, "/api/v2/users/:user_id", updateUserRequest{}, service.UserUpdateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
 		queryBinding(http.MethodDelete, "/api/v2/users/:user_id", apicontract.NoQuery{}, nil,

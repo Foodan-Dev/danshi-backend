@@ -25,9 +25,10 @@ import (
 var version = "dev"
 
 const (
-	expirePendingCommand          = "expire-pending"
-	checkModerationBacklogCommand = "check-moderation-backlog"
-	reconcileImageAccessCommand   = "reconcile-image-access"
+	expirePendingCommand             = "expire-pending"
+	checkModerationBacklogCommand    = "check-moderation-backlog"
+	reconcileImageAccessCommand      = "reconcile-image-access"
+	deliverVerificationEmailsCommand = "deliver-verification-emails"
 )
 
 func main() {
@@ -39,8 +40,9 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("必须指定任务 %q、%q 或 %q",
-			expirePendingCommand, checkModerationBacklogCommand, reconcileImageAccessCommand)
+		return fmt.Errorf("必须指定任务 %q、%q、%q 或 %q",
+			expirePendingCommand, checkModerationBacklogCommand, reconcileImageAccessCommand,
+			deliverVerificationEmailsCommand)
 	}
 	switch args[0] {
 	case expirePendingCommand:
@@ -52,11 +54,74 @@ func run(args []string) error {
 		return checkModerationBacklog()
 	case reconcileImageAccessCommand:
 		return runReconcileImageAccess(args[1:])
+	case deliverVerificationEmailsCommand:
+		return runDeliverVerificationEmails(args[1:])
 	default:
-		return fmt.Errorf("未知任务 %q；可用任务为 %q、%q、%q",
+		return fmt.Errorf("未知任务 %q；可用任务为 %q、%q、%q、%q",
 			args[0], expirePendingCommand, checkModerationBacklogCommand,
-			reconcileImageAccessCommand)
+			reconcileImageAccessCommand, deliverVerificationEmailsCommand)
 	}
+}
+
+func runDeliverVerificationEmails(args []string) error {
+	flags := flag.NewFlagSet(deliverVerificationEmailsCommand, flag.ContinueOnError)
+	batchSize := flags.Int("batch-size", 4, "单次领取数；范围 1..100")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("无法识别的额外参数：%v", flags.Args())
+	}
+	if *batchSize < 1 || *batchSize > 100 {
+		return errors.New("-batch-size 必须在 1..100 之间")
+	}
+	return deliverVerificationEmails(*batchSize)
+}
+
+func deliverVerificationEmails(batchSize int) (runErr error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := obs.NewServiceLogger(cfg, "danshi-jobs")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	database, err := db.Open(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, database.Close()) }()
+	if err := assertSchemaVersion(ctx, database); err != nil {
+		return err
+	}
+	var sender service.VerificationEmailSender
+	switch {
+	case cfg.TencentSESConfigured():
+		sender, err = tencentcloud.NewSESVerificationEmailSender(cfg)
+		if err != nil {
+			return err
+		}
+	case cfg.IsProd():
+		return errors.New("生产环境验证码邮件投递未配置 SES")
+	default:
+		sender = service.NewLogVerificationEmailSender(log)
+	}
+	worker := service.NewVerificationEmailDeliveryWorker(
+		database, sender, cfg.EmailVerificationSecret,
+		service.VerificationEmailDeliveryWorkerOptions{BatchSize: batchSize, Log: log},
+	)
+	startedAt := time.Now()
+	result, err := worker.RunBatch(ctx)
+	if err != nil {
+		return fmt.Errorf("投递验证码邮件: %w", err)
+	}
+	log.InfoContext(ctx, "验证码邮件 outbox 批次完成",
+		slog.String("build", version), slog.Int("claimed", result.Claimed),
+		slog.Int("sent", result.Sent), slog.Int("canceled", result.Canceled),
+		slog.Int("rescheduled", result.Rescheduled), slog.Int("dead_lettered", result.DeadLettered),
+		slog.Duration("duration", time.Since(startedAt)),
+	)
+	return nil
 }
 
 func runReconcileImageAccess(args []string) error {

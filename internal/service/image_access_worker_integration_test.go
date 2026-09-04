@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,7 +151,7 @@ func seedImageAccessDelivery(
 ) model.ImageAsset {
 	t.Helper()
 	user := model.User{
-		Email: suffix + "@fdueat.com", PasswordHash: "x", Name: suffix,
+		Email: suffix + "@fdueat.com", PasswordHash: "x", Name: strings.ReplaceAll(suffix, "-", "_"),
 	}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	size := int64(128)

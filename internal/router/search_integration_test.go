@@ -21,7 +21,7 @@ func TestSearchDomainAgainstPostgres(t *testing.T) {
 	cfg := authTestConfig()
 	sender := newCaptureEmailSender()
 	engine := authTestEngine(cfg, database, sender)
-	author := registerPostTestUser(t, engine, sender, "search-author@fdueat.com", "CaseSearch 作者")
+	author := registerPostTestUser(t, engine, sender, "search-author@fdueat.com", "CaseSearch作者")
 	viewer := registerPostTestUser(t, engine, sender, "search-viewer@fdueat.com", "搜索访客")
 	fixture := loadPostFixture(t, gdb)
 
@@ -295,19 +295,23 @@ func testUserSearchLiteralWildcards(
 ) {
 	t.Helper()
 	fixtures := testutil.NewFixtures(t, gdb)
-	users := make(map[string]model.User)
-	for _, literal := range []string{"%", "_", `\`} {
-		name := "用户字面" + literal + "唯一"
-		users[literal] = fixtures.CreateUser(func(user *model.User) { user.Name = name })
-	}
-	for literal, expected := range users {
+	underscoreUser := fixtures.CreateUser(func(user *model.User) { user.Name = "用户字面_唯一" })
+	for _, testCase := range []struct {
+		literal  string
+		expected []uint64
+	}{
+		{literal: "%", expected: []uint64{}},
+		{literal: "_", expected: []uint64{underscoreUser.ID}},
+		{literal: `\`, expected: []uint64{}},
+	} {
+		literal := testCase.literal
 		query := url.Values{"q": {literal}, "limit": {"100"}}
 		status, response, _ := performJSON(t, engine, http.MethodGet,
 			"/api/v2/search/users?"+query.Encode(), nil, viewer.Token)
 		require.Equal(t, http.StatusOK, status, "literal=%q", literal)
 		var result service.SearchUserList
 		decodeData(t, response, &result)
-		require.Equal(t, []uint64{expected.ID}, searchUserIDs(result.Users),
+		require.Equal(t, testCase.expected, searchUserIDs(result.Users),
 			"用户搜索必须按字面量处理：%q", literal)
 	}
 

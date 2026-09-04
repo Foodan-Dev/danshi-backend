@@ -15,6 +15,7 @@ import (
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
@@ -47,8 +48,15 @@ type RegisterInput struct {
 
 // LoginInput 是登录领域输入。
 type LoginInput struct {
-	Email    string
-	Password string
+	Identifier string
+	Password   string
+}
+
+// PasswordResetInput 是匿名密码重置的提交输入。
+type PasswordResetInput struct {
+	Email            string
+	VerificationCode string
+	NewPassword      string
 }
 
 // ClientInfo 描述一次登录所在设备。
@@ -122,20 +130,52 @@ func ShouldCommitError(err error) bool {
 
 // AuthService 实现 auth 域完整业务闭环。
 type AuthService struct {
-	cfg      config.Config
-	tokens   *jwtx.Codec
-	sender   VerificationEmailSender
-	users    repository.UserRepository
-	codes    repository.VerificationCodeRepository
-	sessions repository.SessionRepository
+	cfg        config.Config
+	tokens     *jwtx.Codec
+	sender     VerificationEmailSender
+	deliveries VerificationEmailDeliveryQueue
+	moderator  ContentModerator
+	users      repository.UserRepository
+	codes      repository.VerificationCodeRepository
+	sessions   repository.SessionRepository
 }
 
-// NewAuthService 创建 auth 服务。
-func NewAuthService(cfg config.Config, sender VerificationEmailSender) *AuthService {
+// NewAuthService 创建 auth 服务；可选注入内容审核器。
+func NewAuthService(
+	cfg config.Config,
+	sender VerificationEmailSender,
+	moderators ...ContentModerator,
+) *AuthService {
+	return newAuthService(cfg, sender, nil, moderators...)
+}
+
+// NewAuthServiceWithDelivery 创建同时支持验证码邮件 durable outbox 的 auth 服务。
+func NewAuthServiceWithDelivery(
+	cfg config.Config,
+	sender VerificationEmailSender,
+	deliveryQueue VerificationEmailDeliveryQueue,
+	moderators ...ContentModerator,
+) *AuthService {
+	return newAuthService(cfg, sender, deliveryQueue, moderators...)
+}
+
+func newAuthService(
+	cfg config.Config,
+	sender VerificationEmailSender,
+	deliveryQueue VerificationEmailDeliveryQueue,
+	moderators ...ContentModerator,
+) *AuthService {
 	if sender == nil {
 		sender = UnavailableVerificationEmailSender{}
 	}
-	return &AuthService{cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender}
+	var moderator ContentModerator = UnavailableContentModerator{}
+	if len(moderators) > 0 && moderators[0] != nil {
+		moderator = moderators[0]
+	}
+	return &AuthService{
+		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender,
+		deliveries: deliveryQueue, moderator: moderator,
+	}
 }
 
 // SendVerificationCode 为允许注册的域名生成并记录一次验证码发送状态。
@@ -171,7 +211,7 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	} else {
 		code, err = generateVerificationCode()
 		if err == nil {
-			challenge.CodeDigest = s.codeDigest(email, code)
+			challenge.CodeDigest = s.codeDigest(model.VerificationPurposeRegistration, email, code)
 		}
 	}
 	if err != nil {
@@ -189,8 +229,124 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if registered {
 		return nil
 	}
+	// 注册接口继续保持原有语义：发信失败时请求回滚，调用方可安全重试。
 	if err := s.sender.SendRegistrationCode(ctx, email, code); err != nil {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
+	}
+	return nil
+}
+
+// SendPasswordResetCode 向存在且未注销的账号发送找回密码验证码；响应不泄露账号状态。
+func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string) error {
+	email, err := normalizeEmail(rawEmail)
+	if err != nil {
+		return err
+	}
+	if !s.cfg.EmailVerificationRequired {
+		return apierr.ServiceUnavailable("密码重置暂不可用")
+	}
+	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+	}
+	user, err := s.users.FindByEmail(ctx, email)
+	exists := err == nil
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return apierr.Internal(err)
+	}
+	if exists {
+		// 与注销串行化，避免账号在状态落库后、发信前被软删除。
+		user, err = s.users.LockByID(ctx, user.ID)
+		if errors.Is(err, repository.ErrNotFound) {
+			exists = false
+		} else if err != nil {
+			return apierr.Internal(err)
+		}
+	}
+	now := time.Now().UTC()
+	challenge, err := s.codes.LockOrCreate(ctx, email, model.VerificationPurposePasswordReset, now)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := enforceSendRate(challenge, now); err != nil {
+		var rateLimit *RateLimitError
+		if !errors.As(err, &rateLimit) {
+			return err
+		}
+		// 找回接口是匿名防枚举入口；限流只阻止刷新挑战和投递，不能把
+		// 某个邮箱是否已有发送状态暴露成 429/Retry-After 差异。
+		return nil
+	}
+	code, err := generateVerificationCode()
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if exists {
+		challenge.CodeDigest = s.codeDigest(model.VerificationPurposePasswordReset, email, code)
+	} else {
+		challenge.CodeDigest, err = randomDigest()
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	challenge.ExpiresAt = now.Add(verificationCodeTTL)
+	challenge.LastSentAt = &now
+	challenge.SendCount++
+	challenge.FailedAttempts = 0
+	challenge.ConsumedAt = nil
+	if err := s.codes.SaveState(ctx, challenge, now); err != nil {
+		return apierr.Internal(err)
+	}
+	if !exists {
+		return nil
+	}
+	if err := s.enqueueVerificationEmail(
+		ctx, challenge, user.Email, model.VerificationPurposePasswordReset,
+		challenge.CodeDigest, code, now,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ResetPassword 消费密码重置验证码，更新密码并在同一事务撤销全部会话。
+func (s *AuthService) ResetPassword(ctx context.Context, input PasswordResetInput) error {
+	email, err := normalizeEmail(input.Email)
+	if err != nil {
+		return err
+	}
+	if err := validatePassword(input.NewPassword, true); err != nil {
+		return err
+	}
+	if err := validateVerificationCode(&input.VerificationCode); err != nil {
+		return err
+	}
+	user, err := s.users.FindByEmail(ctx, email)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	user, err = s.users.LockByID(ctx, user.ID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := s.consumeVerification(ctx, model.VerificationPurposePasswordReset, email, input.VerificationCode); err != nil {
+		return err
+	}
+	hash, err := passwordx.Hash(input.NewPassword)
+	if err != nil {
+		return apierr.Internal(err)
+	}
+	if err := s.users.UpdatePassword(ctx, user.ID, hash); err != nil {
+		return apierr.Internal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.sessions.RevokeAll(ctx, user.ID, now); err != nil {
+		return apierr.Internal(err)
 	}
 	return nil
 }
@@ -221,12 +377,25 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 
+	nameModeration, err := s.moderator.Review(ctx, ModerationRequest{
+		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateModerationResult(nameModeration); err != nil {
+		return nil, err
+	}
+	if nameModeration.Verdict != model.ModerationVerdictPass {
+		return nil, moderationVerdictError(nameModeration.Verdict, "name")
+	}
+
 	passwordHash, err := passwordx.Hash(input.Password)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
 	if s.cfg.EmailVerificationRequired {
-		if err := s.consumeVerification(ctx, input.Email, *input.VerificationCode); err != nil {
+		if err := s.consumeVerification(ctx, model.VerificationPurposeRegistration, input.Email, *input.VerificationCode); err != nil {
 			return nil, err
 		}
 	}
@@ -239,38 +408,77 @@ func (s *AuthService) Register(
 		if repository.IsUniqueViolation(err, "uq_users_email_lower") {
 			return nil, apierr.Conflict(apierr.BizEmailTaken, "邮箱已被注册")
 		}
+		if repository.IsUniqueViolation(err, "uq_users_name_lower") ||
+			repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") {
+			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+		}
+		return nil, apierr.Internal(err)
+	}
+	if err := s.users.ClaimName(ctx, user.ID, user.Name, time.Now().UTC()); err != nil {
+		if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
+			repository.IsUniqueViolation(err, "uq_users_name_lower") ||
+			errors.Is(err, repository.ErrAlreadyExists) {
+			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+		}
+		return nil, apierr.Internal(err)
+	}
+	if err := s.users.CreateModerationRecord(ctx, moderationRecordForUser(
+		user.ID, model.ModerationFieldName, nameModeration,
+	)); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())
 }
 
-// Login 校验邮箱密码，并强制要求邮箱域名在白名单内。
+// Login 校验邮箱或 name 与密码；邮箱登录还必须满足邮箱域名白名单。
 func (s *AuthService) Login(
 	ctx context.Context,
 	input LoginInput,
 	client ClientInfo,
 ) (*AuthResult, error) {
-	email, err := normalizeEmail(input.Email)
-	if err != nil {
-		return nil, err
-	}
-	if !s.domainAllowed(email) {
-		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
-	}
 	if err := validatePassword(input.Password, false); err != nil {
 		return nil, err
 	}
-	user, err := s.users.FindByEmail(ctx, email)
-	if err != nil || !passwordx.Verify(input.Password, passwordHash(user)) {
-		if err != nil && !errors.Is(err, repository.ErrNotFound) {
+	user, err := s.findLoginUser(ctx, input.Identifier)
+	if err != nil {
+		var inputError *apierr.Error
+		if errors.As(err, &inputError) {
+			return nil, err
+		}
+		if !errors.Is(err, repository.ErrNotFound) {
 			return nil, apierr.Internal(err)
 		}
+		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+	}
+	if !passwordx.Verify(input.Password, passwordHash(user)) {
 		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
 	}
 	if banned(user, time.Now().UTC()) {
 		return nil, bannedError(user)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())
+}
+
+func (s *AuthService) findLoginUser(ctx context.Context, rawIdentifier string) (*model.User, error) {
+	identifier := strings.TrimSpace(rawIdentifier)
+	if identifier == "" {
+		return nil, apierr.InvalidField("identifier", apierr.FieldRequired, "登录标识不能为空")
+	}
+	if strings.Contains(identifier, "@") {
+		email, err := normalizeEmail(identifier)
+		if err != nil {
+			return nil, apierr.InvalidField("identifier", apierr.FieldInvalidFormat, "登录标识格式不正确")
+		}
+		if !s.domainAllowed(email) {
+			return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+		}
+		return s.users.FindByEmail(ctx, email)
+	}
+	name, err := normalizeName(identifier)
+	if err != nil {
+		return nil, apierr.InvalidField("identifier", apierr.FieldInvalidFormat, "登录标识格式不正确")
+	}
+	return s.users.FindByName(ctx, name)
 }
 
 // Refresh 校验 refresh token、摘要和会话状态，只换发 access token。
@@ -437,9 +645,9 @@ func (s *AuthService) userView(ctx context.Context, user *model.User) (UserView,
 	}, nil
 }
 
-func (s *AuthService) consumeVerification(ctx context.Context, email, code string) error {
+func (s *AuthService) consumeVerification(ctx context.Context, purpose model.VerificationPurpose, email, code string) error {
 	now := time.Now().UTC()
-	challenge, err := s.codes.LockExisting(ctx, email, model.VerificationPurposeRegistration)
+	challenge, err := s.codes.LockExisting(ctx, email, purpose)
 	if errors.Is(err, repository.ErrNotFound) {
 		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
 	}
@@ -450,7 +658,7 @@ func (s *AuthService) consumeVerification(ctx context.Context, email, code strin
 		challenge.FailedAttempts >= maxFailedAttempts {
 		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
 	}
-	if !hmac.Equal([]byte(challenge.CodeDigest), []byte(s.codeDigest(email, code))) {
+	if !hmac.Equal([]byte(challenge.CodeDigest), []byte(s.codeDigest(purpose, email, code))) {
 		challenge.FailedAttempts++
 		if err := s.codes.SaveState(ctx, challenge, now); err != nil {
 			return apierr.Internal(err)
@@ -476,8 +684,46 @@ func (s *AuthService) domainAllowed(email string) bool {
 	return false
 }
 
-func (s *AuthService) codeDigest(email, code string) string {
-	payload := fmt.Sprintf("%s:%s:%s", model.VerificationPurposeRegistration, email, code)
+func (s *AuthService) enqueueVerificationEmail(
+	ctx context.Context,
+	challenge *model.EmailVerificationCode,
+	email string,
+	purpose model.VerificationPurpose,
+	codeDigest string,
+	code string,
+	now time.Time,
+) error {
+	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+	}
+	if _, err := s.deliveries.Enqueue(
+		ctx, challenge, email, purpose, codeDigest, code, now,
+	); err != nil {
+		return apierr.Internal(err)
+	}
+	// HTTP UoW 提交成功后立刻尝试一次；若没有事务回调队列，则交给后台 job 扫描。
+	dbinfra.AfterCommit(ctx, func(afterCommitCtx context.Context) {
+		s.deliveries.Kick(afterCommitCtx)
+	})
+	return nil
+}
+
+type verificationEmailSenderAvailability interface {
+	Configured() bool
+}
+
+func emailSenderConfigured(sender VerificationEmailSender) bool {
+	if sender == nil {
+		return false
+	}
+	if available, ok := sender.(verificationEmailSenderAvailability); ok {
+		return available.Configured()
+	}
+	return true
+}
+
+func (s *AuthService) codeDigest(purpose model.VerificationPurpose, email, code string) string {
+	payload := fmt.Sprintf("%s:%s:%s", purpose, email, code)
 	digest := hmac.New(sha256.New, []byte(s.cfg.EmailVerificationSecret))
 	_, _ = digest.Write([]byte(payload))
 	return fmt.Sprintf("%x", digest.Sum(nil))

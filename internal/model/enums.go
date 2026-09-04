@@ -145,7 +145,8 @@ type VerificationPurpose string
 
 // 邮箱验证码用途枚举值。
 const (
-	VerificationPurposeRegistration VerificationPurpose = "registration"
+	VerificationPurposeRegistration  VerificationPurpose = "registration"
+	VerificationPurposePasswordReset VerificationPurpose = "password_reset"
 )
 
 // ModerationScene 是审核内容的媒介类型。

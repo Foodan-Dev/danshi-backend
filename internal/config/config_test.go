@@ -18,8 +18,9 @@ func base() config.Config {
 		JWTSecretKey: goodSecret, JWTExpireMinutes: 60, JWTRefreshExpireDay: 30,
 		EmailVerificationRequired: true, EmailVerificationSecret: goodSecret,
 		AllowedEmailDomains: "fdueat.com,m.fudan.edu.cn",
-		TencentSESSubject:   "旦食注册验证码",
-		COSMaxImageBytes:    10 * 1024 * 1024, COSPresignTTLS: 600, COSPresignGetTTLS: 3600,
+		TencentSESSubject:   "旦食注册验证码", TencentSESResetSubject: "旦食密码重置验证码",
+		TencentSESResetTemplateID: 2,
+		COSMaxImageBytes:          10 * 1024 * 1024, COSPresignTTLS: 600, COSPresignGetTTLS: 3600,
 		ModerationCallbackAuthFailureThreshold: 5,
 		ModerationCallbackAuthFailureWindowS:   60,
 		ModerationReviewBacklogThreshold:       100,
@@ -139,6 +140,9 @@ func TestProdExtraConstraints(t *testing.T) {
 		{"未配 SES 模板", func(c *config.Config) {
 			c.TencentSESTemplateID = 0
 		}, "TENCENT_SES_TEMPLATE_ID"},
+		{"未配密码重置 SES 模板", func(c *config.Config) {
+			c.TencentSESResetTemplateID = 0
+		}, "TENCENT_SES_RESET_TEMPLATE_ID"},
 		{"未配图片域名", func(c *config.Config) { c.COSImageDomain = "" }, "COS_IMG_DOMAIN"},
 		{"未配 EdgeOne 站点", func(c *config.Config) { c.EdgeOneZoneID = "" }, "EDGEONE_ZONE_ID"},
 		{"未配审核回调", func(c *config.Config) { c.TencentCICallbackURL = "" }, "TENCENT_CI_CALLBACK_URL"},

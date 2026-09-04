@@ -45,6 +45,8 @@ type Deps struct {
 	BusinessMetrics obs.BusinessRecorder
 	// EmailSender 可由测试替换；nil 时 dev 使用日志实现，prod 按配置装配腾讯云 SES。
 	EmailSender service.VerificationEmailSender
+	// EmailDeliveryWorker 可由 server 或测试注入；nil 时由 auth 路由创建默认 outbox worker。
+	EmailDeliveryWorker service.VerificationEmailDeliveryQueue
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
 	ContentModerator service.ContentModerator
 	// ImageStorage 是上传域使用的对象存储边界。
@@ -72,6 +74,8 @@ type Deps struct {
 //  4. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
 //  5. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
 //  6. CORS         在业务之前，预检请求不该进到 UoW
+//  5. InFlight     共享保护两条发验证码路径，必须在 UoW 借连接之前拒绝过载请求
+//  6. CORS         在业务之前，预检请求不该进到 UoW
 //  7. UnitOfWork   只包业务路由，不包探针（探针不该开事务）
 func Register(h *server.Hertz, d Deps) {
 	d = withDefaultDomainDeps(d)
@@ -80,9 +84,12 @@ func Register(h *server.Hertz, d Deps) {
 	h.Use(middleware.RequestID())
 	h.Use(middleware.ErrorHandler(d.Log))
 	h.Use(moderationFailureAlerting(d.DB, d.ModerationAlerter, d.Log))
-	h.Use(middleware.LimitInFlight(
+	h.Use(middleware.LimitInFlightPaths(
 		http.MethodPost,
-		APIPrefix+"/auth/email-verification-codes",
+		[]string{
+			APIPrefix + "/auth/email-verification-codes",
+			APIPrefix + "/auth/password-reset-codes",
+		},
 		verificationCodeMaxInFlight,
 		verificationCodeRetryAfterSeconds,
 		apierr.TooManyRequests(apierr.BizVerifyCodeBusy, "验证码发送服务繁忙，请稍后再试"),

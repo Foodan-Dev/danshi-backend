@@ -25,7 +25,8 @@ const (
 	ProfileDev  Profile = "dev"
 	ProfileProd Profile = "prod"
 
-	defaultTencentSESSubject = "旦食注册验证码"
+	defaultTencentSESSubject      = "旦食注册验证码"
+	defaultTencentSESResetSubject = "旦食密码重置验证码"
 	// 待回收上传不需要秒级处理：每小时扫描足以限制孤儿堆积，
 	// 同时避免 server 实例频繁轮询数据库。
 	defaultImagePendingExpirationScanIntervalS = 60 * 60
@@ -55,20 +56,22 @@ type Config struct {
 	CORSAllowOrigins     string `mapstructure:"CORS_ALLOW_ORIGINS"`
 	CORSAllowCredentials bool   `mapstructure:"CORS_ALLOW_CREDENTIALS"`
 
-	TencentSecretID      string `mapstructure:"TENCENT_CLOUD_SECRET_ID"`
-	TencentSecretKey     string `mapstructure:"TENCENT_CLOUD_SECRET_KEY"`
-	TencentRegion        string `mapstructure:"TENCENT_CLOUD_REGION"`
-	TencentSESFromEmail  string `mapstructure:"TENCENT_SES_FROM_EMAIL"`
-	TencentSESFromName   string `mapstructure:"TENCENT_SES_FROM_NAME"`
-	TencentSESSubject    string `mapstructure:"TENCENT_SES_SUBJECT"`
-	TencentSESTemplateID uint64 `mapstructure:"TENCENT_SES_TEMPLATE_ID"`
-	COSBucket            string `mapstructure:"COS_BUCKET"`
-	COSRegion            string `mapstructure:"COS_REGION"`
-	COSImageDomain       string `mapstructure:"COS_IMG_DOMAIN"`
-	COSMaxImageBytes     int64  `mapstructure:"COS_MAX_IMAGE_BYTES"`
-	COSPresignTTLS       int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
-	COSPresignGetTTLS    int    `mapstructure:"COS_PRESIGN_GET_TTL_SECONDS"`
-	EdgeOneZoneID        string `mapstructure:"EDGEONE_ZONE_ID"`
+	TencentSecretID           string `mapstructure:"TENCENT_CLOUD_SECRET_ID"`
+	TencentSecretKey          string `mapstructure:"TENCENT_CLOUD_SECRET_KEY"`
+	TencentRegion             string `mapstructure:"TENCENT_CLOUD_REGION"`
+	TencentSESFromEmail       string `mapstructure:"TENCENT_SES_FROM_EMAIL"`
+	TencentSESFromName        string `mapstructure:"TENCENT_SES_FROM_NAME"`
+	TencentSESSubject         string `mapstructure:"TENCENT_SES_SUBJECT"`
+	TencentSESTemplateID      uint64 `mapstructure:"TENCENT_SES_TEMPLATE_ID"`
+	TencentSESResetSubject    string `mapstructure:"TENCENT_SES_RESET_SUBJECT"`
+	TencentSESResetTemplateID uint64 `mapstructure:"TENCENT_SES_RESET_TEMPLATE_ID"`
+	COSBucket                 string `mapstructure:"COS_BUCKET"`
+	COSRegion                 string `mapstructure:"COS_REGION"`
+	COSImageDomain            string `mapstructure:"COS_IMG_DOMAIN"`
+	COSMaxImageBytes          int64  `mapstructure:"COS_MAX_IMAGE_BYTES"`
+	COSPresignTTLS            int    `mapstructure:"COS_PRESIGN_TTL_SECONDS"`
+	COSPresignGetTTLS         int    `mapstructure:"COS_PRESIGN_GET_TTL_SECONDS"`
+	EdgeOneZoneID             string `mapstructure:"EDGEONE_ZONE_ID"`
 
 	TencentCIBizType                       string `mapstructure:"TENCENT_CI_BIZ_TYPE"`
 	TencentCICallbackURL                   string `mapstructure:"TENCENT_CI_CALLBACK_URL"`
@@ -161,7 +164,7 @@ func (c Config) TencentSESConfigured() bool {
 	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
 		c.TencentRegion != "" && c.TencentSESFromEmail != "" &&
 		c.TencentSESFromName != "" && c.TencentSESSubject != "" &&
-		c.TencentSESTemplateID > 0
+		c.TencentSESTemplateID > 0 && c.TencentSESResetSubject != "" && c.TencentSESResetTemplateID > 0
 }
 
 // EmailDomains 把逗号分隔的白名单拆开并小写化。
@@ -203,20 +206,22 @@ var bindings = map[string]any{
 	"CORS_ALLOW_ORIGINS":     "",
 	"CORS_ALLOW_CREDENTIALS": false,
 
-	"TENCENT_CLOUD_SECRET_ID":     "",
-	"TENCENT_CLOUD_SECRET_KEY":    "",
-	"TENCENT_CLOUD_REGION":        "ap-guangzhou",
-	"TENCENT_SES_FROM_EMAIL":      "",
-	"TENCENT_SES_FROM_NAME":       "旦食",
-	"TENCENT_SES_SUBJECT":         defaultTencentSESSubject,
-	"TENCENT_SES_TEMPLATE_ID":     uint64(0),
-	"COS_BUCKET":                  "",
-	"COS_REGION":                  "ap-shanghai",
-	"COS_IMG_DOMAIN":              "",
-	"COS_MAX_IMAGE_BYTES":         int64(10 * 1024 * 1024),
-	"COS_PRESIGN_TTL_SECONDS":     600,
-	"COS_PRESIGN_GET_TTL_SECONDS": 3600,
-	"EDGEONE_ZONE_ID":             "",
+	"TENCENT_CLOUD_SECRET_ID":       "",
+	"TENCENT_CLOUD_SECRET_KEY":      "",
+	"TENCENT_CLOUD_REGION":          "ap-guangzhou",
+	"TENCENT_SES_FROM_EMAIL":        "",
+	"TENCENT_SES_FROM_NAME":         "旦食",
+	"TENCENT_SES_SUBJECT":           defaultTencentSESSubject,
+	"TENCENT_SES_TEMPLATE_ID":       uint64(0),
+	"TENCENT_SES_RESET_SUBJECT":     defaultTencentSESResetSubject,
+	"TENCENT_SES_RESET_TEMPLATE_ID": uint64(0),
+	"COS_BUCKET":                    "",
+	"COS_REGION":                    "ap-shanghai",
+	"COS_IMG_DOMAIN":                "",
+	"COS_MAX_IMAGE_BYTES":           int64(10 * 1024 * 1024),
+	"COS_PRESIGN_TTL_SECONDS":       600,
+	"COS_PRESIGN_GET_TTL_SECONDS":   3600,
+	"EDGEONE_ZONE_ID":               "",
 
 	"TENCENT_CI_BIZ_TYPE":                             "",
 	"TENCENT_CI_CALLBACK_URL":                         "",

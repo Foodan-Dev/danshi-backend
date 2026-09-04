@@ -149,6 +149,8 @@ make schema-test
 | `TENCENT_SES_FROM_NAME` | `旦食` | SES 发件人名称 |
 | `TENCENT_SES_SUBJECT` | `旦食注册验证码` | 注册验证码邮件主题；不得包含控制字符 |
 | `TENCENT_SES_TEMPLATE_ID` | `0` | SES 模板 ID；生产环境启用邮箱验证时必须为正数 |
+| `TENCENT_SES_RESET_SUBJECT` | `旦食密码重置验证码` | 密码重置验证码邮件主题；不得包含控制字符 |
+| `TENCENT_SES_RESET_TEMPLATE_ID` | `0` | 密码重置 SES 模板 ID；生产环境启用邮箱验证时必须为正数 |
 | `COS_BUCKET` | 无 | COS bucket 名称；生产环境必填 |
 | `COS_REGION` | `ap-shanghai` | COS 区域 |
 | `COS_IMG_DOMAIN` | 无 | 图片公开域名，非空时必须是 HTTPS URL；生产环境必填 |
@@ -205,6 +207,17 @@ worker 用 `FOR UPDATE SKIP LOCKED` 有界领取并始终设置 COS ACL；只有
 进程在写回 JobId 前崩溃时只做时间窗对账，不自动重放；重试预算耗尽进入可观测
 `dead_letter`。`/metrics` 每 15 秒最多用一条只读分组查询刷新六个固定状态的缓存计数，
 不把图片 ID、URL、对象键、JobId 或供应商错误正文写入 label。
+
+密码重置验证码通过 durable outbox 在事务提交后投递；外部调度器应周期执行：
+
+```bash
+danshi-jobs deliver-verification-emails -batch-size 4
+```
+
+worker 只在数据库短事务内用 `FOR UPDATE SKIP LOCKED` 领取任务，事务提交后调用 SES，
+失败按固定预算重试，过期或已被新验证码替代的任务取消，无法解密或耗尽重试预算的任务进入
+`dead_letter`。验证码密文使用 `EMAIL_VERIFICATION_SECRET` 加密保存，日志与指标不包含邮箱、
+验证码或供应商错误正文。
 
 图片首次送审失败不会回滚已经验证完成的上传；服务在同一事务登记
 `image_moderation_retries`，图片保持 `moderation=pending`，因此引用它的帖子只能进入

@@ -143,6 +143,16 @@ func (UserRepository) CreateModerationRecord(ctx context.Context, record *model.
 	return db.FromContext(ctx).Create(record).Error
 }
 
+// FindNameChangeRecords 返回目标用户的完整 name 变更历史，最新在前。
+func (UserRepository) FindNameChangeRecords(
+	ctx context.Context, userID uint64,
+) ([]model.UserNameChangeRecord, error) {
+	records := make([]model.UserNameChangeRecord, 0)
+	err := db.FromContext(ctx).Where("user_id = ?", userID).
+		Order("changed_at DESC, id DESC").Find(&records).Error
+	return records, err
+}
+
 // Follow 幂等创建关注关系，并报告本次是否真正插入。
 func (UserRepository) Follow(ctx context.Context, followerID, followingID uint64) (bool, error) {
 	result := db.FromContext(ctx).Exec(`

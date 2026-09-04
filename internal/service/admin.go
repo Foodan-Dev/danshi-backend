@@ -106,10 +106,19 @@ type AdminUserBanRecordView struct {
 	CreatedAt      ptime.Time          `json:"created_at"`
 }
 
+// AdminUserNameChangeView 是管理端用户取证可见的一次 name 变更。
+type AdminUserNameChangeView struct {
+	ID        uint64     `json:"id"`
+	OldName   string     `json:"old_name"`
+	NewName   string     `json:"new_name"`
+	ChangedAt ptime.Time `json:"changed_at"`
+}
+
 // AdminUserDetail 是单用户取证详情及其完整封禁历史。
 type AdminUserDetail struct {
 	AdminUserView
-	BanRecords []AdminUserBanRecordView `json:"ban_records"`
+	BanRecords  []AdminUserBanRecordView  `json:"ban_records"`
+	NameChanges []AdminUserNameChangeView `json:"name_changes"`
 }
 
 // AdminImageView 是具备内容审核能力的角色可见的单张图片详情。

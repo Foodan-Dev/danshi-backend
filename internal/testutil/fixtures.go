@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,10 +23,9 @@ const fixturePasswordHash = "$2b$12$.tR4UmM4YnDt97LElAniw.6SCzecEr7vDX9lNteF5bDq
 type Fixtures struct {
 	t  testing.TB
 	db *gorm.DB
-
-	mu       sync.Mutex
-	sequence int
 }
+
+var fixtureSequence atomic.Uint64
 
 // NewFixtures 为一个已迁移数据库创建夹具入口。
 func NewFixtures(t testing.TB, db *gorm.DB) *Fixtures {
@@ -77,7 +76,7 @@ func (f *Fixtures) CreateUser(overrides ...UserOverride) model.User {
 	user := model.User{
 		Email:        fmt.Sprintf("fixture-user-%04d@fdueat.com", sequence),
 		PasswordHash: fixturePasswordHash,
-		Name:         fmt.Sprintf("夹具用户 %04d", sequence),
+		Name:         fmt.Sprintf("夹具用户%04d", sequence),
 	}
 	for _, override := range overrides {
 		override(&user)
@@ -568,8 +567,5 @@ func (f *Fixtures) mustCreate(value any, description string) {
 }
 
 func (f *Fixtures) nextSequence() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.sequence++
-	return f.sequence
+	return int(fixtureSequence.Add(1))
 }

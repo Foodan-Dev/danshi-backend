@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -31,19 +32,49 @@ type sendVerificationCodeRequest struct {
 	Email string `json:"email"`
 }
 
+type passwordResetRequest struct {
+	Email string `json:"email" openapi:"required"`
+}
+
+type passwordResetConfirmRequest struct {
+	Email            string `json:"email" openapi:"required"`
+	VerificationCode string `json:"verification_code" openapi:"required"`
+	NewPassword      string `json:"new_password" openapi:"required"`
+}
+
 type registerRequest struct {
 	Email            string  `json:"email"`
 	Password         string  `json:"password"`
 	VerificationCode *string `json:"verification_code"`
-	Name             *string `json:"name"`
+	Name             string  `json:"name" openapi:"required"`
 	Gender           *string `json:"gender"`
 	DeviceLabel      string  `json:"device_label"`
 }
 
 type loginRequest struct {
-	Email       string `json:"email"`
+	Identifier  string `json:"identifier"`
 	Password    string `json:"password"`
 	DeviceLabel string `json:"device_label"`
+	legacyEmail string
+}
+
+// UnmarshalJSON 接受旧客户端的 email 字段，但 OpenAPI 只声明语义正确的 identifier。
+func (r *loginRequest) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Identifier  string `json:"identifier"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		DeviceLabel string `json:"device_label"`
+	}
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	r.Identifier = value.Identifier
+	r.legacyEmail = value.Email
+	r.Password = value.Password
+	r.DeviceLabel = value.DeviceLabel
+	return nil
 }
 
 type refreshRequest struct {
@@ -76,6 +107,34 @@ func (h *Auth) SendVerificationCode(ctx context.Context, c *app.RequestContext) 
 	c.JSON(consts.StatusOK, envelope.OK[any]("如果该邮箱可以注册，验证码将发送到该邮箱", nil))
 }
 
+// SendPasswordResetCode 发起匿名密码重置；成功响应对账号是否存在保持一致。
+func (h *Auth) SendPasswordResetCode(ctx context.Context, c *app.RequestContext) {
+	var request passwordResetRequest
+	if err := bindJSON(c, &request); err != nil {
+		httpx.Fail(ctx, c, err)
+		return
+	}
+	if err := h.service.SendPasswordResetCode(ctx, request.Email); err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK[any]("如果该邮箱已绑定可用账号，验证码将发送到该邮箱", nil))
+}
+
+// ResetPassword 提交验证码和新密码，不创建新会话。
+func (h *Auth) ResetPassword(ctx context.Context, c *app.RequestContext) {
+	var request passwordResetConfirmRequest
+	if err := bindJSON(c, &request); err != nil {
+		httpx.Fail(ctx, c, err)
+		return
+	}
+	if err := h.service.ResetPassword(ctx, service.PasswordResetInput{Email: request.Email, VerificationCode: request.VerificationCode, NewPassword: request.NewPassword}); err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK[any]("密码重置成功，请使用新密码登录", nil))
+}
+
 // Register 注册并创建首个会话。
 func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 	var request registerRequest
@@ -83,9 +142,10 @@ func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
+	name := request.Name
 	result, err := h.service.Register(ctx, service.RegisterInput{
 		Email: request.Email, Password: request.Password,
-		VerificationCode: request.VerificationCode, Name: request.Name, Gender: request.Gender,
+		VerificationCode: request.VerificationCode, Name: &name, Gender: request.Gender,
 	}, clientInfo(c, request.DeviceLabel))
 	if err != nil {
 		failService(ctx, c, err)
@@ -101,9 +161,14 @@ func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
+	identifier, err := loginIdentifier(request)
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
 	result, err := h.service.Login(
 		ctx,
-		service.LoginInput{Email: request.Email, Password: request.Password},
+		service.LoginInput{Identifier: identifier, Password: request.Password},
 		clientInfo(c, request.DeviceLabel),
 	)
 	if err != nil {
@@ -111,6 +176,16 @@ func (h *Auth) Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	c.JSON(consts.StatusOK, envelope.OK("登录成功", result))
+}
+
+func loginIdentifier(request loginRequest) (string, error) {
+	if request.Identifier != "" && request.legacyEmail != "" {
+		return "", apierr.InvalidField("identifier", apierr.FieldConflict, "identifier 与 email 不能同时提供")
+	}
+	if request.Identifier != "" {
+		return request.Identifier, nil
+	}
+	return request.legacyEmail, nil
 }
 
 // Refresh 校验 refresh 会话并换发 access token。

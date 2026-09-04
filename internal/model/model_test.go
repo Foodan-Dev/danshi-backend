@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -173,6 +174,20 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	}
 	insertAndSelect(t, gdb, verification)
 
+	delivery := &model.VerificationEmailDelivery{
+		ChallengeID:    verification.ID,
+		Email:          verification.Email,
+		Purpose:        verification.Purpose,
+		CodeDigest:     strings.Repeat("a", 64),
+		CodeCiphertext: []byte("model-test-encrypted-code"),
+		State:          model.VerificationEmailDeliveryPending,
+		Attempts:       0,
+		NextAttemptAt:  &now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	insertAndSelect(t, gdb, delivery)
+
 	session := &model.UserSession{
 		UserID: actor.ID, RefreshTokenDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		DeviceLabel: ptr("model-test"), UserAgent: ptr("model-test/1.0"), IP: ptr("127.0.0.1"),
@@ -312,7 +327,7 @@ func tableName(t *testing.T, gdb *gorm.DB, value any) string {
 func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	catalog := modelCatalog()
-	require.Len(t, catalog, 31)
+	require.Len(t, catalog, 34)
 
 	var actualTables []string
 	require.NoError(t, gdb.Raw(`
@@ -355,7 +370,7 @@ func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 func modelCatalog() []any {
 	return []any{
 		&model.Canteen{}, &model.CanteenWindow{}, &model.Cuisine{}, &model.Flavor{},
-		&model.Tag{}, &model.User{}, &model.UserRoleBinding{}, &model.UserBanRecord{},
+		&model.Tag{}, &model.User{}, &model.UserNameClaim{}, &model.UserNameChangeRecord{}, &model.UserRoleBinding{}, &model.UserBanRecord{},
 		&model.UserRoleRecord{}, &model.ImageAsset{}, &model.Post{},
 		&model.PostTag{}, &model.PostFlavor{}, &model.PostImage{}, &model.Comment{},
 		&model.CommentMention{}, &model.Follow{}, &model.Favorite{}, &model.PostLike{},
@@ -363,6 +378,7 @@ func modelCatalog() []any {
 		&model.UserSession{}, &model.PostHistory{}, &model.CommentHistory{},
 		&model.ModerationRecord{}, &model.ModerationAlertState{}, &model.DictionarySuggestion{},
 		&model.ImageAccessIntent{}, &model.ImageAccessDelivery{}, &model.ImageModerationRetry{},
+		&model.VerificationEmailDelivery{},
 	}
 }
 

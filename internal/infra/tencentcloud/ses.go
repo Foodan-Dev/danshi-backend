@@ -37,6 +37,8 @@ type SESVerificationEmailSender struct {
 	fromEmailAddress string
 	subject          string
 	templateID       uint64
+	resetSubject     string
+	resetTemplateID  uint64
 	redactor         knownSecretRedactor
 }
 
@@ -72,9 +74,11 @@ func newSESVerificationEmailSender(
 			strings.TrimSpace(cfg.TencentSESFromName),
 			strings.TrimSpace(cfg.TencentSESFromEmail),
 		),
-		subject:    strings.TrimSpace(cfg.TencentSESSubject),
-		templateID: cfg.TencentSESTemplateID,
-		redactor:   newKnownSecretRedactor(cfg),
+		subject:         strings.TrimSpace(cfg.TencentSESSubject),
+		templateID:      cfg.TencentSESTemplateID,
+		resetSubject:    strings.TrimSpace(cfg.TencentSESResetSubject),
+		resetTemplateID: cfg.TencentSESResetTemplateID,
+		redactor:        newKnownSecretRedactor(cfg),
 	}
 }
 
@@ -84,18 +88,37 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	email string,
 	code string,
 ) (err error) {
+	return s.sendCode(ctx, email, map[string]string{"code": code}, s.subject, s.templateID, "注册")
+}
+
+// SendPasswordResetCode 使用独立主题和模板，避免把找回密码邮件误标为注册邮件。
+func (s *SESVerificationEmailSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	return s.sendCode(ctx, email, map[string]string{
+		"code":               code,
+		"expires_in_minutes": "10",
+		"security_notice":    "非本人操作请忽略",
+	}, s.resetSubject, s.resetTemplateID, "密码重置")
+}
+
+// Configured 报告 SES 适配器已通过配置校验并完成初始化。
+func (s *SESVerificationEmailSender) Configured() bool { return s != nil && s.client != nil }
+
+func (s *SESVerificationEmailSender) sendCode(
+	ctx context.Context, email string, templateData map[string]string,
+	subject string, templateID uint64, purpose string,
+) (err error) {
 	defer func() { err = s.redactor.redact(err) }()
-	templateData, err := json.Marshal(map[string]string{"code": code})
+	encodedTemplateData, err := json.Marshal(templateData)
 	if err != nil {
 		return fmt.Errorf("编码腾讯云 SES 模板参数: %w", err)
 	}
 	request := ses.NewSendEmailRequest()
 	request.FromEmailAddress = common.StringPtr(s.fromEmailAddress)
-	request.Subject = common.StringPtr(s.subject)
+	request.Subject = common.StringPtr(subject)
 	request.Destination = common.StringPtrs([]string{email})
 	request.Template = &ses.Template{
-		TemplateID:   common.Uint64Ptr(s.templateID),
-		TemplateData: common.StringPtr(string(templateData)),
+		TemplateID:   common.Uint64Ptr(templateID),
+		TemplateData: common.StringPtr(string(encodedTemplateData)),
 	}
 	request.TriggerType = common.Uint64Ptr(1)
 
@@ -106,11 +129,11 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 
 	response, err := s.client.SendEmailWithContext(ctx, request)
 	if err != nil {
-		return fmt.Errorf("腾讯云 SES 投递注册验证码: %w", err)
+		return fmt.Errorf("腾讯云 SES 投递%s验证码: %w", purpose, err)
 	}
 	if response == nil || response.Response == nil ||
 		response.Response.MessageId == nil || strings.TrimSpace(*response.Response.MessageId) == "" {
-		return errors.New("腾讯云 SES 投递注册验证码: 响应缺少 MessageId")
+		return fmt.Errorf("腾讯云 SES 投递%s验证码: 响应缺少 MessageId", purpose)
 	}
 	return nil
 }
@@ -130,6 +153,10 @@ func validateSESConfig(cfg config.Config) error {
 	if strings.TrimSpace(cfg.TencentSESSubject) == "" ||
 		strings.ContainsFunc(cfg.TencentSESSubject, unicode.IsControl) {
 		return errors.New("TENCENT_SES_SUBJECT 不能为空且不能包含控制字符")
+	}
+	if strings.TrimSpace(cfg.TencentSESResetSubject) == "" ||
+		strings.ContainsFunc(cfg.TencentSESResetSubject, unicode.IsControl) {
+		return errors.New("TENCENT_SES_RESET_SUBJECT 不能为空且不能包含控制字符")
 	}
 	return nil
 }

@@ -56,6 +56,26 @@ func TestSESVerificationEmailSenderBuildsRegistrationRequest(t *testing.T) {
 	require.Equal(t, uint64(1), *client.request.TriggerType)
 }
 
+func TestSESVerificationEmailSenderBuildsPasswordResetRequest(t *testing.T) {
+	response := ses.NewSendEmailResponse()
+	response.Response = &ses.SendEmailResponseParams{MessageId: common.StringPtr("message-2")}
+	client := &fakeSESClient{response: response}
+	cfg := sesTestConfig()
+	cfg.TencentSESResetSubject = "[测试] 旦食密码重置验证码"
+	sender := newSESVerificationEmailSender(cfg, client)
+
+	err := sender.SendPasswordResetCode(context.Background(), "student@fdueat.com", "654321")
+
+	require.NoError(t, err)
+	require.NotNil(t, client.request)
+	require.Equal(t, "[测试] 旦食密码重置验证码", *client.request.Subject)
+	require.Equal(t, uint64(9877), *client.request.Template.TemplateID)
+	require.JSONEq(t,
+		`{"code":"654321","expires_in_minutes":"10","security_notice":"非本人操作请忽略"}`,
+		*client.request.Template.TemplateData,
+	)
+}
+
 func TestSESVerificationEmailSenderFailsClosed(t *testing.T) {
 	_, err := NewSESVerificationEmailSender(config.Config{})
 	require.ErrorContains(t, err, "配置不完整")
@@ -103,6 +123,6 @@ func sesTestConfig() config.Config {
 		TencentSecretID: "secret-id", TencentSecretKey: "secret-key",
 		TencentRegion: "ap-guangzhou", TencentSESFromEmail: "no-reply@danshi.fdueat.com",
 		TencentSESFromName: "旦食", TencentSESSubject: "旦食注册验证码",
-		TencentSESTemplateID: 9876,
+		TencentSESTemplateID: 9876, TencentSESResetSubject: "旦食密码重置验证码", TencentSESResetTemplateID: 9877,
 	}
 }

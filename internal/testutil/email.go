@@ -129,6 +129,11 @@ func (s *MockEmailSender) SendRegistrationCode(
 	return nil
 }
 
+// SendPasswordResetCode 复用同一可编程投递行为；测试可由邮箱和调用次序断言用途隔离。
+func (s *MockEmailSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	return s.SendRegistrationCode(ctx, email, code)
+}
+
 // Attempts 返回包含失败/超时尝试的不可变快照；email 为空时返回全部。
 func (s *MockEmailSender) Attempts(email string) []EmailAttempt {
 	normalized := strings.ToLower(strings.TrimSpace(email))

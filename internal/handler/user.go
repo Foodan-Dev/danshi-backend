@@ -74,6 +74,20 @@ func (h *User) Profile(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
 }
 
+// NameHistory 返回当前用户自己的 name 修改历史。
+func (h *User) NameHistory(ctx context.Context, c *app.RequestContext) {
+	userID, principal, err := userRequestIdentity(c)
+	var result *service.UserNameChangeHistory
+	if err == nil {
+		result, err = h.service.NameHistory(ctx, userID, principal.User.ID)
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
+}
+
 // Update 局部更新本人资料。
 func (h *User) Update(ctx context.Context, c *app.RequestContext) {
 	userID, principal, err := userRequestIdentity(c)

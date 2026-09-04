@@ -111,12 +111,23 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
+	nameRecords, err := s.admin.FindUserNameChangeRecords(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
 	views := make([]AdminUserBanRecordView, 0, len(records))
 	for _, record := range records {
 		views = append(views, AdminUserBanRecordView{
 			ID: record.ID, Action: record.Action, BanIsPermanent: record.BanIsPermanent,
 			BannedUntil: ptime.Ptr(record.BannedUntil), Reason: record.Reason,
 			ActorID: record.ActorID, CreatedAt: ptime.Time(record.CreatedAt),
+		})
+	}
+	nameChanges := make([]AdminUserNameChangeView, 0, len(nameRecords))
+	for _, record := range nameRecords {
+		nameChanges = append(nameChanges, AdminUserNameChangeView{
+			ID: record.ID, OldName: record.OldName, NewName: record.NewName,
+			ChangedAt: ptime.Time(record.ChangedAt),
 		})
 	}
 	userView := adminUserView(row, time.Now().UTC())
@@ -127,7 +138,9 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 		}
 		userView.AvatarURL = &avatarURL
 	}
-	return &AdminUserDetail{AdminUserView: userView, BanRecords: views}, nil
+	return &AdminUserDetail{
+		AdminUserView: userView, BanRecords: views, NameChanges: nameChanges,
+	}, nil
 }
 
 // Image 返回单张图片资产详情；路由层用既有内容审核能力保护该入口。
