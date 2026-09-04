@@ -14,7 +14,7 @@ BEGIN
         WHERE name <> btrim(name)
            OR name <> normalize(name, NFKC)
            OR char_length(name) NOT BETWEEN 2 AND 24
-           OR name !~ '^[[:alpha:]_][[:alpha:][:digit:]_]*$'
+           OR name !~ '^[[:alpha:][:digit:]_]+$'
     ) THEN
         RAISE EXCEPTION
             'name 身份化前必须为所有既有用户补设 2–24 个字符且无首尾空白的 name'
@@ -36,7 +36,7 @@ ALTER TABLE users
         name = btrim(name)
         AND name = normalize(name, NFKC)
         AND char_length(name) BETWEEN 2 AND 24
-        AND name ~ '^[[:alpha:]_][[:alpha:][:digit:]_]*$'
+        AND name ~ '^[[:alpha:][:digit:]_]+$'
     );
 
 CREATE UNIQUE INDEX uq_users_name_lower ON users (lower(normalize(name, NFKC)));
@@ -51,7 +51,7 @@ CREATE TABLE user_name_claims (
         name = btrim(name)
         AND name = normalize(name, NFKC)
         AND char_length(name) BETWEEN 2 AND 24
-        AND name ~ '^[[:alpha:]_][[:alpha:][:digit:]_]*$'
+        AND name ~ '^[[:alpha:][:digit:]_]+$'
     )
 );
 
