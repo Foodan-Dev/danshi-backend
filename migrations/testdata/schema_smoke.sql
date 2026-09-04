@@ -159,6 +159,14 @@ DO $$ BEGIN
     ARRAY['23505'], '历史 name 不得被另一账号接管');
   PERFORM _assert((SELECT count(*) FROM user_name_claims WHERE user_id=2)=2,
                   'name 修改追加占用记录而不覆盖旧值');
+  PERFORM _assert((SELECT count(*) FROM user_name_change_records WHERE user_id=2)=1,
+                  'name 修改追加不可篡改审计记录');
+  PERFORM _assert((SELECT old_name || '>' || new_name FROM user_name_change_records WHERE user_id=2)='bob>bob2',
+                  'name 审计记录保存修改前后值');
+  PERFORM _assert_rejects($q$UPDATE user_name_change_records SET new_name='rewrite' WHERE user_id=2$q$,
+    ARRAY['23001'], 'name 审计记录不可修改');
+  PERFORM _assert_rejects($q$DELETE FROM user_name_change_records WHERE user_id=2$q$,
+    ARRAY['23001'], 'name 审计记录不可删除');
   PERFORM _assert_rejects($q$UPDATE user_name_claims SET name='rewrite' WHERE user_id=2$q$,
     ARRAY['23001'], 'name 占用记录不可修改');
   PERFORM _assert_rejects($q$DELETE FROM user_name_claims WHERE user_id=2$q$,
@@ -1267,6 +1275,7 @@ BEGIN
     'trg_post_images_retire_asset','trg_users_retire_avatar_asset','trg_users_activate_avatar_asset','trg_image_assets_forbid_delete'
     ,'trg_users_claim_name','trg_user_name_claims_forbid_update','trg_user_name_claims_forbid_delete'
     ,'trg_user_ban_records_immutable','trg_user_ban_records_forbid_delete'
+    ,'trg_user_name_change_records_immutable','trg_user_name_change_records_forbid_delete'
     ,'trg_user_role_records_immutable','trg_user_role_records_forbid_delete'
     ,'trg_image_access_intents_validate','trg_image_access_intents_immutable'
   ] LOOP
@@ -1285,7 +1294,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 32, '业务表共 32 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 33, '业务表共 33 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

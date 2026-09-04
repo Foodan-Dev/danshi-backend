@@ -109,7 +109,8 @@ func TestEditHistoryAndCurrentRevisionMigrationsPreserveVersionSemantics(t *test
 		`SELECT count(*) FROM moderation_records WHERE id IN (8601, 8602)`).Scan(&count))
 	require.Equal(t, 2, count, "解除版本锚定不得删除审核流水")
 
-	// 00018 与内容历史无关，可先安全回滚；随后验证 00017 仍拒绝破坏现存内容。
+	// 00019 与内容历史无关，可先回滚 00019、00018；随后验证 00017 仍拒绝破坏现存内容。
+	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
 	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,

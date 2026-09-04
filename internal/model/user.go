@@ -36,6 +36,18 @@ type UserNameClaim struct {
 // TableName 返回用户 name 占用记录表名。
 func (UserNameClaim) TableName() string { return "user_name_claims" }
 
+// UserNameChangeRecord 是一次已经生效的 name 变更事实；审核未通过的候选值不进入本表。
+type UserNameChangeRecord struct {
+	ID        uint64 `gorm:"primaryKey"`
+	UserID    uint64
+	OldName   string
+	NewName   string
+	ChangedAt time.Time
+}
+
+// TableName 返回 name 变更审计表名。
+func (UserNameChangeRecord) TableName() string { return "user_name_change_records" }
+
 // UserRoleBinding 是用户当前生效的一项管理角色绑定。
 type UserRoleBinding struct {
 	UserID    uint64   `gorm:"primaryKey;autoIncrement:false"`

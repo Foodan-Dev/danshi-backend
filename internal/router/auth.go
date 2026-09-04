@@ -11,7 +11,7 @@ import (
 
 func registerAuth(api *route.RouterGroup, deps Deps) {
 	sender := verificationEmailSender(deps)
-	authService := service.NewAuthService(deps.Config, sender)
+	authService := service.NewAuthService(deps.Config, sender, deps.ContentModerator)
 	authHandler := handler.NewAuth(authService, deps.BusinessMetrics)
 	auth := api.Group("/auth")
 

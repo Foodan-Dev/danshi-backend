@@ -122,20 +122,29 @@ func ShouldCommitError(err error) bool {
 
 // AuthService 实现 auth 域完整业务闭环。
 type AuthService struct {
-	cfg      config.Config
-	tokens   *jwtx.Codec
-	sender   VerificationEmailSender
-	users    repository.UserRepository
-	codes    repository.VerificationCodeRepository
-	sessions repository.SessionRepository
+	cfg       config.Config
+	tokens    *jwtx.Codec
+	sender    VerificationEmailSender
+	moderator ContentModerator
+	users     repository.UserRepository
+	codes     repository.VerificationCodeRepository
+	sessions  repository.SessionRepository
 }
 
 // NewAuthService 创建 auth 服务。
-func NewAuthService(cfg config.Config, sender VerificationEmailSender) *AuthService {
+func NewAuthService(
+	cfg config.Config, sender VerificationEmailSender, moderators ...ContentModerator,
+) *AuthService {
 	if sender == nil {
 		sender = UnavailableVerificationEmailSender{}
 	}
-	return &AuthService{cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender}
+	var moderator ContentModerator = UnavailableContentModerator{}
+	if len(moderators) > 0 && moderators[0] != nil {
+		moderator = moderators[0]
+	}
+	return &AuthService{
+		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender, moderator: moderator,
+	}
 }
 
 // SendVerificationCode 为允许注册的域名生成并记录一次验证码发送状态。
@@ -221,6 +230,19 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 
+	nameModeration, err := s.moderator.Review(ctx, ModerationRequest{
+		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateModerationResult(nameModeration); err != nil {
+		return nil, err
+	}
+	if nameModeration.Verdict != model.ModerationVerdictPass {
+		return nil, moderationVerdictError(nameModeration.Verdict, "name")
+	}
+
 	passwordHash, err := passwordx.Hash(input.Password)
 	if err != nil {
 		return nil, apierr.Internal(err)
@@ -251,6 +273,11 @@ func (s *AuthService) Register(
 			errors.Is(err, repository.ErrAlreadyExists) {
 			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
 		}
+		return nil, apierr.Internal(err)
+	}
+	if err := s.users.CreateModerationRecord(ctx, moderationRecordForUser(
+		user.ID, model.ModerationFieldName, nameModeration,
+	)); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())

@@ -85,6 +85,19 @@ type UserFollowList struct {
 	Pagination pagination.CursorMeta `json:"pagination"`
 }
 
+// UserNameChangeView 是用户本人或用户管理端可见的 name 变更记录。
+type UserNameChangeView struct {
+	ID        uint64     `json:"id"`
+	OldName   string     `json:"old_name"`
+	NewName   string     `json:"new_name"`
+	ChangedAt ptime.Time `json:"changed_at"`
+}
+
+// UserNameChangeHistory 是 name 变更记录列表。
+type UserNameChangeHistory struct {
+	Changes []UserNameChangeView `json:"changes"`
+}
+
 // UserService 实现用户资料、个人列表与关注关系。
 type UserService struct {
 	moderator     ContentModerator
@@ -179,6 +192,30 @@ func (s *UserService) Profile(ctx context.Context, userID, currentUserID uint64)
 	return &profile, nil
 }
 
+// NameHistory 只允许本人读取 name 变更历史；管理端通过 AdminService 的用户取证接口读取。
+func (s *UserService) NameHistory(
+	ctx context.Context, userID, currentUserID uint64,
+) (*UserNameChangeHistory, error) {
+	if userID != currentUserID {
+		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能查看自己的 name 修改记录")
+	}
+	if _, err := s.users.FindByID(ctx, userID); err != nil {
+		return nil, userNotFoundError(err)
+	}
+	records, err := s.users.FindNameChangeRecords(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	changes := make([]UserNameChangeView, 0, len(records))
+	for _, record := range records {
+		changes = append(changes, UserNameChangeView{
+			ID: record.ID, OldName: record.OldName, NewName: record.NewName,
+			ChangedAt: ptime.Time(record.ChangedAt),
+		})
+	}
+	return &UserNameChangeHistory{Changes: changes}, nil
+}
+
 // Update 局部更新本人资料，昵称与简介发生变化时分别送审并追加流水。
 func (s *UserService) Update(
 	ctx context.Context,
@@ -198,7 +235,19 @@ func (s *UserService) Update(
 		return nil, userNotFoundError(err)
 	}
 	fields, moderated := changedUserFields(user, input)
-	if input.NameSet && input.Name != nil && user.Name != *input.Name {
+	nameChanged := input.NameSet && input.Name != nil && user.Name != *input.Name
+	if nameChanged {
+		result, reviewErr := s.reviewUserField(ctx, user.ID, model.ModerationFieldName, *input.Name)
+		if reviewErr != nil {
+			return nil, reviewErr
+		}
+		if result.Verdict != model.ModerationVerdictPass {
+			return nil, &persistedError{
+				err: moderationVerdictError(result.Verdict, "name"),
+			}
+		}
+	}
+	if nameChanged {
 		// ClaimName 保留稳定的业务错误；users 上的触发器仍是直写/导入场景的数据库兜底。
 		if err := s.users.ClaimName(ctx, userID, *input.Name, time.Now().UTC()); err != nil {
 			if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
@@ -222,6 +271,9 @@ func (s *UserService) Update(
 		return nil, userNotFoundError(err)
 	}
 	for _, field := range moderated {
+		if field.Field == model.ModerationFieldName {
+			continue
+		}
 		if err := s.moderateUserField(ctx, userID, field.Field, field.Text); err != nil {
 			return nil, err
 		}
@@ -484,34 +536,56 @@ func (s *UserService) moderateUserField(
 	field model.ModerationField,
 	content string,
 ) error {
+	_, err := s.reviewUserField(ctx, userID, field, content)
+	return err
+}
+
+func (s *UserService) reviewUserField(
+	ctx context.Context, userID uint64, field model.ModerationField, content string,
+) (ModerationResult, error) {
 	result, err := s.moderator.Review(ctx, ModerationRequest{
 		Target: ModerationTargetUser, Field: &field, Text: content,
 	})
 	if err != nil {
-		return err
+		return ModerationResult{}, err
 	}
 	if err := validateModerationResult(result); err != nil {
-		return err
+		return ModerationResult{}, err
 	}
-	labels := pq.StringArray(result.Labels)
-	if labels == nil {
-		labels = pq.StringArray{}
-	}
-	record := &model.ModerationRecord{
-		UserID: &userID, Field: &field, Scene: model.ModerationSceneText,
-		Provider: result.Provider, ProviderJobID: result.ProviderJobID,
-		Verdict: result.Verdict, Labels: labels, Score: result.Score,
-		RawResponse: result.RawResponse, CreatedAt: time.Now().UTC(),
-	}
+	record := moderationRecordForUser(userID, field, result)
 	if err := s.users.CreateModerationRecord(ctx, record); err != nil {
-		return apierr.Internal(err)
+		return ModerationResult{}, apierr.Internal(err)
 	}
 	if result.Verdict == model.ModerationVerdictBlock {
 		s.alerter.AlertUserContent(ctx, UserModerationAlert{
 			UserID: userID, Field: field, Verdict: result.Verdict, Labels: append([]string{}, result.Labels...),
 		})
 	}
-	return nil
+	return result, nil
+}
+
+func moderationRecordForUser(
+	userID uint64, field model.ModerationField, result ModerationResult,
+) *model.ModerationRecord {
+	labels := pq.StringArray(result.Labels)
+	if labels == nil {
+		labels = pq.StringArray{}
+	}
+	return &model.ModerationRecord{
+		UserID: &userID, Field: &field, Scene: model.ModerationSceneText,
+		Provider: result.Provider, ProviderJobID: result.ProviderJobID,
+		Verdict: result.Verdict, Labels: labels, Score: result.Score,
+		RawResponse: result.RawResponse, CreatedAt: time.Now().UTC(),
+	}
+}
+
+func moderationFieldPtr(field model.ModerationField) *model.ModerationField { return &field }
+
+func moderationVerdictError(verdict model.ModerationVerdict, field string) error {
+	if verdict == model.ModerationVerdictReview {
+		return apierr.Conflict(apierr.BizContentUnderAudit, field+" 正在审核")
+	}
+	return apierr.Conflict(apierr.BizContentRejected, field+" 未通过内容审核")
 }
 
 func (s *UserService) postList(

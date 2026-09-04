@@ -207,7 +207,7 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("name identity", func(t *testing.T) {
-		testNameIdentity(t, engine, sender, gdb)
+		testNameIdentity(t, engine, database, sender, gdb)
 	})
 
 	t.Run("verification cooldown quota and rolling window", func(t *testing.T) {
@@ -823,6 +823,7 @@ func testVerificationRateBoundaries(
 func testNameIdentity(
 	t *testing.T,
 	engine *server.Hertz,
+	database *dbinfra.DB,
 	sender *captureEmailSender,
 	gdb *gorm.DB,
 ) {
@@ -860,6 +861,23 @@ func testNameIdentity(
 	}, "")
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	requireAuthFieldError(t, response, "identifier", apierr.FieldConflict)
+
+	moderation := testutil.NewMockModeration()
+	moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictBlock, nil, nil))
+	moderatedEngine := authTestEngine(authTestConfig(), database, sender, moderation)
+	rejectedEmail := "name-moderation-rejected@fdueat.com"
+	sendCode(t, moderatedEngine, rejectedEmail)
+	status, response, _ = performJSON(t, moderatedEngine, http.MethodPost,
+		"/api/v2/auth/register", map[string]any{
+			"email": rejectedEmail, "password": "password-123",
+			"verification_code": capturedCode(t, sender, rejectedEmail), "name": "违规注册名",
+		}, "")
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentRejected, response.ErrorCode)
+	var rejectedCount int64
+	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", rejectedEmail).
+		Count(&rejectedCount).Error)
+	require.Zero(t, rejectedCount, "注册 name 审核不通过不得创建账号")
 }
 
 func testLoginAccountStates(
@@ -1107,13 +1125,18 @@ func authTestEngine(
 	cfg appconfig.Config,
 	database *dbinfra.DB,
 	sender service.VerificationEmailSender,
+	moderators ...service.ContentModerator,
 ) *server.Hertz {
 	engine := server.New(
 		server.WithHandleMethodNotAllowed(true),
 		hertzconfig.Option{F: func(_ *hertzconfig.Options) {}},
 	)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router.Register(engine, router.Deps{Config: cfg, DB: database, Log: log, EmailSender: sender})
+	deps := router.Deps{Config: cfg, DB: database, Log: log, EmailSender: sender}
+	if len(moderators) > 0 {
+		deps.ContentModerator = moderators[0]
+	}
+	router.Register(engine, deps)
 	return engine
 }
 

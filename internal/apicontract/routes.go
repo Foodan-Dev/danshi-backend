@@ -88,6 +88,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v2/auth/sessions", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodDelete, Path: "/api/v2/auth/sessions/:id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodGet, Path: "/api/v2/users/:user_id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
+	{Method: http.MethodGet, Path: "/api/v2/users/:user_id/name-history", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodPut, Path: "/api/v2/users/:user_id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodDelete, Path: "/api/v2/users/:user_id", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},
 	{Method: http.MethodGet, Path: "/api/v2/users/:user_id/posts", BearerAuth: true, ExpectedStatus: http.StatusUnauthorized},

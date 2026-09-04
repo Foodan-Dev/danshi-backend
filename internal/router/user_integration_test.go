@@ -103,6 +103,7 @@ func testUserRouteInventory(t *testing.T, engine *server.Hertz) {
 	}
 	require.ElementsMatch(t, []string{
 		"GET /api/v2/users/:user_id",
+		"GET /api/v2/users/:user_id/name-history",
 		"PUT /api/v2/users/:user_id",
 		"DELETE /api/v2/users/:user_id",
 		"GET /api/v2/users/:user_id/posts",
@@ -236,8 +237,26 @@ func testUserProfileUpdate(
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("user_id = ?", owner.User.ID).Order("id").Pluck("field", &fields).Error)
 	require.ElementsMatch(t, []model.ModerationField{
-		model.ModerationFieldName, model.ModerationFieldBio,
+		model.ModerationFieldName, model.ModerationFieldName, model.ModerationFieldBio,
 	}, fields)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(owner.User.ID)+"/name-history", nil, owner.Token)
+	require.Equal(t, http.StatusOK, status)
+	var history service.UserNameChangeHistory
+	decodeData(t, response, &history)
+	require.Len(t, history.Changes, 1)
+	require.Equal(t, "资料主人", history.Changes[0].OldName)
+	require.Equal(t, "更新昵称", history.Changes[0].NewName)
+	var nameChange model.UserNameChangeRecord
+	require.NoError(t, gdb.First(&nameChange, history.Changes[0].ID).Error)
+	require.Error(t, gdb.Model(&model.UserNameChangeRecord{}).
+		Where("id = ?", nameChange.ID).Update("new_name", "篡改").Error)
+	require.Error(t, gdb.Delete(&model.UserNameChangeRecord{}, nameChange.ID).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(owner.User.ID)+"/name-history", nil, viewer.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(owner.User.ID), map[string]any{
 		"bio": nil,
@@ -360,21 +379,23 @@ func testUserModerationSemantics(
 	owner service.AuthResult,
 ) {
 	t.Helper()
+	var before model.User
+	require.NoError(t, gdb.First(&before, owner.User.ID).Error)
+	moderation := testutil.NewMockModeration()
+	moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictReview, nil, nil))
 	alerter := &captureUserModerationAlerter{}
-	reviewService := service.NewUserService(
-		fixedVerdictModerator(model.ModerationVerdictReview), alerter,
-	)
-	reviewName := "需人工复核昵称"
-	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
-		_, updateErr := reviewService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{
-			Name: &reviewName, NameSet: true,
-		})
-		return updateErr
+	reviewEngine := testutil.NewEngine(t, appRouter.Deps{
+		Config: authTestConfig(), DB: database, ContentModerator: moderation,
+		UserModerationAlerter: alerter,
 	})
-	require.NoError(t, err)
+	reviewName := "需人工复核昵称"
+	status, response, _ := performJSON(t, reviewEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"name": reviewName}, owner.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentUnderAudit, response.ErrorCode)
 	var stored model.User
 	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
-	require.Equal(t, reviewName, stored.Name, "review 必须保持新昵称")
+	require.Equal(t, before.Name, stored.Name, "review 不得写入候选 name")
 	var reviewCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
 		"user_id = ? AND field = ? AND verdict = ?",
@@ -383,17 +404,23 @@ func testUserModerationSemantics(
 	require.EqualValues(t, 1, reviewCount)
 	require.Empty(t, alerter.all())
 
-	blockService := service.NewUserService(
-		fixedVerdictModerator(model.ModerationVerdictBlock), alerter,
-	)
-	blockBio := "机审违规但等待管理员处置"
-	err = database.RunInTx(context.Background(), func(ctx context.Context) error {
-		_, updateErr := blockService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{
-			Bio: &blockBio, BioSet: true,
-		})
-		return updateErr
+	moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictBlock, nil, nil))
+	blockEngine := testutil.NewEngine(t, appRouter.Deps{
+		Config: authTestConfig(), DB: database, ContentModerator: moderation,
+		UserModerationAlerter: alerter,
 	})
-	require.NoError(t, err)
+	blockName := "违规昵称"
+	status, response, _ = performJSON(t, blockEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"name": blockName}, owner.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentRejected, response.ErrorCode)
+	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
+	require.Equal(t, before.Name, stored.Name, "block 不得写入候选 name")
+
+	blockBio := "机审违规但等待管理员处置"
+	status, response, _ = performJSON(t, blockEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"bio": blockBio}, owner.Token)
+	require.Equal(t, http.StatusOK, status)
 	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
 	require.Equal(t, blockBio, *stored.Bio, "block 不得自行重置简介或封禁用户")
 	var blockCount int64
@@ -403,6 +430,9 @@ func testUserModerationSemantics(
 	).Count(&blockCount).Error)
 	require.EqualValues(t, 1, blockCount)
 	require.Equal(t, []service.UserModerationAlert{{
+		UserID: owner.User.ID, Field: model.ModerationFieldName,
+		Verdict: model.ModerationVerdictBlock, Labels: []string{},
+	}, {
 		UserID: owner.User.ID, Field: model.ModerationFieldBio,
 		Verdict: model.ModerationVerdictBlock, Labels: []string{},
 	}}, alerter.all())
