@@ -3228,7 +3228,6 @@
             "type": "string"
           },
           "name": {
-            "nullable": true,
             "type": "string"
           },
           "password": {
@@ -3239,6 +3238,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "name"
+        ],
         "type": "object"
       },
       "rejectSuggestionRequest": {

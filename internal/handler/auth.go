@@ -36,7 +36,7 @@ type registerRequest struct {
 	Email            string  `json:"email"`
 	Password         string  `json:"password"`
 	VerificationCode *string `json:"verification_code"`
-	Name             string  `json:"name"`
+	Name             string  `json:"name" openapi:"required"`
 	Gender           *string `json:"gender"`
 	DeviceLabel      string  `json:"device_label"`
 }
