@@ -49,6 +49,7 @@ var queryBudgetExemptGETRoutes = map[string]string{
 	"GET /api/v2/auth/me":                      "单资源读取，不接受分页参数",
 	"GET /api/v2/auth/sessions":                "当前用户的小型设备集合，不接受分页参数",
 	"GET /api/v2/users/:user_id":               "单资源读取，不接受分页参数",
+	"GET /api/v2/users/:user_id/name-history":  "单用户的 name 追加审计历史，不接受分页参数",
 	"GET /api/v2/posts/:post_id":               "单资源读取，不接受分页参数",
 	"GET /api/v2/posts/:post_id/history":       "单资源的完整版本历史，不接受分页参数",
 	"GET /api/v2/comments/:comment_id/history": "单资源的完整版本历史，不接受分页参数",
@@ -138,7 +139,7 @@ func seedQueryBudgetFixture(
 
 		user := model.User{
 			Email: fmt.Sprintf("query-budget-user-%d@fdueat.com", index), PasswordHash: "$2b$12$test",
-			Name: fmt.Sprintf("查询预算用户 %d", index),
+			Name: fmt.Sprintf("查询预算用户%d", index),
 		}
 		require.NoError(t, gdb.Create(&user).Error)
 		require.NoError(t, gdb.Create(&model.Follow{

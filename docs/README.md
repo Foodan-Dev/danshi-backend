@@ -10,6 +10,7 @@
 | [架构与设计决策](architecture.md) | 技术栈、分层、schema、服务层协议、错误和发布门禁 | 后端、SRE、评审者 |
 | [ADR 0001：Schema ownership](adr/0001-schema-ownership.md) | 为什么 goose SQL 是数据库结构唯一真源 | 后端、数据库维护者 |
 | [内容主流程](assets/content-flow.mmd) | 发帖、审核、编辑、软删除与词条提议的 Mermaid 源文件 | 产品、设计、开发 |
+| [2026-09-02 name 身份化与密码找回需求（草案）](requirements/2026-09-02-name-and-password-recovery.md) | `name` 身份化、登录与密码找回的待评审需求 | 产品、前端、后端、测试 |
 
 ## 开发与运维
 

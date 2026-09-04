@@ -524,7 +524,7 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 	if value == nil {
 		return nil, nil
 	}
-	return openapi3gen.NewSchemaRefForValue(
+	schema, err := openapi3gen.NewSchemaRefForValue(
 		value,
 		schemas,
 		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
@@ -534,6 +534,43 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 		}),
 		openapi3gen.SchemaCustomizer(customizeSchema),
 	)
+	if err != nil {
+		return nil, err
+	}
+	target := schema.Value
+	if target == nil && strings.HasPrefix(schema.Ref, "#/components/schemas/") {
+		component := schemas[strings.TrimPrefix(schema.Ref, "#/components/schemas/")]
+		if component != nil {
+			target = component.Value
+		}
+	}
+	addTaggedRequiredFields(target, reflect.TypeOf(value))
+	return schema, nil
+}
+
+// addTaggedRequiredFields 将只影响请求契约的字段必填标记补到生成 schema。
+// openapi3gen 默认只区分 nullable，不会把业务层的“缺席即非法”表达为 required。
+func addTaggedRequiredFields(schema *openapi3.Schema, valueType reflect.Type) {
+	for valueType.Kind() == reflect.Pointer {
+		valueType = valueType.Elem()
+	}
+	if schema == nil || valueType.Kind() != reflect.Struct {
+		return
+	}
+	for index := 0; index < valueType.NumField(); index++ {
+		field := valueType.Field(index)
+		if field.PkgPath != "" || field.Tag.Get("openapi") != "required" {
+			continue
+		}
+		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonName == "" || jsonName == "-" {
+			continue
+		}
+		if !slices.Contains(schema.Required, jsonName) {
+			schema.Required = append(schema.Required, jsonName)
+		}
+	}
+	slices.Sort(schema.Required)
 }
 
 func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, schema *openapi3.Schema) error {

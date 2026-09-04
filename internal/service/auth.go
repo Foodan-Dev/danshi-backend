@@ -47,8 +47,8 @@ type RegisterInput struct {
 
 // LoginInput 是登录领域输入。
 type LoginInput struct {
-	Email    string
-	Password string
+	Identifier string
+	Password   string
 }
 
 // ClientInfo 描述一次登录所在设备。
@@ -122,20 +122,29 @@ func ShouldCommitError(err error) bool {
 
 // AuthService 实现 auth 域完整业务闭环。
 type AuthService struct {
-	cfg      config.Config
-	tokens   *jwtx.Codec
-	sender   VerificationEmailSender
-	users    repository.UserRepository
-	codes    repository.VerificationCodeRepository
-	sessions repository.SessionRepository
+	cfg       config.Config
+	tokens    *jwtx.Codec
+	sender    VerificationEmailSender
+	moderator ContentModerator
+	users     repository.UserRepository
+	codes     repository.VerificationCodeRepository
+	sessions  repository.SessionRepository
 }
 
 // NewAuthService 创建 auth 服务。
-func NewAuthService(cfg config.Config, sender VerificationEmailSender) *AuthService {
+func NewAuthService(
+	cfg config.Config, sender VerificationEmailSender, moderators ...ContentModerator,
+) *AuthService {
 	if sender == nil {
 		sender = UnavailableVerificationEmailSender{}
 	}
-	return &AuthService{cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender}
+	var moderator ContentModerator = UnavailableContentModerator{}
+	if len(moderators) > 0 && moderators[0] != nil {
+		moderator = moderators[0]
+	}
+	return &AuthService{
+		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender, moderator: moderator,
+	}
 }
 
 // SendVerificationCode 为允许注册的域名生成并记录一次验证码发送状态。
@@ -221,6 +230,19 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 
+	nameModeration, err := s.moderator.Review(ctx, ModerationRequest{
+		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateModerationResult(nameModeration); err != nil {
+		return nil, err
+	}
+	if nameModeration.Verdict != model.ModerationVerdictPass {
+		return nil, moderationVerdictError(nameModeration.Verdict, "name")
+	}
+
 	passwordHash, err := passwordx.Hash(input.Password)
 	if err != nil {
 		return nil, apierr.Internal(err)
@@ -239,38 +261,77 @@ func (s *AuthService) Register(
 		if repository.IsUniqueViolation(err, "uq_users_email_lower") {
 			return nil, apierr.Conflict(apierr.BizEmailTaken, "邮箱已被注册")
 		}
+		if repository.IsUniqueViolation(err, "uq_users_name_lower") ||
+			repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") {
+			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+		}
+		return nil, apierr.Internal(err)
+	}
+	if err := s.users.ClaimName(ctx, user.ID, user.Name, time.Now().UTC()); err != nil {
+		if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
+			repository.IsUniqueViolation(err, "uq_users_name_lower") ||
+			errors.Is(err, repository.ErrAlreadyExists) {
+			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+		}
+		return nil, apierr.Internal(err)
+	}
+	if err := s.users.CreateModerationRecord(ctx, moderationRecordForUser(
+		user.ID, model.ModerationFieldName, nameModeration,
+	)); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())
 }
 
-// Login 校验邮箱密码，并强制要求邮箱域名在白名单内。
+// Login 校验邮箱或 name 与密码；邮箱登录还必须满足邮箱域名白名单。
 func (s *AuthService) Login(
 	ctx context.Context,
 	input LoginInput,
 	client ClientInfo,
 ) (*AuthResult, error) {
-	email, err := normalizeEmail(input.Email)
-	if err != nil {
-		return nil, err
-	}
-	if !s.domainAllowed(email) {
-		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
-	}
 	if err := validatePassword(input.Password, false); err != nil {
 		return nil, err
 	}
-	user, err := s.users.FindByEmail(ctx, email)
-	if err != nil || !passwordx.Verify(input.Password, passwordHash(user)) {
-		if err != nil && !errors.Is(err, repository.ErrNotFound) {
+	user, err := s.findLoginUser(ctx, input.Identifier)
+	if err != nil {
+		var inputError *apierr.Error
+		if errors.As(err, &inputError) {
+			return nil, err
+		}
+		if !errors.Is(err, repository.ErrNotFound) {
 			return nil, apierr.Internal(err)
 		}
+		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+	}
+	if !passwordx.Verify(input.Password, passwordHash(user)) {
 		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
 	}
 	if banned(user, time.Now().UTC()) {
 		return nil, bannedError(user)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())
+}
+
+func (s *AuthService) findLoginUser(ctx context.Context, rawIdentifier string) (*model.User, error) {
+	identifier := strings.TrimSpace(rawIdentifier)
+	if identifier == "" {
+		return nil, apierr.InvalidField("identifier", apierr.FieldRequired, "登录标识不能为空")
+	}
+	if strings.Contains(identifier, "@") {
+		email, err := normalizeEmail(identifier)
+		if err != nil {
+			return nil, apierr.InvalidField("identifier", apierr.FieldInvalidFormat, "登录标识格式不正确")
+		}
+		if !s.domainAllowed(email) {
+			return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+		}
+		return s.users.FindByEmail(ctx, email)
+	}
+	name, err := normalizeName(identifier)
+	if err != nil {
+		return nil, apierr.InvalidField("identifier", apierr.FieldInvalidFormat, "登录标识格式不正确")
+	}
+	return s.users.FindByName(ctx, name)
 }
 
 // Refresh 校验 refresh token、摘要和会话状态，只换发 access token。
