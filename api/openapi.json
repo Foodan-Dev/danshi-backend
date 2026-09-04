@@ -3274,6 +3274,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "email",
+          "verification_code",
+          "new_password"
+        ],
         "type": "object"
       },
       "passwordResetRequest": {
@@ -3282,6 +3287,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "email"
+        ],
         "type": "object"
       },
       "refreshRequest": {

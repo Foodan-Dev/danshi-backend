@@ -40,6 +40,10 @@ func TestRepositoryRegistryGenerates102ValidOperations(t *testing.T) {
 	require.Nil(t, deleteUser.RequestBody)
 	require.NotNil(t, deleteUser.Responses.Value("403"))
 	require.Nil(t, document.Paths.Value("/api/v2/config").Get.Security)
+	passwordResetRequest := document.Components.Schemas["passwordResetRequest"].Value
+	require.Equal(t, []string{"email"}, passwordResetRequest.Required)
+	passwordResetConfirm := document.Components.Schemas["passwordResetConfirmRequest"].Value
+	require.Equal(t, []string{"email", "verification_code", "new_password"}, passwordResetConfirm.Required)
 	require.Equal(t,
 		[]string{"200", "400", "401", "403", "404", "409", "422", "500", "503"},
 		document.Paths.Value("/api/v2/posts").Post.Responses.Keys(),

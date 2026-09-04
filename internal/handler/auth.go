@@ -33,13 +33,13 @@ type sendVerificationCodeRequest struct {
 }
 
 type passwordResetRequest struct {
-	Email string `json:"email"`
+	Email string `json:"email" openapi:"required"`
 }
 
 type passwordResetConfirmRequest struct {
-	Email            string `json:"email"`
-	VerificationCode string `json:"verification_code"`
-	NewPassword      string `json:"new_password"`
+	Email            string `json:"email" openapi:"required"`
+	VerificationCode string `json:"verification_code" openapi:"required"`
+	NewPassword      string `json:"new_password" openapi:"required"`
 }
 
 type registerRequest struct {

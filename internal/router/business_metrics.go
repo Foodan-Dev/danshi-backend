@@ -135,6 +135,12 @@ func (s observedVerificationSender) SendPasswordResetCode(ctx context.Context, e
 	return nil
 }
 
+// Configured 透传底层投递器的可用性，避免 fail-closed 适配器被观测包装层遮蔽。
+func (s observedVerificationSender) Configured() bool {
+	available, ok := s.next.(interface{ Configured() bool })
+	return !ok || available.Configured()
+}
+
 func moderationProvider(value any) string {
 	switch value.(type) {
 	case *tencentcloud.Provider:

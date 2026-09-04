@@ -524,7 +524,7 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 	if value == nil {
 		return nil, nil
 	}
-	schema, err := openapi3gen.NewSchemaRefForValue(
+	ref, err := openapi3gen.NewSchemaRefForValue(
 		value,
 		schemas,
 		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
@@ -537,28 +537,26 @@ func schemaForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, e
 	if err != nil {
 		return nil, err
 	}
-	target := schema.Value
-	if target == nil && strings.HasPrefix(schema.Ref, "#/components/schemas/") {
-		component := schemas[strings.TrimPrefix(schema.Ref, "#/components/schemas/")]
-		if component != nil {
-			target = component.Value
-		}
-	}
-	addTaggedRequiredFields(target, reflect.TypeOf(value))
-	return schema, nil
+	applyRequiredJSONFields(value, ref, schemas)
+	return ref, nil
 }
 
-// addTaggedRequiredFields 将只影响请求契约的字段必填标记补到生成 schema。
-// openapi3gen 默认只区分 nullable，不会把业务层的“缺席即非法”表达为 required。
-func addTaggedRequiredFields(schema *openapi3.Schema, valueType reflect.Type) {
-	for valueType.Kind() == reflect.Pointer {
-		valueType = valueType.Elem()
-	}
-	if schema == nil || valueType.Kind() != reflect.Struct {
+// applyRequiredJSONFields 把请求 DTO 上显式声明的必填字段同步到 OpenAPI。
+// 绑定层仍由业务校验负责；这里仅保证客户端契约与请求结构的必填语义一致。
+func applyRequiredJSONFields(value any, ref *openapi3.SchemaRef, schemas openapi3.Schemas) {
+	if ref == nil {
 		return
 	}
-	for index := 0; index < valueType.NumField(); index++ {
-		field := valueType.Field(index)
+	typ := reflect.TypeOf(value)
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return
+	}
+	required := make([]string, 0)
+	for index := 0; index < typ.NumField(); index++ {
+		field := typ.Field(index)
 		if field.PkgPath != "" || field.Tag.Get("openapi") != "required" {
 			continue
 		}
@@ -566,11 +564,23 @@ func addTaggedRequiredFields(schema *openapi3.Schema, valueType reflect.Type) {
 		if jsonName == "" || jsonName == "-" {
 			continue
 		}
-		if !slices.Contains(schema.Required, jsonName) {
-			schema.Required = append(schema.Required, jsonName)
+		required = append(required, jsonName)
+	}
+	if len(required) == 0 {
+		return
+	}
+	target := ref.Value
+	if target == nil && ref.Ref != "" {
+		const componentPrefix = "#/components/schemas/"
+		if name, ok := strings.CutPrefix(ref.Ref, componentPrefix); ok {
+			if component := schemas[name]; component != nil {
+				target = component.Value
+			}
 		}
 	}
-	slices.Sort(schema.Required)
+	if target != nil {
+		target.WithRequired(required)
+	}
 }
 
 func customizeSchema(name string, valueType reflect.Type, _ reflect.StructTag, schema *openapi3.Schema) error {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
+	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
@@ -129,28 +130,42 @@ func ShouldCommitError(err error) bool {
 
 // AuthService 实现 auth 域完整业务闭环。
 type AuthService struct {
-	cfg       config.Config
-	tokens    *jwtx.Codec
-	sender    VerificationEmailSender
-	moderator ContentModerator
-	users     repository.UserRepository
-	codes     repository.VerificationCodeRepository
-	sessions  repository.SessionRepository
+	cfg        config.Config
+	tokens     *jwtx.Codec
+	sender     VerificationEmailSender
+	deliveries VerificationEmailDeliveryQueue
+	moderator  ContentModerator
+	users      repository.UserRepository
+	codes      repository.VerificationCodeRepository
+	sessions   repository.SessionRepository
 }
 
 // NewAuthService 创建 auth 服务。
 func NewAuthService(
-	cfg config.Config, sender VerificationEmailSender, moderators ...ContentModerator,
+	cfg config.Config,
+	sender VerificationEmailSender,
+	extras ...any,
 ) *AuthService {
 	if sender == nil {
 		sender = UnavailableVerificationEmailSender{}
 	}
 	var moderator ContentModerator = UnavailableContentModerator{}
-	if len(moderators) > 0 && moderators[0] != nil {
-		moderator = moderators[0]
+	var deliveryQueue VerificationEmailDeliveryQueue
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case ContentModerator:
+			if value != nil {
+				moderator = value
+			}
+		case VerificationEmailDeliveryQueue:
+			if value != nil {
+				deliveryQueue = value
+			}
+		}
 	}
 	return &AuthService{
-		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender, moderator: moderator,
+		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender,
+		deliveries: deliveryQueue, moderator: moderator,
 	}
 }
 
@@ -205,6 +220,7 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if registered {
 		return nil
 	}
+	// 注册接口继续保持原有语义：发信失败时请求回滚，调用方可安全重试。
 	if err := s.sender.SendRegistrationCode(ctx, email, code); err != nil {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
 	}
@@ -220,10 +236,22 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if !s.cfg.EmailVerificationRequired {
 		return apierr.ServiceUnavailable("密码重置暂不可用")
 	}
+	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+	}
 	user, err := s.users.FindByEmail(ctx, email)
 	exists := err == nil
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return apierr.Internal(err)
+	}
+	if exists {
+		// 与注销串行化，避免账号在状态落库后、发信前被软删除。
+		user, err = s.users.LockByID(ctx, user.ID)
+		if errors.Is(err, repository.ErrNotFound) {
+			exists = false
+		} else if err != nil {
+			return apierr.Internal(err)
+		}
 	}
 	now := time.Now().UTC()
 	challenge, err := s.codes.LockOrCreate(ctx, email, model.VerificationPurposePasswordReset, now)
@@ -231,7 +259,13 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 		return apierr.Internal(err)
 	}
 	if err := enforceSendRate(challenge, now); err != nil {
-		return err
+		var rateLimit *RateLimitError
+		if !errors.As(err, &rateLimit) {
+			return err
+		}
+		// 找回接口是匿名防枚举入口；限流只阻止刷新挑战和投递，不能把
+		// 某个邮箱是否已有发送状态暴露成 429/Retry-After 差异。
+		return nil
 	}
 	code, err := generateVerificationCode()
 	if err != nil {
@@ -256,8 +290,11 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if !exists {
 		return nil
 	}
-	if err := s.sender.SendPasswordResetCode(ctx, user.Email, code); err != nil {
-		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
+	if err := s.enqueueVerificationEmail(
+		ctx, challenge, user.Email, model.VerificationPurposePasswordReset,
+		challenge.CodeDigest, code, now,
+	); err != nil {
+		return err
 	}
 	return nil
 }
@@ -281,6 +318,13 @@ func (s *AuthService) ResetPassword(ctx context.Context, input PasswordResetInpu
 	if err != nil {
 		return apierr.Internal(err)
 	}
+	user, err = s.users.LockByID(ctx, user.ID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return apierr.BadRequest(apierr.BizVerifyCodeInvalid, "验证码无效或已过期")
+	}
+	if err != nil {
+		return apierr.Internal(err)
+	}
 	if err := s.consumeVerification(ctx, model.VerificationPurposePasswordReset, email, input.VerificationCode); err != nil {
 		return err
 	}
@@ -288,10 +332,10 @@ func (s *AuthService) ResetPassword(ctx context.Context, input PasswordResetInpu
 	if err != nil {
 		return apierr.Internal(err)
 	}
-	now := time.Now().UTC()
-	if err := s.users.UpdatePassword(ctx, user.ID, hash, now); err != nil {
+	if err := s.users.UpdatePassword(ctx, user.ID, hash); err != nil {
 		return apierr.Internal(err)
 	}
+	now := time.Now().UTC()
 	if err := s.sessions.RevokeAll(ctx, user.ID, now); err != nil {
 		return apierr.Internal(err)
 	}
@@ -629,6 +673,44 @@ func (s *AuthService) domainAllowed(email string) bool {
 		}
 	}
 	return false
+}
+
+func (s *AuthService) enqueueVerificationEmail(
+	ctx context.Context,
+	challenge *model.EmailVerificationCode,
+	email string,
+	purpose model.VerificationPurpose,
+	codeDigest string,
+	code string,
+	now time.Time,
+) error {
+	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+	}
+	if _, err := s.deliveries.Enqueue(
+		ctx, challenge, email, purpose, codeDigest, code, now,
+	); err != nil {
+		return apierr.Internal(err)
+	}
+	// HTTP UoW 提交成功后立刻尝试一次；若没有事务回调队列，则交给后台 job 扫描。
+	dbinfra.AfterCommit(ctx, func(afterCommitCtx context.Context) {
+		s.deliveries.Kick(afterCommitCtx)
+	})
+	return nil
+}
+
+type verificationEmailSenderAvailability interface {
+	Configured() bool
+}
+
+func emailSenderConfigured(sender VerificationEmailSender) bool {
+	if sender == nil {
+		return false
+	}
+	if available, ok := sender.(verificationEmailSenderAvailability); ok {
+		return available.Configured()
+	}
+	return true
 }
 
 func (s *AuthService) codeDigest(purpose model.VerificationPurpose, email, code string) string {

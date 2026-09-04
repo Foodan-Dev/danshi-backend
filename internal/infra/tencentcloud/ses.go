@@ -88,19 +88,27 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 	email string,
 	code string,
 ) (err error) {
-	return s.sendCode(ctx, email, code, s.subject, s.templateID, "注册")
+	return s.sendCode(ctx, email, map[string]string{"code": code}, s.subject, s.templateID, "注册")
 }
 
 // SendPasswordResetCode 使用独立主题和模板，避免把找回密码邮件误标为注册邮件。
 func (s *SESVerificationEmailSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
-	return s.sendCode(ctx, email, code, s.resetSubject, s.resetTemplateID, "密码重置")
+	return s.sendCode(ctx, email, map[string]string{
+		"code":               code,
+		"expires_in_minutes": "10",
+		"security_notice":    "非本人操作请忽略",
+	}, s.resetSubject, s.resetTemplateID, "密码重置")
 }
 
+// Configured 报告 SES 适配器已通过配置校验并完成初始化。
+func (s *SESVerificationEmailSender) Configured() bool { return s != nil && s.client != nil }
+
 func (s *SESVerificationEmailSender) sendCode(
-	ctx context.Context, email string, code string, subject string, templateID uint64, purpose string,
+	ctx context.Context, email string, templateData map[string]string,
+	subject string, templateID uint64, purpose string,
 ) (err error) {
 	defer func() { err = s.redactor.redact(err) }()
-	templateData, err := json.Marshal(map[string]string{"code": code})
+	encodedTemplateData, err := json.Marshal(templateData)
 	if err != nil {
 		return fmt.Errorf("编码腾讯云 SES 模板参数: %w", err)
 	}
@@ -110,7 +118,7 @@ func (s *SESVerificationEmailSender) sendCode(
 	request.Destination = common.StringPtrs([]string{email})
 	request.Template = &ses.Template{
 		TemplateID:   common.Uint64Ptr(templateID),
-		TemplateData: common.StringPtr(string(templateData)),
+		TemplateData: common.StringPtr(string(encodedTemplateData)),
 	}
 	request.TriggerType = common.Uint64Ptr(1)
 

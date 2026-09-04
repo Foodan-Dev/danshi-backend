@@ -227,7 +227,7 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("password reset revokes all sessions", func(t *testing.T) {
-		testPasswordReset(t, engine, sender)
+		testPasswordReset(t, cfg, engine, sender, database, gdb)
 	})
 }
 
@@ -254,21 +254,69 @@ func testAuthRouteInventory(t *testing.T, engine *server.Hertz) {
 	}, operations)
 }
 
-func testPasswordReset(t *testing.T, engine *server.Hertz, sender *captureEmailSender) {
+func testPasswordReset(
+	t *testing.T,
+	cfg appconfig.Config,
+	engine *server.Hertz,
+	sender *captureEmailSender,
+	database *dbinfra.DB,
+	gdb *gorm.DB,
+) {
 	t.Helper()
 	email := "password-reset@fdueat.com"
 	sendCode(t, engine, email)
 	registered := registerUser(t, engine, sender, email, "reset-device")
+	registrationCode := sender.Codes(email)[0]
+	var before model.User
+	require.NoError(t, gdb.Where("email = ?", email).First(&before).Error)
+
 	status, response, _ := performJSON(t, engine, http.MethodPost,
 		"/api/v2/auth/password-reset-codes", map[string]any{"email": email}, "")
 	require.Equal(t, http.StatusOK, status, response.Message)
 	code := capturedCode(t, sender, email)
+	var delivery model.VerificationEmailDelivery
+	require.NoError(t, gdb.Where("email = ? AND purpose = ?", email,
+		model.VerificationPurposePasswordReset).Order("id DESC").First(&delivery).Error)
+	require.Equal(t, model.VerificationEmailDeliverySent, delivery.State)
+	require.NotEqual(t, []byte(code), delivery.CodeCiphertext, "密码重置 outbox 不得保存验证码明文")
+	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
+		"email": email, "password": "password-123", "device_label": "reset-second-device",
+	}, "")
+	require.Equal(t, http.StatusOK, status, response.Message)
+	var secondSession service.AuthResult
+	decodeData(t, response, &secondSession)
+
+	status, response, _ = performJSON(t, engine, http.MethodPost,
+		"/api/v2/auth/password-resets", map[string]any{
+			"email": email, "verification_code": registrationCode, "new_password": "wrong-purpose-password",
+		}, "")
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode,
+		"注册验证码不得用于密码重置")
+
 	status, response, _ = performJSON(t, engine, http.MethodPost,
 		"/api/v2/auth/password-resets", map[string]any{
 			"email": email, "verification_code": code, "new_password": "new-password-123",
 		}, "")
 	require.Equal(t, http.StatusOK, status, response.Message)
+	var after model.User
+	require.NoError(t, gdb.Where("id = ?", before.ID).First(&after).Error)
+	require.Equal(t, before.Email, after.Email)
+	require.Equal(t, before.Name, after.Name)
+	require.Equal(t, before.Gender, after.Gender)
+	require.Equal(t, before.Bio, after.Bio)
+	require.Equal(t, before.AvatarImageAssetID, after.AvatarImageAssetID)
+	require.Equal(t, before.DeletedAt, after.DeletedAt)
+	require.Equal(t, before.BanIsPermanent, after.BanIsPermanent)
+	require.Equal(t, before.BannedUntil, after.BannedUntil)
+	require.Equal(t, before.BanReason, after.BanReason)
+	require.Equal(t, before.BannedBy, after.BannedBy)
+	require.Equal(t, before.CreatedAt, after.CreatedAt)
+	require.Equal(t, before.UpdatedAt, after.UpdatedAt,
+		"密码重置只改变密码摘要，不应改动资料更新时间")
 	status, _, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, registered.Token)
+	require.Equal(t, http.StatusUnauthorized, status)
+	status, _, _ = performJSON(t, engine, http.MethodGet, "/api/v2/auth/me", nil, secondSession.Token)
 	require.Equal(t, http.StatusUnauthorized, status)
 	status, _, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
 		"email": email, "password": "password-123",
@@ -278,6 +326,38 @@ func testPasswordReset(t *testing.T, engine *server.Hertz, sender *captureEmailS
 		"email": email, "password": "new-password-123",
 	}, "")
 	require.Equal(t, http.StatusOK, status)
+
+	var resetSession model.UserSession
+	require.NoError(t, gdb.Where("user_id = ?", before.ID).Order("id").First(&resetSession).Error)
+	require.NotNil(t, resetSession.RevokedAt, "密码重置后原有会话必须全部撤销")
+
+	failureEmail := "password-reset-provider-failure@fdueat.com"
+	sendCode(t, engine, failureEmail)
+	registerUser(t, engine, sender, failureEmail, "reset-failure-device")
+	failureSender := testutil.NewMockEmailSender()
+	failureSender.SetDefault(testutil.EmailFailure(errors.New("provider private failure")))
+	failureEngine := authTestEngine(cfg, database, failureSender)
+	unknownEmail := "password-reset-unknown@fdueat.com"
+	failureStatus, failureResponse, _ := performJSON(t, failureEngine, http.MethodPost,
+		"/api/v2/auth/password-reset-codes", map[string]any{"email": failureEmail}, "")
+	unknownStatus, unknownResponse, _ := performJSON(t, failureEngine, http.MethodPost,
+		"/api/v2/auth/password-reset-codes", map[string]any{"email": unknownEmail}, "")
+	require.Equal(t, http.StatusOK, failureStatus)
+	require.Equal(t, http.StatusOK, unknownStatus)
+	require.Equal(t, failureResponse.Message, unknownResponse.Message,
+		"密码找回不得通过响应差异枚举邮箱是否存在")
+	require.Zero(t, failureResponse.ErrorCode)
+	require.Zero(t, unknownResponse.ErrorCode)
+	var failedDelivery model.VerificationEmailDelivery
+	require.NoError(t, gdb.Where("email = ? AND purpose = ?", failureEmail,
+		model.VerificationPurposePasswordReset).First(&failedDelivery).Error)
+	require.Equal(t, model.VerificationEmailDeliveryPending, failedDelivery.State)
+	require.Equal(t, int32(1), failedDelivery.Attempts,
+		"首次供应商失败应保留 outbox 任务并等待重试")
+	var unknownDeliveries int64
+	require.NoError(t, gdb.Model(&model.VerificationEmailDelivery{}).
+		Where("email = ?", unknownEmail).Count(&unknownDeliveries).Error)
+	require.Zero(t, unknownDeliveries, "不存在的邮箱不得创建可投递的验证码任务")
 }
 
 func testVerificationInFlightLimit(

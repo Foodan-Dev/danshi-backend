@@ -874,7 +874,32 @@ DO $$ BEGIN
 END $$;
 
 \echo ''
-\echo '########## 1g. user_sessions 会话与撤销 ##########'
+\echo '########## 1g. verification_email_deliveries durable outbox ##########'
+INSERT INTO verification_email_deliveries
+    (challenge_id, email, purpose, code_digest, code_ciphertext, next_attempt_at)
+VALUES
+    ((SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com'),
+     'Foo@fdueat.com', 'registration', repeat('e',64), decode('abcd','hex'), now());
+DO $$ BEGIN
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','unknown',repeat('e',64),decode('abcd','hex'),now())$q$,
+    ARRAY['23514'], '验证码投递用途必须是受支持枚举');
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration','short',decode('abcd','hex'),now())$q$,
+    ARRAY['23514'], '验证码投递摘要必须为 64 位');
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration',repeat('e',64),''::bytea,now())$q$,
+    ARRAY['23514'], '验证码投递密文不得为空');
+  PERFORM _assert_rejects($q$UPDATE verification_email_deliveries SET state='sent'
+    WHERE challenge_id=(SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com')$q$,
+    ARRAY['23514'], 'sent 状态必须保留 sent_at');
+END $$;
+
+\echo ''
+\echo '########## 1h. user_sessions 会话与撤销 ##########'
 INSERT INTO user_sessions (id,user_id,refresh_token_digest,device_label,ip,expires_at) VALUES
  (501,1,repeat('a',64),'alice-iphone','203.0.113.9', now()+interval '30 days'),
  (502,1,repeat('b',64),'alice-ipad','203.0.113.10',now()+interval '30 days'),
@@ -1294,7 +1319,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 33, '业务表共 33 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 34, '业务表共 34 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 
