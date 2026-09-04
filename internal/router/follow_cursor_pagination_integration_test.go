@@ -226,7 +226,7 @@ func reverseUserIDs(users []model.User) []uint64 {
 
 func seedFollowPlanRows(t *testing.T, gdb *gorm.DB, ownerID uint64, following bool) {
 	t.Helper()
-	prefix := "followers-" + strconv.FormatUint(ownerID, 10)
+	prefix := "followers_" + strconv.FormatUint(ownerID, 10)
 	insert := `
 		WITH seeded AS (
 			INSERT INTO users (email, password_hash, name)
@@ -240,7 +240,7 @@ func seedFollowPlanRows(t *testing.T, gdb *gorm.DB, ownerID uint64, following bo
 		FROM seeded
 	`
 	if following {
-		prefix = "following-" + strconv.FormatUint(ownerID, 10)
+		prefix = "following_" + strconv.FormatUint(ownerID, 10)
 		insert = `
 			WITH seeded AS (
 				INSERT INTO users (email, password_hash, name)
