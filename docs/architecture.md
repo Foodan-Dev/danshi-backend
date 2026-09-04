@@ -273,7 +273,7 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 
 ### 8.2 表分组
 
-当前业务 schema 有 30 张表：
+当前业务 schema 有 32 张表：
 
 | 领域 | 表 |
 |---|---|
@@ -287,9 +287,9 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 | 内容版本 | `post_histories`、`comment_histories` |
 | 审核与提议 | `moderation_records`、`dictionary_suggestions`、`moderation_alert_states` |
 | 角色与封禁 | `user_roles`、`user_role_records`、`user_ban_records` |
-| 图片访问收敛 | `image_access_intents`、`image_access_deliveries` |
+| 图片访问收敛 | `image_access_intents`、`image_access_deliveries`、`image_moderation_retries` |
 
-30 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
+32 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
 
 ## 9. 数据模型设计
 

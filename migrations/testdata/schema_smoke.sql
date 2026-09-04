@@ -106,6 +106,10 @@ DO $$ BEGIN
     ARRAY['23514'], 'users.name 不接受空串');
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-case@fdueat.com','x','ALICE')$q$,
     ARRAY['23505'], 'users.name 大小写不敏感唯一');
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-width@fdueat.com','x','Ａlice')$q$,
+    ARRAY['23514'], 'users.name 必须先做 NFKC 归一化');
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-symbol@fdueat.com','x','alice-name')$q$,
+    ARRAY['23514'], 'users.name 只接受文字、数字和下划线');
   PERFORM _assert((SELECT count(*) FROM user_name_claims WHERE user_id IN (1,2,3))=3,
                   '直接创建用户同时追加 name 占用记录');
 

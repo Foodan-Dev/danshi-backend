@@ -36,7 +36,7 @@ type registerRequest struct {
 	Email            string  `json:"email"`
 	Password         string  `json:"password"`
 	VerificationCode *string `json:"verification_code"`
-	Name             *string `json:"name"`
+	Name             string  `json:"name"`
 	Gender           *string `json:"gender"`
 	DeviceLabel      string  `json:"device_label"`
 }
@@ -104,9 +104,10 @@ func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
+	name := request.Name
 	result, err := h.service.Register(ctx, service.RegisterInput{
 		Email: request.Email, Password: request.Password,
-		VerificationCode: request.VerificationCode, Name: request.Name, Gender: request.Gender,
+		VerificationCode: request.VerificationCode, Name: &name, Gender: request.Gender,
 	}, clientInfo(c, request.DeviceLabel))
 	if err != nil {
 		failService(ctx, c, err)

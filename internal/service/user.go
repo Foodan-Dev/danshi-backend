@@ -199,8 +199,10 @@ func (s *UserService) Update(
 	}
 	fields, moderated := changedUserFields(user, input)
 	if input.NameSet && input.Name != nil && user.Name != *input.Name {
+		// ClaimName 保留稳定的业务错误；users 上的触发器仍是直写/导入场景的数据库兜底。
 		if err := s.users.ClaimName(ctx, userID, *input.Name, time.Now().UTC()); err != nil {
 			if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
+				repository.IsUniqueViolation(err, "uq_users_name_lower") ||
 				errors.Is(err, repository.ErrAlreadyExists) {
 				return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
 			}

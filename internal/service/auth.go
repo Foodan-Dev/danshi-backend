@@ -247,6 +247,7 @@ func (s *AuthService) Register(
 	}
 	if err := s.users.ClaimName(ctx, user.ID, user.Name, time.Now().UTC()); err != nil {
 		if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
+			repository.IsUniqueViolation(err, "uq_users_name_lower") ||
 			errors.Is(err, repository.ErrAlreadyExists) {
 			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
 		}
