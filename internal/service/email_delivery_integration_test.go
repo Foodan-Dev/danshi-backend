@@ -152,7 +152,7 @@ func seedDeliveryChallenge(
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: suffix,
+		Email: challenge.Email, PasswordHash: "x", Name: strings.ReplaceAll(suffix, "-", "_"),
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 	return challenge

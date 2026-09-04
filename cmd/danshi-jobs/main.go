@@ -95,14 +95,15 @@ func deliverVerificationEmails(batchSize int) (runErr error) {
 		return err
 	}
 	var sender service.VerificationEmailSender
-	if cfg.TencentSESConfigured() {
+	switch {
+	case cfg.TencentSESConfigured():
 		sender, err = tencentcloud.NewSESVerificationEmailSender(cfg)
 		if err != nil {
 			return err
 		}
-	} else if cfg.IsProd() {
+	case cfg.IsProd():
 		return errors.New("生产环境验证码邮件投递未配置 SES")
-	} else {
+	default:
 		sender = service.NewLogVerificationEmailSender(log)
 	}
 	worker := service.NewVerificationEmailDeliveryWorker(

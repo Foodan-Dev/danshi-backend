@@ -6,10 +6,15 @@ import "time"
 type VerificationEmailDeliveryState string
 
 const (
-	VerificationEmailDeliveryPending    VerificationEmailDeliveryState = "pending"
-	VerificationEmailDeliverySending    VerificationEmailDeliveryState = "sending"
-	VerificationEmailDeliverySent       VerificationEmailDeliveryState = "sent"
-	VerificationEmailDeliveryCanceled   VerificationEmailDeliveryState = "canceled"
+	// VerificationEmailDeliveryPending 表示任务等待投递或下一次重试。
+	VerificationEmailDeliveryPending VerificationEmailDeliveryState = "pending"
+	// VerificationEmailDeliverySending 表示任务已被 worker 领取并持有租约。
+	VerificationEmailDeliverySending VerificationEmailDeliveryState = "sending"
+	// VerificationEmailDeliverySent 表示邮件已成功投递。
+	VerificationEmailDeliverySent VerificationEmailDeliveryState = "sent"
+	// VerificationEmailDeliveryCanceled 表示任务因挑战失效而取消。
+	VerificationEmailDeliveryCanceled VerificationEmailDeliveryState = "canceled"
+	// VerificationEmailDeliveryDeadLetter 表示任务已耗尽重试预算或无法解密。
 	VerificationEmailDeliveryDeadLetter VerificationEmailDeliveryState = "dead_letter"
 )
 

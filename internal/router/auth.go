@@ -18,7 +18,7 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 			service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log},
 		)
 	}
-	authService := service.NewAuthService(deps.Config, sender, delivery, deps.ContentModerator)
+	authService := service.NewAuthServiceWithDelivery(deps.Config, sender, delivery, deps.ContentModerator)
 	authHandler := handler.NewAuth(authService, deps.BusinessMetrics)
 	auth := api.Group("/auth")
 

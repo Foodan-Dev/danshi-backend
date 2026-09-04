@@ -140,28 +140,37 @@ type AuthService struct {
 	sessions   repository.SessionRepository
 }
 
-// NewAuthService 创建 auth 服务。
+// NewAuthService 创建 auth 服务；可选注入内容审核器。
 func NewAuthService(
 	cfg config.Config,
 	sender VerificationEmailSender,
-	extras ...any,
+	moderators ...ContentModerator,
+) *AuthService {
+	return newAuthService(cfg, sender, nil, moderators...)
+}
+
+// NewAuthServiceWithDelivery 创建同时支持验证码邮件 durable outbox 的 auth 服务。
+func NewAuthServiceWithDelivery(
+	cfg config.Config,
+	sender VerificationEmailSender,
+	deliveryQueue VerificationEmailDeliveryQueue,
+	moderators ...ContentModerator,
+) *AuthService {
+	return newAuthService(cfg, sender, deliveryQueue, moderators...)
+}
+
+func newAuthService(
+	cfg config.Config,
+	sender VerificationEmailSender,
+	deliveryQueue VerificationEmailDeliveryQueue,
+	moderators ...ContentModerator,
 ) *AuthService {
 	if sender == nil {
 		sender = UnavailableVerificationEmailSender{}
 	}
 	var moderator ContentModerator = UnavailableContentModerator{}
-	var deliveryQueue VerificationEmailDeliveryQueue
-	for _, extra := range extras {
-		switch value := extra.(type) {
-		case ContentModerator:
-			if value != nil {
-				moderator = value
-			}
-		case VerificationEmailDeliveryQueue:
-			if value != nil {
-				deliveryQueue = value
-			}
-		}
+	if len(moderators) > 0 && moderators[0] != nil {
+		moderator = moderators[0]
 	}
 	return &AuthService{
 		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender,

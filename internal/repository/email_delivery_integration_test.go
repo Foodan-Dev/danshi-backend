@@ -22,7 +22,7 @@ func TestVerificationEmailDeliveryRepositoryClaimsAndFences(t *testing.T) {
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: "delivery repository",
+		Email: challenge.Email, PasswordHash: "x", Name: "delivery_repository",
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 
@@ -85,7 +85,7 @@ func TestVerificationEmailDeliveryRepositoryCancelsSupersededChallenge(t *testin
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: "delivery superseded",
+		Email: challenge.Email, PasswordHash: "x", Name: "delivery_superseded",
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 	store := repository.VerificationEmailDeliveryRepository{}

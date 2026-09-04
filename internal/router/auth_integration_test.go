@@ -1273,9 +1273,14 @@ func registerUser(
 	device string,
 ) service.AuthResult {
 	t.Helper()
+	name := strings.ReplaceAll(strings.Split(email, "@")[0], "-", "_")
+	nameRunes := []rune(name)
+	if len(nameRunes) > 24 {
+		name = string(nameRunes[:24])
+	}
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
-		"name":   strings.ReplaceAll(strings.Split(email, "@")[0], "-", "_"),
+		"name":   name,
 		"gender": "female", "device_label": device,
 	}, "")
 	require.Equal(t, http.StatusOK, status, "response=%s", response.Message)
