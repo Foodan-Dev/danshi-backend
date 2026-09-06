@@ -32,7 +32,7 @@ func TestSearchDomainAgainstPostgres(t *testing.T) {
 	post := createSearchPost(t, engine, author, fixture)
 
 	t.Run("post ilike filters escaped highlight and rune snippet", func(t *testing.T) {
-		testPostSearch(t, engine, gdb, author, fixture, post.ID)
+		testPostSearch(t, engine, gdb, author, viewer, fixture, post.ID)
 	})
 
 	t.Run("literal wildcard empty long pagination and public visibility", func(t *testing.T) {
@@ -87,10 +87,22 @@ func testPostSearch(
 	engine *server.Hertz,
 	gdb *gorm.DB,
 	author service.AuthResult,
+	viewer service.AuthResult,
 	fixture postFixture,
 	postID uint64,
 ) {
 	t.Helper()
+	for _, action := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: postPath(postID) + "/like"},
+		{method: http.MethodPost, path: postPath(postID) + "/favorite"},
+		{method: http.MethodPost, path: userPath(author.User.ID) + "/follow"},
+	} {
+		status, response, _ := performJSON(t, engine, action.method, action.path, nil, viewer.Token)
+		require.Equal(t, http.StatusOK, status, "path=%s message=%s", action.path, response.Message)
+	}
 	query := url.Values{
 		"q":            {"火锅"},
 		"post_type":    {string(model.PostTypeShare)},
@@ -104,13 +116,36 @@ func testPostSearch(
 		"max_price":    {"19.00"},
 	}
 	status, response, _ := performJSON(t, engine, http.MethodGet,
-		"/api/v2/search/posts?"+query.Encode(), nil, author.Token)
+		"/api/v2/search/posts?"+query.Encode(), nil, viewer.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var result service.SearchPostList
 	decodeData(t, response, &result)
 	require.Len(t, result.Posts, 1, "关键词与全部帖子筛选条件必须按 AND 组合")
 	item := result.Posts[0]
 	require.Equal(t, postID, item.ID)
+	require.Equal(t, model.PostTypeShare, item.PostType)
+	require.NotNil(t, item.ShareType)
+	require.Equal(t, model.ShareTypeRecommend, *item.ShareType)
+	require.NotNil(t, item.Canteen)
+	require.Equal(t, fixture.Canteen.Code, item.Canteen.Code)
+	require.NotNil(t, item.CanteenWindow)
+	require.Equal(t, fixture.Window.ID, item.CanteenWindow.ID)
+	require.NotNil(t, item.Cuisine)
+	require.Equal(t, fixture.Cuisine.Name, *item.Cuisine)
+	require.Equal(t, []string{fixture.Flavors[0].Name}, item.Flavors)
+	require.Equal(t, []string{"搜索组合"}, item.Tags)
+	require.NotNil(t, item.Price)
+	require.Equal(t, "18.50", item.Price.String())
+	require.EqualValues(t, 1, item.Stats.LikeCount)
+	require.EqualValues(t, 1, item.Stats.FavoriteCount)
+	require.True(t, item.IsLiked)
+	require.True(t, item.IsFavorited)
+	require.False(t, item.IsEdited)
+	require.False(t, item.IsDeleted)
+	require.Equal(t, model.PostStatusApproved, item.Status)
+	require.False(t, time.Time(item.UpdatedAt).IsZero())
+	require.NotNil(t, item.Author.IsFollowing)
+	require.True(t, *item.Author.IsFollowing)
 	require.Equal(t, "&lt;script&gt;<em>火锅</em> CaseSearch&lt;/script&gt;", item.Highlight.Title)
 	require.Equal(t, "&lt;b&gt;<em>火锅</em>&lt;/b&gt;"+strings.Repeat("界", 191)+"...",
 		item.Highlight.Content)
@@ -119,14 +154,14 @@ func testPostSearch(
 
 	query.Set("q", "casesearch")
 	status, response, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/search/posts?"+query.Encode(), nil, author.Token)
+		"/api/v2/search/posts?"+query.Encode(), nil, viewer.Token)
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &result)
 	require.Len(t, result.Posts, 1, "标题 ILIKE 必须大小写不敏感")
 
 	query.Set("canteen_code", "canteen-does-not-exist")
 	status, response, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/search/posts?"+query.Encode(), nil, author.Token)
+		"/api/v2/search/posts?"+query.Encode(), nil, viewer.Token)
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &result)
 	require.Empty(t, result.Posts, "search 与 post 信息流必须共享 canteen_code 语义")
@@ -144,7 +179,7 @@ func testPostSearch(
 	}).Error)
 	query = url.Values{"q": {"火锅"}, "limit": {"100"}}
 	status, response, _ = performJSON(t, engine, http.MethodGet,
-		"/api/v2/search/posts?"+query.Encode(), nil, author.Token)
+		"/api/v2/search/posts?"+query.Encode(), nil, viewer.Token)
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &result)
 	require.True(t, searchPostPresent(result.Posts, postID))

@@ -2269,31 +2269,16 @@
         },
         "type": "object"
       },
-      "SearchPostAuthor": {
-        "properties": {
-          "avatar_thumb_url": {
-            "nullable": true,
-            "type": "string"
-          },
-          "avatar_url": {
-            "nullable": true,
-            "type": "string"
-          },
-          "id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
       "SearchPostItem": {
         "properties": {
           "author": {
-            "$ref": "#/components/schemas/SearchPostAuthor"
+            "$ref": "#/components/schemas/PostAuthorView"
+          },
+          "canteen": {
+            "$ref": "#/components/schemas/CanteenView"
+          },
+          "canteen_window": {
+            "$ref": "#/components/schemas/CanteenWindowView"
           },
           "category": {
             "enum": [
@@ -2307,6 +2292,16 @@
           },
           "created_at": {
             "$ref": "#/components/schemas/Time"
+          },
+          "cuisine": {
+            "nullable": true,
+            "type": "string"
+          },
+          "flavors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "highlight": {
             "$ref": "#/components/schemas/SearchHighlight"
@@ -2334,11 +2329,59 @@
             },
             "type": "array"
           },
+          "is_deleted": {
+            "type": "boolean"
+          },
+          "is_edited": {
+            "type": "boolean"
+          },
+          "is_favorited": {
+            "type": "boolean"
+          },
+          "is_liked": {
+            "type": "boolean"
+          },
+          "post_type": {
+            "enum": [
+              "share",
+              "seeking"
+            ],
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "share_type": {
+            "enum": [
+              "recommend",
+              "warning"
+            ],
+            "nullable": true,
+            "type": "string"
+          },
           "stats": {
-            "$ref": "#/components/schemas/SearchPostStats"
+            "$ref": "#/components/schemas/PostStatsView"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "title": {
             "type": "string"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Time"
           }
         },
         "type": "object"
@@ -2353,23 +2396,6 @@
               "$ref": "#/components/schemas/SearchPostItem"
             },
             "type": "array"
-          }
-        },
-        "type": "object"
-      },
-      "SearchPostStats": {
-        "properties": {
-          "comment_count": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "like_count": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "view_count": {
-            "format": "int32",
-            "type": "integer"
           }
         },
         "type": "object"
