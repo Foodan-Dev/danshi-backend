@@ -225,7 +225,7 @@ func samplePost(id uint64) service.PostListItem {
 			"https://images.example.test/posts/2026/08/b.webp",
 		},
 		Author: service.PostAuthorView{
-			ID: 42, Name: "旦食用户", AvatarURL: &avatar, IsFollowing: &following,
+			ID: 42, Username: "旦食用户", AvatarURL: &avatar, IsFollowing: &following,
 		},
 		Stats: service.PostStatsView{
 			LikeCount: 128, FavoriteCount: 36, CommentCount: 24, ViewCount: 2048,
@@ -258,7 +258,7 @@ func sampleComment(id uint64, reply bool) service.CommentItem {
 		ID:      id,
 		Content: "这是一条用于 JSON 实测的评论正文，长度和字段组合接近线上响应。",
 		Author: service.CommentAuthorView{
-			ID: 84, Name: "评论用户", AvatarURL: &avatar, IsFollowing: true,
+			ID: 84, Username: "评论用户", AvatarURL: &avatar, IsFollowing: true,
 		},
 		MentionedUsers: []service.MentionedUserView{{ID: 42, Name: "旦食用户"}},
 		LikeCount:      23, IsLiked: id%2 == 0, IsAuthor: false, IsEdited: true,

@@ -24,7 +24,7 @@ func (s *LogVerificationEmailSender) SendPasswordResetCode(ctx context.Context, 
 // Configured 报告开发环境日志投递器可接受任务。
 func (s *LogVerificationEmailSender) Configured() bool { return s != nil && s.log != nil }
 
-// LogVerificationEmailSender 是开发环境实现。验证码只写开发日志，不用于生产。
+// LogVerificationEmailSender 是开发环境实现。只记录模拟投递事件，不记录验证码，不用于生产。
 type LogVerificationEmailSender struct {
 	log *slog.Logger
 }

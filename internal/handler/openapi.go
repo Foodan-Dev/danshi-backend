@@ -39,7 +39,7 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 		binding(http.MethodDelete, "/api/v2/auth/sessions/:id", nil, nil),
 
 		getBinding("/api/v2/users/:user_id", apicontract.NoQuery{}, service.UserProfile{}),
-		getBinding("/api/v2/users/:user_id/name-history", apicontract.NoQuery{}, service.UserNameChangeHistory{},
+		getBinding("/api/v2/users/:user_id/username-history", apicontract.NoQuery{}, service.UsernameChangeHistory{},
 			http.StatusForbidden),
 		binding(http.MethodPut, "/api/v2/users/:user_id", updateUserRequest{}, service.UserUpdateResult{},
 			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),

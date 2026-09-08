@@ -93,11 +93,19 @@ func (s *SESVerificationEmailSender) SendRegistrationCode(
 
 // SendPasswordResetCode 使用独立主题和模板，避免把找回密码邮件误标为注册邮件。
 func (s *SESVerificationEmailSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	if !s.PasswordResetConfigured() {
+		return errors.New("腾讯云 SES 密码重置模板未配置")
+	}
 	return s.sendCode(ctx, email, map[string]string{
 		"code":               code,
 		"expires_in_minutes": "10",
 		"security_notice":    "非本人操作请忽略",
 	}, s.resetSubject, s.resetTemplateID, "密码重置")
+}
+
+// PasswordResetConfigured 单独报告找回密码能力；不影响既有注册邮件。
+func (s *SESVerificationEmailSender) PasswordResetConfigured() bool {
+	return s.Configured() && s.resetTemplateID > 0 && s.resetSubject != ""
 }
 
 // Configured 报告 SES 适配器已通过配置校验并完成初始化。

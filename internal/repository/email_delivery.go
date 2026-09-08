@@ -18,6 +18,23 @@ type VerificationEmailDeliveryClaim struct {
 // VerificationEmailDeliveryRepository 管理验证码邮件 outbox 的短事务状态迁移。
 type VerificationEmailDeliveryRepository struct{}
 
+// ClearInvalidCodes 有界清理已过期、已消费或已被替换的验证码明文，保留投递记录。
+func (VerificationEmailDeliveryRepository) ClearInvalidCodes(ctx context.Context, now time.Time, limit int) error {
+	return db.FromContext(ctx).Exec(`
+WITH expired AS (
+    SELECT d.id FROM verification_email_deliveries d
+    JOIN email_verification_codes c ON c.id = d.challenge_id
+    WHERE d.code IS NOT NULL
+      AND (c.expires_at <= ? OR c.consumed_at IS NOT NULL
+           OR c.code_digest <> d.code_digest OR c.failed_attempts >= 5)
+    ORDER BY d.id
+    FOR UPDATE OF d SKIP LOCKED
+    LIMIT ?
+)
+UPDATE verification_email_deliveries d SET code = NULL
+FROM expired WHERE d.id = expired.id`, now.UTC(), limit).Error
+}
+
 // Enqueue 为当前一次验证码发送追加一条邮件投递任务；同一 challenge 的旧任务
 // 由 ClaimDue 的 digest 校验取消，不能复用或覆盖，否则会破坏重发的审计与重试状态。
 func (VerificationEmailDeliveryRepository) Enqueue(
@@ -26,12 +43,12 @@ func (VerificationEmailDeliveryRepository) Enqueue(
 	email string,
 	purpose model.VerificationPurpose,
 	codeDigest string,
-	ciphertext []byte,
+	code string,
 	now time.Time,
 ) (uint64, error) {
 	delivery := &model.VerificationEmailDelivery{
 		ChallengeID: challenge.ID, Email: email, Purpose: purpose,
-		CodeDigest: codeDigest, CodeCiphertext: ciphertext,
+		CodeDigest: codeDigest, Code: &code,
 		State: model.VerificationEmailDeliveryPending, Attempts: 0,
 		CreatedAt: now.UTC(), UpdatedAt: now.UTC(),
 	}
@@ -76,6 +93,7 @@ SELECT claimed.*,
        CASE WHEN challenge.code_digest = claimed.code_digest
                   AND challenge.consumed_at IS NULL
                   AND challenge.expires_at > ?
+                  AND challenge.failed_attempts < 5
                   AND (claimed.purpose <> 'password_reset' OR EXISTS (
                       SELECT 1 FROM users
                       WHERE lower(users.email) = lower(claimed.email)

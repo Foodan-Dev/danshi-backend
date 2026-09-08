@@ -1,4 +1,4 @@
--- 验证码邮件只在验证码状态落库后异步投递；密文使用 EMAIL_VERIFICATION_SECRET 加密。
+-- 注册和密码重置验证码在 outbox 保存明文，供提交后投递与失败重试；消费或失效后清空。
 
 -- +goose Up
 
@@ -8,7 +8,7 @@ CREATE TABLE verification_email_deliveries (
     email           varchar(255) NOT NULL,
     purpose         varchar(32) NOT NULL,
     code_digest     varchar(64) NOT NULL,
-    code_ciphertext bytea NOT NULL,
+    code            varchar(6),
     state           varchar(16) NOT NULL DEFAULT 'pending',
     attempts        integer NOT NULL DEFAULT 0,
     next_attempt_at timestamptz,
@@ -25,8 +25,8 @@ CREATE TABLE verification_email_deliveries (
         CHECK (purpose IN ('registration', 'password_reset')),
     CONSTRAINT verification_email_deliveries_digest_check
         CHECK (length(code_digest) = 64),
-    CONSTRAINT verification_email_deliveries_ciphertext_check
-        CHECK (octet_length(code_ciphertext) > 0),
+    CONSTRAINT verification_email_deliveries_code_check
+        CHECK (code IS NULL OR code ~ '^[0-9]{6}$'),
     CONSTRAINT verification_email_deliveries_state_check
         CHECK (state IN ('pending', 'sending', 'sent', 'canceled', 'dead_letter')),
     CONSTRAINT verification_email_deliveries_attempts_check
@@ -37,7 +37,7 @@ CREATE TABLE verification_email_deliveries (
         CHECK (lease_token IS NULL OR length(lease_token) BETWEEN 16 AND 64),
     CONSTRAINT verification_email_deliveries_error_check
         CHECK (last_error_code IS NULL OR last_error_code IN (
-            'stale_challenge', 'decrypt_failed', 'provider_error', 'delivery_exhausted'
+            'stale_challenge', 'provider_error', 'delivery_exhausted'
         )),
     CONSTRAINT verification_email_deliveries_terminal_check
         CHECK (
@@ -53,10 +53,15 @@ CREATE INDEX idx_verification_email_deliveries_due
     WHERE state IN ('pending', 'sending');
 
 COMMENT ON TABLE verification_email_deliveries IS
-    '验证码邮件 durable outbox；邮箱可用于投递对账，验证码仅保存应用密钥加密后的密文。';
-COMMENT ON COLUMN verification_email_deliveries.code_ciphertext IS
-    '使用 EMAIL_VERIFICATION_SECRET 通过 AEAD 加密的验证码，不得写入明文。';
+    '验证码邮件 durable outbox；邮箱可用于投递对账，验证码保存明文，消费或失效后清空。';
+COMMENT ON COLUMN verification_email_deliveries.code IS
+    '六位验证码明文。消费时清空，过期由投递任务清理；不得输出到日志或 API。';
+
+COMMENT ON COLUMN email_verification_codes.code_digest IS
+    '验证码 HMAC 摘要，用于校验；邮件任务单独保存有效期内的验证码明文。';
 
 -- +goose Down
 
 DROP TABLE verification_email_deliveries;
+
+COMMENT ON COLUMN email_verification_codes.code_digest IS '验证码摘要，明文不落库。';

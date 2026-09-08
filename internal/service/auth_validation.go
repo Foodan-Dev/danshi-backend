@@ -3,7 +3,6 @@ package service
 import (
 	"net/mail"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -11,11 +10,12 @@ import (
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
+	"github.com/Foodan-Dev/danshi-backend/internal/pkg/usernamepolicy"
 )
 
 const (
-	minNameRunes = 2
-	maxNameRunes = 24
+	minUsernameRunes = 2
+	maxUsernameRunes = 24
 )
 
 func normalizeEmail(raw string) (string, error) {
@@ -58,14 +58,14 @@ func normalizeRegister(input RegisterInput) (RegisterInput, error) {
 	if err := validatePassword(input.Password, true); err != nil {
 		return RegisterInput{}, err
 	}
-	if input.Name == nil {
-		return RegisterInput{}, apierr.InvalidField("name", apierr.FieldRequired, "name 不能为空")
+	if input.Username == nil {
+		return RegisterInput{}, apierr.InvalidField("username", apierr.FieldRequired, "用户名不能为空")
 	}
-	name, err := normalizeName(*input.Name)
+	name, err := normalizeUsername(*input.Username)
 	if err != nil {
 		return RegisterInput{}, err
 	}
-	input.Name = &name
+	input.Username = &name
 	if input.Gender != nil && !validGender(model.Gender(*input.Gender)) {
 		return RegisterInput{}, apierr.InvalidField(
 			"gender", apierr.FieldInvalidEnum, "gender 只能是 male、female 或 other",
@@ -74,32 +74,28 @@ func normalizeRegister(input RegisterInput) (RegisterInput, error) {
 	return input, nil
 }
 
-func normalizeName(raw string) (string, error) {
+func normalizeUsername(raw string) (string, error) {
 	name := strings.TrimSpace(norm.NFKC.String(raw))
 	length := utf8.RuneCountInString(name)
 	if length == 0 {
-		return "", apierr.InvalidField("name", apierr.FieldRequired, "name 不能为空")
+		return "", apierr.InvalidField("username", apierr.FieldRequired, "用户名不能为空")
 	}
-	if length < minNameRunes {
-		return "", apierr.InvalidField("name", apierr.FieldTooShort, "name 不能少于 2 个字符")
+	if length < minUsernameRunes {
+		return "", apierr.InvalidField("username", apierr.FieldTooShort, "用户名不能少于 2 个字符")
 	}
-	if length > maxNameRunes {
-		return "", apierr.InvalidField("name", apierr.FieldTooLong, "name 不能超过 24 个字符")
+	if length > maxUsernameRunes {
+		return "", apierr.InvalidField("username", apierr.FieldTooLong, "用户名不能超过 24 个字符")
 	}
-	for _, value := range name {
-		if value != '_' && !unicode.IsLetter(value) && !unicode.IsNumber(value) {
-			return "", apierr.InvalidField(
-				"name", apierr.FieldInvalidFormat, "name 只能包含文字、数字和下划线",
-			)
-		}
+	if !usernamepolicy.ValidCharacters(name) {
+		return "", apierr.InvalidField("username", apierr.FieldInvalidFormat, "用户名只能包含文字、数字和下划线")
 	}
-	if reservedName(name) {
-		return "", apierr.InvalidField("name", apierr.FieldInvalidFormat, "该 name 不可使用")
+	if reservedUsername(name) {
+		return "", apierr.InvalidField("username", apierr.FieldInvalidFormat, "该用户名不可使用")
 	}
 	return name, nil
 }
 
-func reservedName(name string) bool {
+func reservedUsername(name string) bool {
 	base := strings.ToLower(name)
 	for _, reserved := range []string{"admin", "administrator", "official", "support", "system", "security", "danshi"} {
 		if base == reserved {

@@ -22,14 +22,14 @@ func TestVerificationEmailDeliveryRepositoryClaimsAndFences(t *testing.T) {
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: "delivery_repository",
+		Email: challenge.Email, PasswordHash: "x", Username: "delivery_repository",
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 
 	store := repository.VerificationEmailDeliveryRepository{}
 	require.NoError(t, database.DB.RunInTx(context.Background(), func(ctx context.Context) error {
 		_, err := store.Enqueue(ctx, challenge, challenge.Email, challenge.Purpose,
-			challenge.CodeDigest, []byte("encrypted-code"), now)
+			challenge.CodeDigest, "123456", now)
 		return err
 	}))
 
@@ -37,7 +37,7 @@ func TestVerificationEmailDeliveryRepositoryClaimsAndFences(t *testing.T) {
 	require.NoError(t, database.GORM.Where("challenge_id = ?", challenge.ID).First(&delivery).Error)
 	require.Equal(t, model.VerificationEmailDeliveryPending, delivery.State)
 	require.Equal(t, 0, int(delivery.Attempts))
-	require.Equal(t, []byte("encrypted-code"), delivery.CodeCiphertext)
+	require.Equal(t, "123456", *delivery.Code)
 
 	claims := make([]repository.VerificationEmailDeliveryClaim, 0, 1)
 	leaseToken := "repository-test-lease-token"
@@ -85,17 +85,17 @@ func TestVerificationEmailDeliveryRepositoryCancelsSupersededChallenge(t *testin
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: "delivery_superseded",
+		Email: challenge.Email, PasswordHash: "x", Username: "delivery_superseded",
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 	store := repository.VerificationEmailDeliveryRepository{}
 	require.NoError(t, database.DB.RunInTx(context.Background(), func(ctx context.Context) error {
 		if _, err := store.Enqueue(ctx, challenge, challenge.Email, challenge.Purpose,
-			strings.Repeat("a", 64), []byte("old-code"), now); err != nil {
+			strings.Repeat("a", 64), "234567", now); err != nil {
 			return err
 		}
 		_, err := store.Enqueue(ctx, challenge, challenge.Email, challenge.Purpose,
-			challenge.CodeDigest, []byte("new-code"), now)
+			challenge.CodeDigest, "345678", now)
 		return err
 	}))
 

@@ -42,7 +42,7 @@ type RegisterInput struct {
 	Email            string
 	Password         string
 	VerificationCode *string
-	Name             *string
+	Username         *string
 	Gender           *string
 }
 
@@ -70,7 +70,7 @@ type ClientInfo struct {
 type UserView struct {
 	ID        uint64           `json:"id"`
 	Email     string           `json:"email"`
-	Name      string           `json:"name"`
+	Username  string           `json:"username"`
 	Gender    *model.Gender    `json:"gender"`
 	Bio       *string          `json:"bio"`
 	Roles     []model.UserRole `json:"roles"`
@@ -190,6 +190,9 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if !s.domainAllowed(email) {
 		return nil
 	}
+	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+	}
 	registered := false
 	if _, err = s.users.FindByEmail(ctx, email, repository.QueryOptions{IncludeDeleted: true}); err == nil {
 		registered = true
@@ -229,11 +232,9 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if registered {
 		return nil
 	}
-	// 注册接口继续保持原有语义：发信失败时请求回滚，调用方可安全重试。
-	if err := s.sender.SendRegistrationCode(ctx, email, code); err != nil {
-		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试").WithCause(err)
-	}
-	return nil
+	return s.enqueueVerificationEmail(
+		ctx, challenge, email, model.VerificationPurposeRegistration, challenge.CodeDigest, code, now,
+	)
 }
 
 // SendPasswordResetCode 向存在且未注销的账号发送找回密码验证码；响应不泄露账号状态。
@@ -245,7 +246,7 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if !s.cfg.EmailVerificationRequired {
 		return apierr.ServiceUnavailable("密码重置暂不可用")
 	}
-	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+	if !passwordResetSenderConfigured(s.sender) || s.deliveries == nil {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
 	}
 	user, err := s.users.FindByEmail(ctx, email)
@@ -377,17 +378,17 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 
-	nameModeration, err := s.moderator.Review(ctx, ModerationRequest{
-		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Name,
+	usernameModeration, err := s.moderator.Review(ctx, ModerationRequest{
+		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Username,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := validateModerationResult(nameModeration); err != nil {
+	if err := validateModerationResult(usernameModeration); err != nil {
 		return nil, err
 	}
-	if nameModeration.Verdict != model.ModerationVerdictPass {
-		return nil, moderationVerdictError(nameModeration.Verdict, "name")
+	if usernameModeration.Verdict != model.ModerationVerdictPass {
+		return nil, moderationVerdictError(usernameModeration.Verdict, "用户名")
 	}
 
 	passwordHash, err := passwordx.Hash(input.Password)
@@ -401,7 +402,7 @@ func (s *AuthService) Register(
 	}
 
 	user := &model.User{
-		Email: input.Email, PasswordHash: passwordHash, Name: valueOrEmpty(input.Name),
+		Email: input.Email, PasswordHash: passwordHash, Username: valueOrEmpty(input.Username),
 		Gender: genderValue(input.Gender),
 	}
 	if err := s.users.Create(ctx, user); err != nil {
@@ -410,27 +411,27 @@ func (s *AuthService) Register(
 		}
 		if repository.IsUniqueViolation(err, "uq_users_name_lower") ||
 			repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") {
-			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+			return nil, apierr.Conflict(apierr.BizUsernameTaken, "用户名已被占用")
 		}
 		return nil, apierr.Internal(err)
 	}
-	if err := s.users.ClaimName(ctx, user.ID, user.Name, time.Now().UTC()); err != nil {
+	if err := s.users.ClaimUsername(ctx, user.ID, user.Username, time.Now().UTC()); err != nil {
 		if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
 			repository.IsUniqueViolation(err, "uq_users_name_lower") ||
 			errors.Is(err, repository.ErrAlreadyExists) {
-			return nil, apierr.Conflict(apierr.BizNameTaken, "name 已被占用")
+			return nil, apierr.Conflict(apierr.BizUsernameTaken, "用户名已被占用")
 		}
 		return nil, apierr.Internal(err)
 	}
 	if err := s.users.CreateModerationRecord(ctx, moderationRecordForUser(
-		user.ID, model.ModerationFieldName, nameModeration,
+		user.ID, model.ModerationFieldName, usernameModeration,
 	)); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return s.issueSession(ctx, user, client, time.Now().UTC())
 }
 
-// Login 校验邮箱或 name 与密码；邮箱登录还必须满足邮箱域名白名单。
+// Login 校验邮箱或 用户名 与密码；邮箱登录还必须满足邮箱域名白名单。
 func (s *AuthService) Login(
 	ctx context.Context,
 	input LoginInput,
@@ -449,6 +450,21 @@ func (s *AuthService) Login(
 			return nil, apierr.Internal(err)
 		}
 		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+	}
+	// 与密码重置共用用户行锁；锁内重新读取身份与密码，直到会话落库才释放。
+	user, err = s.users.LockByID(ctx, user.ID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+	}
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	current, err := s.findLoginUser(ctx, input.Identifier)
+	if errors.Is(err, repository.ErrNotFound) || (err == nil && current.ID != user.ID) {
+		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
+	}
+	if err != nil {
+		return nil, apierr.Internal(err)
 	}
 	if !passwordx.Verify(input.Password, passwordHash(user)) {
 		return nil, apierr.Unauthorized().WithCause(errInvalidCredentials)
@@ -474,11 +490,11 @@ func (s *AuthService) findLoginUser(ctx context.Context, rawIdentifier string) (
 		}
 		return s.users.FindByEmail(ctx, email)
 	}
-	name, err := normalizeName(identifier)
+	name, err := normalizeUsername(identifier)
 	if err != nil {
 		return nil, apierr.InvalidField("identifier", apierr.FieldInvalidFormat, "登录标识格式不正确")
 	}
-	return s.users.FindByName(ctx, name)
+	return s.users.FindByUsername(ctx, name)
 }
 
 // Refresh 校验 refresh token、摘要和会话状态，只换发 access token。
@@ -640,7 +656,7 @@ func (s *AuthService) userView(ctx context.Context, user *model.User) (UserView,
 		}
 	}
 	return UserView{
-		ID: user.ID, Email: user.Email, Name: user.Name, Gender: user.Gender,
+		ID: user.ID, Email: user.Email, Username: user.Username, Gender: user.Gender,
 		Bio: user.Bio, Roles: append([]model.UserRole{}, roles...), AvatarURL: avatarURL,
 	}, nil
 }
@@ -710,6 +726,13 @@ func (s *AuthService) enqueueVerificationEmail(
 
 type verificationEmailSenderAvailability interface {
 	Configured() bool
+}
+
+func passwordResetSenderConfigured(sender VerificationEmailSender) bool {
+	if available, ok := sender.(interface{ PasswordResetConfigured() bool }); ok {
+		return available.PasswordResetConfigured()
+	}
+	return emailSenderConfigured(sender)
 }
 
 func emailSenderConfigured(sender VerificationEmailSender) bool {

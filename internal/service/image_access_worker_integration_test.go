@@ -151,7 +151,7 @@ func seedImageAccessDelivery(
 ) model.ImageAsset {
 	t.Helper()
 	user := model.User{
-		Email: suffix + "@fdueat.com", PasswordHash: "x", Name: strings.ReplaceAll(suffix, "-", "_"),
+		Email: suffix + "@fdueat.com", PasswordHash: "x", Username: strings.ReplaceAll(suffix, "-", "_"),
 	}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	size := int64(128)

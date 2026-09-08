@@ -164,7 +164,7 @@ func (c Config) TencentSESConfigured() bool {
 	return c.TencentSecretID != "" && c.TencentSecretKey != "" &&
 		c.TencentRegion != "" && c.TencentSESFromEmail != "" &&
 		c.TencentSESFromName != "" && c.TencentSESSubject != "" &&
-		c.TencentSESTemplateID > 0 && c.TencentSESResetSubject != "" && c.TencentSESResetTemplateID > 0
+		c.TencentSESTemplateID > 0
 }
 
 // EmailDomains 把逗号分隔的白名单拆开并小写化。

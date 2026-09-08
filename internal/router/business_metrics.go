@@ -135,6 +135,14 @@ func (s observedVerificationSender) SendPasswordResetCode(ctx context.Context, e
 	return nil
 }
 
+// PasswordResetConfigured 透传独立的找回密码能力。
+func (s observedVerificationSender) PasswordResetConfigured() bool {
+	if available, ok := s.next.(interface{ PasswordResetConfigured() bool }); ok {
+		return available.PasswordResetConfigured()
+	}
+	return s.Configured()
+}
+
 // Configured 透传底层投递器的可用性，避免 fail-closed 适配器被观测包装层遮蔽。
 func (s observedVerificationSender) Configured() bool {
 	available, ok := s.next.(interface{ Configured() bool })

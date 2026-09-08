@@ -58,7 +58,7 @@ func testNotificationProducersAndReads(
 	t.Helper()
 	post := createPost(t, engine, actors.PostAuthor.Token,
 		sharePostPayload(fixture, "通知语义帖子", []string{"通知语义"}))
-	longContent := "@" + actors.Mentioned.User.Name + " " + strings.Repeat("预览", 60)
+	longContent := "@" + actors.Mentioned.User.Username + " " + strings.Repeat("预览", 60)
 	root := createComment(t, engine, actors.Commenter.Token, post.ID, map[string]any{
 		"content": longContent, "mentioned_user_ids": []uint64{actors.Mentioned.User.ID},
 	})

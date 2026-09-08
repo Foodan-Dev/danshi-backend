@@ -1265,7 +1265,8 @@ func adminTestEngine(
 	)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router.Register(engine, router.Deps{
-		Config: cfg, DB: database, Log: log, EmailSender: sender, ContentModerator: moderator,
+		Config: cfg, DB: database, Log: log, EmailSender: sender,
+		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})}, ContentModerator: moderator,
 	})
 	return engine
 }

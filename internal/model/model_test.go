@@ -61,13 +61,13 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 
 	author := &model.User{
 		Email: "model-author@fdueat.com", PasswordHash: "$2b$12$modeltest",
-		Name: "模型作者",
+		Username: "模型作者",
 	}
 	insertAndSelect(t, gdb, author)
 
 	actor := &model.User{
 		Email: "model-actor@fdueat.com", PasswordHash: "$2b$12$modeltest",
-		Name: "模型互动者", Gender: ptr(model.GenderOther), Bio: ptr("模型层集成测试"),
+		Username: "模型互动者", Gender: ptr(model.GenderOther), Bio: ptr("模型层集成测试"),
 	}
 	require.NoError(t, gdb.Create(actor).Error)
 
@@ -175,16 +175,16 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 	insertAndSelect(t, gdb, verification)
 
 	delivery := &model.VerificationEmailDelivery{
-		ChallengeID:    verification.ID,
-		Email:          verification.Email,
-		Purpose:        verification.Purpose,
-		CodeDigest:     strings.Repeat("a", 64),
-		CodeCiphertext: []byte("model-test-encrypted-code"),
-		State:          model.VerificationEmailDeliveryPending,
-		Attempts:       0,
-		NextAttemptAt:  &now,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ChallengeID:   verification.ID,
+		Email:         verification.Email,
+		Purpose:       verification.Purpose,
+		CodeDigest:    strings.Repeat("a", 64),
+		Code:          ptr("123456"),
+		State:         model.VerificationEmailDeliveryPending,
+		Attempts:      0,
+		NextAttemptAt: &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	insertAndSelect(t, gdb, delivery)
 
@@ -370,7 +370,7 @@ func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 func modelCatalog() []any {
 	return []any{
 		&model.Canteen{}, &model.CanteenWindow{}, &model.Cuisine{}, &model.Flavor{},
-		&model.Tag{}, &model.User{}, &model.UserNameClaim{}, &model.UserNameChangeRecord{}, &model.UserRoleBinding{}, &model.UserBanRecord{},
+		&model.Tag{}, &model.User{}, &model.UsernameClaim{}, &model.UsernameChangeRecord{}, &model.UserRoleBinding{}, &model.UserBanRecord{},
 		&model.UserRoleRecord{}, &model.ImageAsset{}, &model.Post{},
 		&model.PostTag{}, &model.PostFlavor{}, &model.PostImage{}, &model.Comment{},
 		&model.CommentMention{}, &model.Follow{}, &model.Favorite{}, &model.PostLike{},

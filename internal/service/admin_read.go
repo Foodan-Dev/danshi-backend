@@ -111,7 +111,7 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	nameRecords, err := s.admin.FindUserNameChangeRecords(ctx, userID)
+	nameRecords, err := s.admin.FindUsernameChangeRecords(ctx, userID)
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
@@ -123,10 +123,10 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 			ActorID: record.ActorID, CreatedAt: ptime.Time(record.CreatedAt),
 		})
 	}
-	nameChanges := make([]AdminUserNameChangeView, 0, len(nameRecords))
+	nameChanges := make([]AdminUsernameChangeView, 0, len(nameRecords))
 	for _, record := range nameRecords {
-		nameChanges = append(nameChanges, AdminUserNameChangeView{
-			ID: record.ID, OldName: record.OldName, NewName: record.NewName,
+		nameChanges = append(nameChanges, AdminUsernameChangeView{
+			ID: record.ID, OldUsername: record.OldUsername, NewUsername: record.NewUsername,
 			ChangedAt: ptime.Time(record.ChangedAt),
 		})
 	}
@@ -139,7 +139,7 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 		userView.AvatarURL = &avatarURL
 	}
 	return &AdminUserDetail{
-		AdminUserView: userView, BanRecords: views, NameChanges: nameChanges,
+		AdminUserView: userView, BanRecords: views, UsernameChanges: nameChanges,
 	}, nil
 }
 
@@ -397,7 +397,7 @@ func adminRole(raw string, optional bool) (*model.UserRole, error) {
 func adminUserView(row *repository.AdminUserRecord, now time.Time) AdminUserView {
 	banned := isCurrentlyBanned(&row.User, now)
 	return AdminUserView{
-		ID: row.ID, Name: row.Name, Email: row.Email, Roles: roleStrings(row.Roles),
+		ID: row.ID, Username: row.Username, Email: row.Email, Roles: roleStrings(row.Roles),
 		IsActive: row.DeletedAt == nil && !banned, IsBanned: banned,
 		BanIsPermanent: row.BanIsPermanent, BannedUntil: ptime.Ptr(row.BannedUntil),
 		BanReason: row.BanReason, BannedBy: row.BannedBy, AvatarURL: row.AvatarURL, Bio: row.Bio,

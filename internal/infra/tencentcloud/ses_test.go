@@ -126,3 +126,20 @@ func sesTestConfig() config.Config {
 		TencentSESTemplateID: 9876, TencentSESResetSubject: "旦食密码重置验证码", TencentSESResetTemplateID: 9877,
 	}
 }
+
+func TestSESRegistrationDoesNotRequireResetTemplate(t *testing.T) {
+	cfg := sesTestConfig()
+	cfg.TencentSESResetTemplateID = 0
+	require.True(t, cfg.TencentSESConfigured())
+	require.NoError(t, validateSESConfig(cfg))
+	response := ses.NewSendEmailResponse()
+	response.Response = &ses.SendEmailResponseParams{MessageId: common.StringPtr("registration-only")}
+	client := &fakeSESClient{response: response}
+	sender := newSESVerificationEmailSender(cfg, client)
+	require.True(t, sender.Configured())
+	require.False(t, sender.PasswordResetConfigured())
+	require.NoError(t, sender.SendRegistrationCode(context.Background(), "student@fdueat.com", "123456"))
+	client.request = nil
+	require.ErrorContains(t, sender.SendPasswordResetCode(context.Background(), "student@fdueat.com", "123456"), "未配置")
+	require.Nil(t, client.request)
+}

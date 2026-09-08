@@ -77,35 +77,34 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		testPostCommitCallbacks(t, database, gdb)
 	})
 
-	t.Run("verification failure rolls back", func(t *testing.T) {
-		failingSender := testutil.NewMockEmailSender()
-		failingSender.SetDefault(testutil.EmailFailure(errors.New("test delivery failure")))
-		failingEngine := authTestEngine(cfg, database, failingSender)
-		status, response, _ := performJSON(t, failingEngine, http.MethodPost,
-			"/api/v2/auth/email-verification-codes", map[string]any{"email": "delivery-fail@fdueat.com"}, "")
-		require.Equal(t, http.StatusServiceUnavailable, status)
-		require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
-		require.Equal(t, "验证码暂时无法发送，请稍后再试", response.Message)
-
-		var count int64
-		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
-			Where("email = ?", "delivery-fail@fdueat.com").Count(&count).Error)
-		require.Zero(t, count, "发信失败时验证码行和发送计数必须一并回滚")
-	})
-
-	t.Run("verification timeout returns 503 and rolls back", func(t *testing.T) {
-		timeoutSender := testutil.NewMockEmailSender()
-		timeoutSender.SetDefault(testutil.EmailFailure(context.DeadlineExceeded))
-		timeoutEngine := authTestEngine(cfg, database, timeoutSender)
-		status, response, _ := performJSON(t, timeoutEngine, http.MethodPost,
-			"/api/v2/auth/email-verification-codes", map[string]any{"email": "timeout@fdueat.com"}, "")
-		require.Equal(t, http.StatusServiceUnavailable, status)
-		require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
-
-		var count int64
-		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
-			Where("email = ?", "timeout@fdueat.com").Count(&count).Error)
-		require.Zero(t, count, "SES 超时时验证码行和发送计数必须一并回滚")
+	t.Run("registration delivery failures remain retryable", func(t *testing.T) {
+		for _, test := range []struct {
+			email string
+			err   error
+		}{
+			{"delivery-fail@fdueat.com", errors.New("test delivery failure")},
+			{"timeout@fdueat.com", context.DeadlineExceeded},
+		} {
+			failing := testutil.NewMockEmailSender()
+			failing.SetDefault(testutil.EmailFailure(test.err))
+			failingEngine := authTestEngine(cfg, database, failing)
+			status, response, _ := performJSON(t, failingEngine, http.MethodPost,
+				"/api/v2/auth/email-verification-codes", map[string]any{"email": test.email}, "")
+			require.Equal(t, http.StatusOK, status, response.Message)
+			var delivery model.VerificationEmailDelivery
+			require.NoError(t, gdb.Where("email = ?", test.email).First(&delivery).Error)
+			require.Equal(t, model.VerificationEmailDeliveryPending, delivery.State)
+			require.NotNil(t, delivery.Code)
+			originalCode := *delivery.Code
+			require.Len(t, originalCode, 6)
+			require.NoError(t, gdb.Model(&delivery).Update("next_attempt_at", time.Now().UTC().Add(-time.Second)).Error)
+			worker := service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})
+			_, err := worker.RunBatch(context.Background())
+			require.NoError(t, err)
+			code, ok := sender.LastCode(test.email)
+			require.True(t, ok)
+			require.Equal(t, originalCode, code, "重新创建的 worker 能恢复相同的注册验证码")
+		}
 	})
 
 	t.Run("verification in-flight limit precedes uow", func(t *testing.T) {
@@ -278,7 +277,8 @@ func testPasswordReset(
 	require.NoError(t, gdb.Where("email = ? AND purpose = ?", email,
 		model.VerificationPurposePasswordReset).Order("id DESC").First(&delivery).Error)
 	require.Equal(t, model.VerificationEmailDeliverySent, delivery.State)
-	require.NotEqual(t, []byte(code), delivery.CodeCiphertext, "密码重置 outbox 不得保存验证码明文")
+	require.NotNil(t, delivery.Code)
+	require.Equal(t, code, *delivery.Code, "密码重置验证码保存在 outbox 中")
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
 		"email": email, "password": "password-123", "device_label": "reset-second-device",
 	}, "")
@@ -299,10 +299,13 @@ func testPasswordReset(
 			"email": email, "verification_code": code, "new_password": "new-password-123",
 		}, "")
 	require.Equal(t, http.StatusOK, status, response.Message)
+	var remaining int64
+	require.NoError(t, gdb.Model(&model.VerificationEmailDelivery{}).Where("email = ? AND code IS NOT NULL", email).Count(&remaining).Error)
+	require.Zero(t, remaining, "注册和重置验证码在成功消费后均已清空")
 	var after model.User
 	require.NoError(t, gdb.Where("id = ?", before.ID).First(&after).Error)
 	require.Equal(t, before.Email, after.Email)
-	require.Equal(t, before.Name, after.Name)
+	require.Equal(t, before.Username, after.Username)
 	require.Equal(t, before.Gender, after.Gender)
 	require.Equal(t, before.Bio, after.Bio)
 	require.Equal(t, before.AvatarImageAssetID, after.AvatarImageAssetID)
@@ -382,7 +385,13 @@ func testVerificationInFlightLimit(
 
 	blockingSender := testutil.NewMockEmailSender()
 	blockingSender.SetDefault(testutil.EmailBlocked(release))
-	engine := authTestEngine(cfg, database, blockingSender)
+	engine := server.New(server.WithHandleMethodNotAllowed(true))
+	router.Register(engine, router.Deps{
+		Config: cfg, DB: database,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), EmailSender: blockingSender,
+		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, blockingSender,
+			service.VerificationEmailDeliveryWorkerOptions{BatchSize: 1})},
+	})
 	results := make(chan asyncRequestResult, maxInFlight)
 	for index := range maxInFlight {
 		email := "in-flight-" + strconv.Itoa(index) + "@fdueat.com"
@@ -403,7 +412,7 @@ func testVerificationInFlightLimit(
 	require.True(t, blockingSender.WaitForAttempts(waitCtx, maxInFlight),
 		"5 个发信请求未能全部进入阻塞 sender")
 	inUseBeforeReject := sqlDB.Stats().InUse
-	require.Equal(t, maxInFlight, inUseBeforeReject, "阻塞 sender 时每个请求都应持有一个事务连接")
+	require.Zero(t, inUseBeforeReject, "提交后发信不应持有数据库事务连接")
 
 	sixthResult := make(chan asyncRequestResult, 1)
 	go func() {
@@ -457,7 +466,7 @@ func testCommitError5xxRollback(t *testing.T, database *dbinfra.DB, gdb *gorm.DB
 	email := "commit-error-500@fdueat.com"
 	engine.POST("/commit-error-500", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: email, PasswordHash: "$2b$12$test", Name: "rollback",
+			Email: email, PasswordHash: "$2b$12$test", Username: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			httpx.Fail(ctx, c, apierr.Internal(err))
@@ -486,7 +495,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	committedEmail := "post-commit-success@fdueat.com"
 	engine.POST("/post-commit-success", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: committedEmail, PasswordHash: "$2b$12$test", Name: "commit",
+			Email: committedEmail, PasswordHash: "$2b$12$test", Username: "commit",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			httpx.Fail(ctx, c, apierr.Internal(err))
@@ -507,7 +516,7 @@ func testPostCommitCallbacks(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	rolledBackEmail := "post-commit-rollback@fdueat.com"
 	engine.POST("/post-commit-rollback", func(ctx context.Context, c *app.RequestContext) {
 		user := &model.User{
-			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Name: "rollback",
+			Email: rolledBackEmail, PasswordHash: "$2b$12$test", Username: "rollback",
 		}
 		if err := dbinfra.FromContext(ctx).Create(user).Error; err != nil {
 			httpx.Fail(ctx, c, apierr.Internal(err))
@@ -539,9 +548,9 @@ func testRepositoryBase(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	users := []model.User{
-		{Email: "repo-base-a@fdueat.com", PasswordHash: "$2b$12$test", Name: "aa"},
-		{Email: "repo-base-b@fdueat.com", PasswordHash: "$2b$12$test", Name: "bb"},
-		{Email: "repo-base-deleted@fdueat.com", PasswordHash: "$2b$12$test", Name: "dd", DeletedAt: &now},
+		{Email: "repo-base-a@fdueat.com", PasswordHash: "$2b$12$test", Username: "aa"},
+		{Email: "repo-base-b@fdueat.com", PasswordHash: "$2b$12$test", Username: "bb"},
+		{Email: "repo-base-deleted@fdueat.com", PasswordHash: "$2b$12$test", Username: "dd", DeletedAt: &now},
 	}
 	for index := range users {
 		require.NoError(t, gdb.Create(&users[index]).Error)
@@ -583,7 +592,7 @@ func testRepositoryBase(t *testing.T, database *dbinfra.DB, gdb *gorm.DB) {
 func testDomainRejection(t *testing.T, engine *server.Hertz) {
 	t.Helper()
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": "outside@example.com", "password": "password-123", "verification_code": "000000", "name": "outside_user",
+		"email": "outside@example.com", "password": "password-123", "verification_code": "000000", "username": "outside_user",
 	}, "")
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	var data struct {
@@ -636,7 +645,7 @@ func testRegisteredEmailRateLimit(
 	t.Helper()
 	email := "registered-rate-limit@fdueat.com"
 	require.NoError(t, gdb.Create(&model.User{
-		Email: email, PasswordHash: "$2b$12$test", Name: "registered",
+		Email: email, PasswordHash: "$2b$12$test", Username: "registered",
 	}).Error)
 
 	status, _, _ := performJSON(t, engine, http.MethodPost,
@@ -667,7 +676,7 @@ func testFailedAttemptPersistence(
 	sendCode(t, engine, email)
 	for range 5 {
 		status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-			"email": email, "password": "password-123", "verification_code": "999999", "name": "failed_attempt",
+			"email": email, "password": "password-123", "verification_code": "999999", "username": "failed_attempt",
 		}, "")
 		require.Equal(t, http.StatusBadRequest, status)
 		require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode)
@@ -677,7 +686,7 @@ func testFailedAttemptPersistence(
 	require.EqualValues(t, 5, challenge.FailedAttempts, "4xx 不能回滚验证码失败安全计数")
 
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email), "name": "failed_attempt",
+		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email), "username": "failed_attempt",
 	}, "")
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode)
@@ -694,7 +703,7 @@ func testRegistrationValidation(
 ) {
 	t.Helper()
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": authFlowEmail, "password": "password-123", "verification_code": "000000", "name": "auth_flow",
+		"email": authFlowEmail, "password": "password-123", "verification_code": "000000", "username": "auth_flow",
 	}, "")
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode)
@@ -706,7 +715,7 @@ func testRegistrationValidation(
 		testutil.WithDeletedUser(deletedAt),
 	)
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": deletedEmail, "password": "password-123", "verification_code": "000000", "name": "deleted_registration",
+		"email": deletedEmail, "password": "password-123", "verification_code": "000000", "username": "deleted_registration",
 	}, "")
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode,
@@ -722,7 +731,7 @@ func testRegistrationValidation(
 			name: "password too short",
 			payload: map[string]any{
 				"email": "short-password@fdueat.com", "password": "1234567",
-				"verification_code": "000000", "name": "short_password",
+				"verification_code": "000000", "username": "short_password",
 			},
 			field: "password", fieldCode: apierr.FieldTooShort,
 		},
@@ -730,7 +739,7 @@ func testRegistrationValidation(
 			name: "password exceeds bcrypt bytes",
 			payload: map[string]any{
 				"email": "long-password@fdueat.com", "password": strings.Repeat("界", 25),
-				"verification_code": "000000", "name": "long_password",
+				"verification_code": "000000", "username": "long_password",
 			},
 			field: "password", fieldCode: apierr.FieldTooLong,
 		},
@@ -739,28 +748,28 @@ func testRegistrationValidation(
 			payload: map[string]any{
 				"email": "missing-name@fdueat.com", "password": "password-123", "verification_code": "000000",
 			},
-			field: "name", fieldCode: apierr.FieldRequired,
+			field: "username", fieldCode: apierr.FieldRequired,
 		},
 		{
 			name: "name exceeds unicode rune limit",
 			payload: map[string]any{
 				"email": "long-name@fdueat.com", "password": "password-123",
-				"verification_code": "000000", "name": strings.Repeat("界", 25),
+				"verification_code": "000000", "username": strings.Repeat("界", 25),
 			},
-			field: "name", fieldCode: apierr.FieldTooLong,
+			field: "username", fieldCode: apierr.FieldTooLong,
 		},
 		{
 			name: "invalid registration gender",
 			payload: map[string]any{
 				"email": "invalid-gender@fdueat.com", "password": "password-123",
-				"verification_code": "000000", "name": "invalid_gender", "gender": "unknown",
+				"verification_code": "000000", "username": "invalid_gender", "gender": "unknown",
 			},
 			field: "gender", fieldCode: apierr.FieldInvalidEnum,
 		},
 		{
 			name: "missing verification code",
 			payload: map[string]any{
-				"email": "missing-code@fdueat.com", "password": "password-123", "name": "missing_code",
+				"email": "missing-code@fdueat.com", "password": "password-123", "username": "missing_code",
 			},
 			field: "verification_code", fieldCode: apierr.FieldRequired,
 		},
@@ -779,7 +788,7 @@ func testRegistrationValidation(
 	sendCode(t, engine, otherEmail)
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": otherEmail, "password": "password-123",
-		"verification_code": capturedCode(t, sender, otherEmail), "name": "other_gender", "gender": model.GenderOther,
+		"verification_code": capturedCode(t, sender, otherEmail), "username": "other_gender", "gender": model.GenderOther,
 	}, "")
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	var otherGenderUser model.User
@@ -804,12 +813,12 @@ func testRegistrationValidation(
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": boundaryEmail, "password": boundaryPassword,
 		"verification_code": capturedCode(t, sender, boundaryEmail),
-		"name":              boundaryName, "gender": model.GenderMale,
+		"username":          boundaryName, "gender": model.GenderMale,
 	}, "")
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	var boundaryUser model.User
 	require.NoError(t, gdb.Where("email = ?", boundaryEmail).First(&boundaryUser).Error)
-	require.Equal(t, boundaryName, boundaryUser.Name)
+	require.Equal(t, boundaryName, boundaryUser.Username)
 }
 
 func testVerificationStates(
@@ -831,7 +840,7 @@ func testVerificationStates(
 
 		status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 			"email": email, "password": "password-123",
-			"verification_code": capturedCode(t, sender, email), "name": strings.ReplaceAll(strings.Split(email, "@")[0], "-", "_"),
+			"verification_code": capturedCode(t, sender, email), "username": strings.ReplaceAll(strings.Split(email, "@")[0], "-", "_"),
 		}, "")
 		require.Equal(t, http.StatusBadRequest, status)
 		require.Equal(t, apierr.BizVerifyCodeInvalid, response.ErrorCode)
@@ -921,14 +930,19 @@ func testVerificationRateBoundaries(
 	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&before).Error)
 	status, response, _ = performJSON(t, failureEngine, http.MethodPost,
 		"/api/v2/auth/email-verification-codes", map[string]any{"email": failureEmail}, "")
-	require.Equal(t, http.StatusServiceUnavailable, status)
-	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+	require.Equal(t, http.StatusOK, status, response.Message)
 	var after model.EmailVerificationCode
 	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&after).Error)
-	require.Equal(t, before.SendCount, after.SendCount)
-	require.Equal(t, before.CodeDigest, after.CodeDigest)
-	require.Equal(t, before.LastSentAt, after.LastSentAt,
-		"已有验证码行的失败发送也必须完整回滚配额和验证码")
+	require.Equal(t, before.SendCount+1, after.SendCount)
+	require.NotEqual(t, before.CodeDigest, after.CodeDigest)
+	require.True(t, after.LastSentAt.After(*before.LastSentAt))
+	var previous model.VerificationEmailDelivery
+	require.NoError(t, gdb.Where("email = ? AND code_digest = ?", failureEmail, before.CodeDigest).First(&previous).Error)
+	require.Nil(t, previous.Code, "重新申请后清空旧验证码")
+	var retry model.VerificationEmailDelivery
+	require.NoError(t, gdb.Where("email = ? AND code_digest = ?", failureEmail, after.CodeDigest).First(&retry).Error)
+	require.NotNil(t, retry.Code, "发信失败后保留新验证码供重试")
+	require.Equal(t, model.VerificationEmailDeliveryPending, retry.State)
 	failureSender.RequireDeliveryCount(t, failureEmail, 1)
 }
 
@@ -944,12 +958,12 @@ func testNameIdentity(
 	sendCode(t, engine, firstEmail)
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": firstEmail, "password": "password-123", "verification_code": capturedCode(t, sender, firstEmail),
-		"name": "Ａlice",
+		"username": "Ａlice",
 	}, "")
 	require.Equal(t, http.StatusOK, status, "message=%s", response.Message)
 	var registered service.AuthResult
 	decodeData(t, response, &registered)
-	require.Equal(t, "Alice", registered.User.Name, "name 应在展示前完成 NFKC 规范化")
+	require.Equal(t, "Alice", registered.User.Username, "name 应在展示前完成 NFKC 规范化")
 
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
 		"identifier": "aLiCe", "password": "password-123",
@@ -960,10 +974,10 @@ func testNameIdentity(
 	sendCode(t, engine, secondEmail)
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": secondEmail, "password": "password-123", "verification_code": capturedCode(t, sender, secondEmail),
-		"name": "alice",
+		"username": "alice",
 	}, "")
 	require.Equal(t, http.StatusConflict, status)
-	require.Equal(t, apierr.BizNameTaken, response.ErrorCode)
+	require.Equal(t, apierr.BizUsernameTaken, response.ErrorCode)
 	var count int64
 	require.NoError(t, gdb.Model(&model.User{}).Where("email = ?", secondEmail).Count(&count).Error)
 	require.Zero(t, count)
@@ -982,7 +996,7 @@ func testNameIdentity(
 	status, response, _ = performJSON(t, moderatedEngine, http.MethodPost,
 		"/api/v2/auth/register", map[string]any{
 			"email": rejectedEmail, "password": "password-123",
-			"verification_code": capturedCode(t, sender, rejectedEmail), "name": "违规注册名",
+			"verification_code": capturedCode(t, sender, rejectedEmail), "username": "违规注册名",
 		}, "")
 	require.Equal(t, http.StatusConflict, status)
 	require.Equal(t, apierr.BizContentRejected, response.ErrorCode)
@@ -1159,7 +1173,7 @@ func testConcurrentRegistration(
 			status, response, raw, err := performJSONRequest(
 				engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 					"email": email, "password": "password-123", "verification_code": code,
-					"name": "并发注册用户",
+					"username": "并发注册用户",
 				}, "",
 			)
 			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}
@@ -1244,7 +1258,10 @@ func authTestEngine(
 		hertzconfig.Option{F: func(_ *hertzconfig.Options) {}},
 	)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	deps := router.Deps{Config: cfg, DB: database, Log: log, EmailSender: sender}
+	deps := router.Deps{
+		Config: cfg, DB: database, Log: log, EmailSender: sender,
+		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})},
+	}
 	if len(moderators) > 0 {
 		deps.ContentModerator = moderators[0]
 	}
@@ -1280,8 +1297,8 @@ func registerUser(
 	}
 	status, response, _ := performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
 		"email": email, "password": "password-123", "verification_code": capturedCode(t, sender, email),
-		"name":   name,
-		"gender": "female", "device_label": device,
+		"username": name,
+		"gender":   "female", "device_label": device,
 	}, "")
 	require.Equal(t, http.StatusOK, status, "response=%s", response.Message)
 	var result service.AuthResult
@@ -1377,3 +1394,10 @@ func sessionLabelPresent(sessions []service.SessionView, label string) bool {
 	}
 	return false
 }
+
+// drainingEmailQueue 仅供同步业务测试捕获邮件；异步边界另用真实 worker 回归。
+type drainingEmailQueue struct {
+	*service.VerificationEmailDeliveryWorker
+}
+
+func (q drainingEmailQueue) Kick(ctx context.Context) { _, _ = q.RunBatch(ctx) }

@@ -126,7 +126,7 @@ func (s *DictionaryService) CreateSuggestion(
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	record := repository.SuggestionRecord{DictionarySuggestion: *suggestion, ProposerName: user.Name}
+	record := repository.SuggestionRecord{DictionarySuggestion: *suggestion, ProposerName: user.Username}
 	view := suggestionView(record)
 	return &view, nil
 }

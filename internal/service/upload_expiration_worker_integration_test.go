@@ -18,7 +18,7 @@ func TestPendingUploadExpirationWorkerRetiresExpiredOrphanAndPreservesNewerUploa
 	database := testutil.OpenPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user := model.User{
-		Email: "pending-expiration@fdueat.com", PasswordHash: "x", Name: "过期回收测试",
+		Email: "pending-expiration@fdueat.com", PasswordHash: "x", Username: "过期回收测试",
 	}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	createPending := func(objectKey string, createdAt time.Time) model.ImageAsset {

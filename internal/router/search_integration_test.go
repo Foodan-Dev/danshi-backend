@@ -295,7 +295,7 @@ func testUserSearchLiteralWildcards(
 ) {
 	t.Helper()
 	fixtures := testutil.NewFixtures(t, gdb)
-	underscoreUser := fixtures.CreateUser(func(user *model.User) { user.Name = "用户字面_唯一" })
+	underscoreUser := fixtures.CreateUser(func(user *model.User) { user.Username = "用户字面_唯一" })
 	for _, testCase := range []struct {
 		literal  string
 		expected []uint64

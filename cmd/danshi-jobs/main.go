@@ -107,7 +107,7 @@ func deliverVerificationEmails(batchSize int) (runErr error) {
 		sender = service.NewLogVerificationEmailSender(log)
 	}
 	worker := service.NewVerificationEmailDeliveryWorker(
-		database, sender, cfg.EmailVerificationSecret,
+		database, sender,
 		service.VerificationEmailDeliveryWorkerOptions{BatchSize: batchSize, Log: log},
 	)
 	startedAt := time.Now()

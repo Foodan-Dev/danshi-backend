@@ -717,15 +717,6 @@
           "is_banned": {
             "type": "boolean"
           },
-          "name": {
-            "type": "string"
-          },
-          "name_changes": {
-            "items": {
-              "$ref": "#/components/schemas/AdminUserNameChangeView"
-            },
-            "type": "array"
-          },
           "roles": {
             "items": {
               "enum": [
@@ -739,6 +730,15 @@
           },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
+          },
+          "username": {
+            "type": "string"
+          },
+          "username_changes": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUsernameChangeView"
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -753,25 +753,6 @@
               "$ref": "#/components/schemas/AdminUserView"
             },
             "type": "array"
-          }
-        },
-        "type": "object"
-      },
-      "AdminUserNameChangeView": {
-        "properties": {
-          "changed_at": {
-            "$ref": "#/components/schemas/Time"
-          },
-          "id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "new_name": {
-            "type": "string"
-          },
-          "old_name": {
-            "type": "string"
           }
         },
         "type": "object"
@@ -893,9 +874,6 @@
           "is_banned": {
             "type": "boolean"
           },
-          "name": {
-            "type": "string"
-          },
           "roles": {
             "items": {
               "enum": [
@@ -909,6 +887,28 @@
           },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdminUsernameChangeView": {
+        "properties": {
+          "changed_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "new_username": {
+            "type": "string"
+          },
+          "old_username": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -940,7 +940,7 @@
           "unauthorized",
           "service_unavailable",
           "email_taken",
-          "name_taken",
+          "username_taken",
           "email_domain_not_allow",
           "credentials_invalid",
           "verify_code_invalid",
@@ -1095,7 +1095,7 @@
           "is_following": {
             "type": "boolean"
           },
-          "name": {
+          "username": {
             "type": "string"
           }
         },
@@ -1709,7 +1709,7 @@
             "minimum": 0,
             "type": "integer"
           },
-          "name": {
+          "username": {
             "type": "string"
           }
         },
@@ -1743,7 +1743,7 @@
             "nullable": true,
             "type": "boolean"
           },
-          "name": {
+          "username": {
             "type": "string"
           }
         },
@@ -2310,7 +2310,7 @@
             "minimum": 0,
             "type": "integer"
           },
-          "name": {
+          "username": {
             "type": "string"
           }
         },
@@ -2418,11 +2418,11 @@
           "is_following": {
             "type": "boolean"
           },
-          "name": {
-            "type": "string"
-          },
           "stats": {
             "$ref": "#/components/schemas/SearchUserStats"
+          },
+          "username": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -2764,40 +2764,10 @@
           "is_following": {
             "type": "boolean"
           },
-          "name": {
-            "type": "string"
-          },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
-          }
-        },
-        "type": "object"
-      },
-      "UserNameChangeHistory": {
-        "properties": {
-          "changes": {
-            "items": {
-              "$ref": "#/components/schemas/UserNameChangeView"
-            },
-            "type": "array"
-          }
-        },
-        "type": "object"
-      },
-      "UserNameChangeView": {
-        "properties": {
-          "changed_at": {
-            "$ref": "#/components/schemas/Time"
           },
-          "id": {
-            "maximum": 18446744073709552000,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "new_name": {
-            "type": "string"
-          },
-          "old_name": {
+          "username": {
             "type": "string"
           }
         },
@@ -2837,9 +2807,6 @@
           "is_following": {
             "type": "boolean"
           },
-          "name": {
-            "type": "string"
-          },
           "roles": {
             "items": {
               "enum": [
@@ -2854,6 +2821,9 @@
           },
           "stats": {
             "$ref": "#/components/schemas/UserStats"
+          },
+          "username": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -2918,9 +2888,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "name": {
-            "type": "string"
-          },
           "roles": {
             "items": {
               "enum": [
@@ -2931,6 +2898,39 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "UsernameChangeHistory": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/UsernameChangeView"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "UsernameChangeView": {
+        "properties": {
+          "changed_at": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "id": {
+            "maximum": 18446744073709552000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "new_username": {
+            "type": "string"
+          },
+          "old_username": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -3312,10 +3312,10 @@
             "nullable": true,
             "type": "string"
           },
-          "name": {
+          "password": {
             "type": "string"
           },
-          "password": {
+          "username": {
             "type": "string"
           },
           "verification_code": {
@@ -3324,7 +3324,7 @@
           }
         },
         "required": [
-          "name"
+          "username"
         ],
         "type": "object"
       },
@@ -3515,7 +3515,7 @@
             "nullable": true,
             "type": "string"
           },
-          "name": {
+          "username": {
             "nullable": true,
             "type": "string"
           }
@@ -23815,213 +23815,6 @@
         ]
       }
     },
-    "/api/v2/users/{user_id}/name-history": {
-      "get": {
-        "operationId": "get_api_v2_users_user_id_name_history",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "format": "int64",
-              "minimum": 1,
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/UserNameChangeHistory"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "nullable": true,
-                      "type": "object"
-                    },
-                    "error_code": {
-                      "$ref": "#/components/schemas/BizCode"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data",
-                    "error_code"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "nullable": true,
-                      "type": "object"
-                    },
-                    "error_code": {
-                      "$ref": "#/components/schemas/BizCode"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data",
-                    "error_code"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "nullable": true,
-                      "type": "object"
-                    },
-                    "error_code": {
-                      "$ref": "#/components/schemas/BizCode"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data",
-                    "error_code"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/ErrorData"
-                    },
-                    "error_code": {
-                      "$ref": "#/components/schemas/BizCode"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data",
-                    "error_code"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "code": {
-                      "type": "integer"
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/ErrorIDData"
-                    },
-                    "error_code": {
-                      "$ref": "#/components/schemas/BizCode"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "data",
-                    "error_code"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "summary": "GET /api/v2/users/:user_id/name-history",
-        "tags": [
-          "users"
-        ]
-      }
-    },
     "/api/v2/users/{user_id}/posts": {
       "get": {
         "operationId": "get_api_v2_users_user_id_posts",
@@ -24258,6 +24051,213 @@
           }
         ],
         "summary": "GET /api/v2/users/:user_id/posts",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v2/users/{user_id}/username-history": {
+      "get": {
+        "operationId": "get_api_v2_users_user_id_username_history",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/UsernameChangeHistory"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ErrorIDData"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v2/users/:user_id/username-history",
         "tags": [
           "users"
         ]

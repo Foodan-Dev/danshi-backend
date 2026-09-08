@@ -214,9 +214,6 @@ func validateProdSES(c Config, add func(string, ...any)) {
 	if c.TencentSESTemplateID == 0 {
 		add("生产环境必须配置正数 TENCENT_SES_TEMPLATE_ID")
 	}
-	if c.TencentSESResetTemplateID == 0 {
-		add("生产环境必须配置正数 TENCENT_SES_RESET_TEMPLATE_ID")
-	}
 }
 
 func validateSESSubject(c Config, add func(string, ...any)) {

@@ -13,11 +13,11 @@ CREATE TABLE user_name_change_records (
         old_name = btrim(old_name)
         AND old_name = normalize(old_name, NFKC)
         AND char_length(old_name) BETWEEN 2 AND 24
-        AND old_name ~ '^[[:alpha:][:digit:]_]+$'
+        AND danshi_valid_username_characters(old_name)
         AND new_name = btrim(new_name)
         AND new_name = normalize(new_name, NFKC)
         AND char_length(new_name) BETWEEN 2 AND 24
-        AND new_name ~ '^[[:alpha:][:digit:]_]+$'
+        AND danshi_valid_username_characters(new_name)
         AND old_name <> new_name
     )
 );

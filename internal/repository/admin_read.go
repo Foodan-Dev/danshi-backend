@@ -242,12 +242,12 @@ func (AdminRepository) FindUserBanRecords(
 	return records, err
 }
 
-// FindUserNameChangeRecords 返回目标用户完整 name 变更历史，最新动作在前。
-func (AdminRepository) FindUserNameChangeRecords(
+// FindUsernameChangeRecords 返回目标用户完整 用户名 变更历史，最新动作在前。
+func (AdminRepository) FindUsernameChangeRecords(
 	ctx context.Context,
 	userID uint64,
-) ([]model.UserNameChangeRecord, error) {
-	records := make([]model.UserNameChangeRecord, 0)
+) ([]model.UsernameChangeRecord, error) {
+	records := make([]model.UsernameChangeRecord, 0)
 	err := db.FromContext(ctx).Where("user_id = ?", userID).
 		Order("changed_at DESC, id DESC").Find(&records).Error
 	return records, err

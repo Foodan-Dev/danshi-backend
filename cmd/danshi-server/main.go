@@ -121,6 +121,7 @@ func run() error {
 			deps.ImageModerator = tencentProvider
 		}
 	}
+	emailWorkerDone := startVerificationEmailWorker(ctx, &deps)
 	router.Register(h, deps)
 
 	retryWorkerDone := startImageModerationRetryWorker(
@@ -143,7 +144,7 @@ func run() error {
 	log.Info("服务启动", slog.Int("port", cfg.Port), slog.String("prefix", router.APIPrefix))
 	h.Spin()
 	stop()
-	waitForWorkers(retryWorkerDone, expirationWorkerDone)
+	waitForWorkers(retryWorkerDone, expirationWorkerDone, emailWorkerDone)
 	return nil
 }
 
@@ -335,7 +336,8 @@ func runImageModerationRetryLoop(
 			level = slog.LevelError
 			message = "图片补审进入死信"
 		}
-		log.LogAttrs(ctx, level, message,
+		log.LogAttrs(
+			ctx, level, message,
 			slog.Int("claimed", result.Claimed),
 			slog.Int("submitted", result.Submitted),
 			slog.Int("concluded", result.Concluded),
@@ -387,7 +389,8 @@ func runPendingUploadExpirationLoop(
 			return
 		}
 		for _, failure := range result.Failures {
-			log.ErrorContext(ctx, "删除过期图片对象失败",
+			log.ErrorContext(
+				ctx, "删除过期图片对象失败",
 				slog.Uint64("image_asset_id", failure.ImageAssetID),
 				slog.String("object_key", failure.ObjectKey),
 				slog.Any("err", failure.Err),
@@ -397,7 +400,8 @@ func runPendingUploadExpirationLoop(
 		if len(result.Failures) > 0 {
 			level = slog.LevelWarn
 		}
-		log.LogAttrs(ctx, level, "图片过期回收批次完成",
+		log.LogAttrs(
+			ctx, level, "图片过期回收批次完成",
 			slog.Time("created_before", result.Before),
 			slog.Int("selected", result.Selected),
 			slog.Int("retired", result.Retired),
@@ -417,4 +421,16 @@ func runPendingUploadExpirationLoop(
 			runBatch()
 		}
 	}
+}
+
+func startVerificationEmailWorker(ctx context.Context, deps *router.Deps) <-chan struct{} {
+	worker := service.NewVerificationEmailDeliveryWorker(deps.DB,
+		router.VerificationEmailSender(*deps), service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log})
+	deps.EmailDeliveryWorker = worker
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+	return done
 }

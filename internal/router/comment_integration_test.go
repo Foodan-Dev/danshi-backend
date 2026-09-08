@@ -356,7 +356,7 @@ func testCommentCreateBoundaries(
 	for _, item := range departedList.Comments {
 		if item.ID == departedComment.Comment.ID {
 			foundDeparted = true
-			require.Equal(t, "已注销用户", item.Author.Name)
+			require.Equal(t, "已注销用户", item.Author.Username)
 			require.Nil(t, item.Author.AvatarURL)
 		}
 	}

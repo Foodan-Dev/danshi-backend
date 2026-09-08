@@ -20,7 +20,7 @@ func TestVerificationEmailDeliveryWorkerIsDurableAndRetries(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sender := testutil.NewMockEmailSender()
 	worker := service.NewVerificationEmailDeliveryWorker(
-		database.DB, sender, "email-delivery-integration-secret",
+		database.DB, sender,
 		service.VerificationEmailDeliveryWorkerOptions{Now: func() time.Time { return now }},
 	)
 
@@ -33,7 +33,8 @@ func TestVerificationEmailDeliveryWorkerIsDurableAndRetries(t *testing.T) {
 	var stored model.VerificationEmailDelivery
 	require.NoError(t, database.GORM.Where("challenge_id = ?", challenge.ID).First(&stored).Error)
 	require.Equal(t, model.VerificationEmailDeliveryPending, stored.State)
-	require.NotEqual(t, []byte("123456"), stored.CodeCiphertext, "outbox 不得直接保存验证码明文")
+	require.NotNil(t, stored.Code)
+	require.Equal(t, "123456", *stored.Code, "outbox 保存明文供重试")
 
 	result, err := worker.RunBatch(context.Background())
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestVerificationEmailDeliveryWorkerIsDurableAndRetries(t *testing.T) {
 	failureSender.SetDefault(testutil.EmailFailure(errors.New("provider private failure")))
 	failureNow := now
 	failureWorker := service.NewVerificationEmailDeliveryWorker(
-		database.DB, failureSender, "email-delivery-integration-secret",
+		database.DB, failureSender,
 		service.VerificationEmailDeliveryWorkerOptions{
 			Now: func() time.Time { return failureNow }, MaxAttempts: 2,
 			RetryDelay: time.Second,
@@ -78,41 +79,32 @@ func TestVerificationEmailDeliveryWorkerIsDurableAndRetries(t *testing.T) {
 	require.Equal(t, "delivery_exhausted", *failedDelivery.LastErrorCode)
 }
 
-func TestVerificationEmailDeliveryWorkerCancelsStaleAndDecryptFailures(t *testing.T) {
+func TestVerificationEmailDeliveryWorkerCancelsStaleAndExpired(t *testing.T) {
 	database := testutil.OpenPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sender := testutil.NewMockEmailSender()
-	worker := service.NewVerificationEmailDeliveryWorker(
-		database.DB, sender, "email-delivery-integration-secret",
-		service.VerificationEmailDeliveryWorkerOptions{Now: func() time.Time { return now }},
-	)
+	worker := service.NewVerificationEmailDeliveryWorker(database.DB, sender,
+		service.VerificationEmailDeliveryWorkerOptions{Now: func() time.Time { return now }})
 	store := repository.VerificationEmailDeliveryRepository{}
-
 	stale := seedDeliveryChallenge(t, database, "worker-stale", strings.Repeat("b", 64), now)
-	bad := seedDeliveryChallenge(t, database, "worker-bad-cipher", strings.Repeat("d", 64), now)
+	expired := seedDeliveryChallenge(t, database, "worker-expired", strings.Repeat("c", 64), now.Add(-11*time.Minute))
 	require.NoError(t, database.DB.RunInTx(context.Background(), func(ctx context.Context) error {
-		if _, err := store.Enqueue(ctx, stale, stale.Email, stale.Purpose,
-			strings.Repeat("a", 64), []byte("old-code"), now); err != nil {
+		if _, err := store.Enqueue(ctx, stale, stale.Email, stale.Purpose, strings.Repeat("a", 64), "123456", now); err != nil {
 			return err
 		}
-		_, err := store.Enqueue(ctx, bad, bad.Email, bad.Purpose,
-			bad.CodeDigest, []byte("not-a-secretbox-payload"), now)
+		_, err := store.Enqueue(ctx, expired, expired.Email, expired.Purpose, expired.CodeDigest, "234567", now)
 		return err
 	}))
-
 	result, err := worker.RunBatch(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, 2, result.Claimed)
-	require.Equal(t, 1, result.Canceled)
-	require.Equal(t, 1, result.DeadLettered)
+	require.Equal(t, 2, result.Canceled)
 	var deliveries []model.VerificationEmailDelivery
-	require.NoError(t, database.GORM.Where("challenge_id IN ?", []uint64{stale.ID, bad.ID}).
-		Order("challenge_id").Find(&deliveries).Error)
+	require.NoError(t, database.GORM.Find(&deliveries).Error)
 	require.Len(t, deliveries, 2)
-	require.Equal(t, model.VerificationEmailDeliveryCanceled, deliveries[0].State)
-	require.Equal(t, "stale_challenge", *deliveries[0].LastErrorCode)
-	require.Equal(t, model.VerificationEmailDeliveryDeadLetter, deliveries[1].State)
-	require.Equal(t, "decrypt_failed", *deliveries[1].LastErrorCode)
+	for _, delivery := range deliveries {
+		require.Nil(t, delivery.Code)
+		require.Equal(t, model.VerificationEmailDeliveryCanceled, delivery.State)
+	}
 	require.Empty(t, sender.Deliveries(""))
 }
 
@@ -120,7 +112,7 @@ func TestVerificationEmailDeliveryEnqueueRollsBackWithCallerTransaction(t *testi
 	database := testutil.OpenPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	worker := service.NewVerificationEmailDeliveryWorker(
-		database.DB, testutil.NewMockEmailSender(), "email-delivery-integration-secret",
+		database.DB, testutil.NewMockEmailSender(),
 		service.VerificationEmailDeliveryWorkerOptions{Now: func() time.Time { return now }},
 	)
 	challenge := seedDeliveryChallenge(t, database, "worker-rollback", strings.Repeat("e", 64), now)
@@ -138,6 +130,32 @@ func TestVerificationEmailDeliveryEnqueueRollsBackWithCallerTransaction(t *testi
 	require.Zero(t, count)
 }
 
+func TestVerificationEmailDeliveryClearsExpiredSentCode(t *testing.T) {
+	database := testutil.OpenPostgres(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sender := testutil.NewMockEmailSender()
+	worker := service.NewVerificationEmailDeliveryWorker(database.DB, sender,
+		service.VerificationEmailDeliveryWorkerOptions{Now: func() time.Time { return now }})
+	challenge := seedDeliveryChallenge(t, database, "sent-expiration", strings.Repeat("a", 64), now)
+	require.NoError(t, database.DB.RunInTx(context.Background(), func(ctx context.Context) error {
+		_, err := worker.Enqueue(ctx, challenge, challenge.Email, challenge.Purpose,
+			challenge.CodeDigest, "123456", now)
+		return err
+	}))
+	result, err := worker.RunBatch(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Sent)
+	now = now.Add(11 * time.Minute)
+	result, err = worker.RunBatch(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+	var delivery model.VerificationEmailDelivery
+	require.NoError(t, database.GORM.Where("challenge_id = ?", challenge.ID).First(&delivery).Error)
+	require.Equal(t, model.VerificationEmailDeliverySent, delivery.State)
+	require.Nil(t, delivery.Code, "已发送任务同样清理过期验证码，保留投递结果")
+	require.Len(t, sender.Deliveries(challenge.Email), 1)
+}
+
 func seedDeliveryChallenge(
 	t *testing.T,
 	database *testutil.TestDatabase,
@@ -152,7 +170,7 @@ func seedDeliveryChallenge(
 		SendWindowStartedAt: now,
 	}
 	require.NoError(t, database.GORM.Create(&model.User{
-		Email: challenge.Email, PasswordHash: "x", Name: strings.ReplaceAll(suffix, "-", "_"),
+		Email: challenge.Email, PasswordHash: "x", Username: strings.ReplaceAll(suffix, "-", "_"),
 	}).Error)
 	require.NoError(t, database.GORM.Create(challenge).Error)
 	return challenge

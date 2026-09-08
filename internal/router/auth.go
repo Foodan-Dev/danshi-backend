@@ -14,7 +14,7 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 	delivery := deps.EmailDeliveryWorker
 	if delivery == nil {
 		delivery = service.NewVerificationEmailDeliveryWorker(
-			deps.DB, sender, deps.Config.EmailVerificationSecret,
+			deps.DB, sender,
 			service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log},
 		)
 	}

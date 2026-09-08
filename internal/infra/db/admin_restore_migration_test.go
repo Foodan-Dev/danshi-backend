@@ -27,7 +27,7 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 	}
 	require.EqualValues(t, 6, version)
 
-	user := model.User{Email: "restore-migration@fdueat.com", PasswordHash: "x", Name: "迁移操作人"}
+	user := model.User{Email: "restore-migration@fdueat.com", PasswordHash: "x", Username: "迁移操作人"}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	tag := model.Tag{Name: "迁移恢复", Moderation: model.ModerationStatusPending}
 	require.NoError(t, database.GORM.Create(&tag).Error)

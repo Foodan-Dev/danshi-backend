@@ -94,7 +94,7 @@ func seedImageModerationRetry(
 	t.Helper()
 	user := model.User{
 		Email:        "retry-" + now.Format("150405.000000") + "@fdueat.com",
-		PasswordHash: "x", Name: "补审测试",
+		PasswordHash: "x", Username: "补审测试",
 	}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	size := int64(128)

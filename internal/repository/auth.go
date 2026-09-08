@@ -36,8 +36,8 @@ func (UserRepository) FindByEmail(
 	return &user, nil
 }
 
-// FindByName 按大小写不敏感的公开 name 查找可登录用户。
-func (UserRepository) FindByName(ctx context.Context, name string) (*model.User, error) {
+// FindByUsername 按大小写不敏感的公开 用户名 查找可登录用户。
+func (UserRepository) FindByUsername(ctx context.Context, name string) (*model.User, error) {
 	var user model.User
 	err := db.FromContext(ctx).
 		Where("lower(name) = lower(?) AND deleted_at IS NULL", name).
@@ -53,9 +53,9 @@ func (UserRepository) Create(ctx context.Context, user *model.User) error {
 	return db.FromContext(ctx).Create(user).Error
 }
 
-// ClaimName 追加一条 name 占用记录。同一账号回用自己的历史 name 是幂等的；
+// ClaimUsername 追加一条 用户名 占用记录。同一账号回用自己的历史 用户名 是幂等的；
 // 其他账号已占用时由唯一约束拒绝。
-func (UserRepository) ClaimName(ctx context.Context, userID uint64, name string, now time.Time) error {
+func (UserRepository) ClaimUsername(ctx context.Context, userID uint64, name string, now time.Time) error {
 	result := db.FromContext(ctx).Exec(`
 		INSERT INTO user_name_claims (user_id, name, created_at)
 		VALUES (?, ?, ?)
@@ -184,7 +184,7 @@ func (VerificationCodeRepository) SaveState(
 	challenge *model.EmailVerificationCode,
 	now time.Time,
 ) error {
-	return db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
+	err := db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
 		Where("id = ?", challenge.ID).
 		Updates(map[string]any{
 			"code_digest":            challenge.CodeDigest,
@@ -196,6 +196,15 @@ func (VerificationCodeRepository) SaveState(
 			"consumed_at":            challenge.ConsumedAt,
 			"updated_at":             now,
 		}).Error
+	if err != nil {
+		return err
+	}
+	query := db.FromContext(ctx).Model(&model.VerificationEmailDelivery{}).
+		Where("challenge_id = ? AND code IS NOT NULL", challenge.ID)
+	if challenge.ConsumedAt == nil && challenge.ExpiresAt.After(now) && challenge.FailedAttempts < 5 {
+		query = query.Where("code_digest <> ?", challenge.CodeDigest)
+	}
+	return query.UpdateColumn("code", nil).Error
 }
 
 // SessionRepository 是无状态的会话仓储。
@@ -379,7 +388,7 @@ func (row identityRow) identity() *Identity {
 			ExpiresAt: row.SessionExpiresAt, RevokedAt: row.SessionRevokedAt,
 		},
 		User: model.User{
-			ID: row.UserID, Email: row.Email, PasswordHash: row.PasswordHash, Name: row.Name,
+			ID: row.UserID, Email: row.Email, PasswordHash: row.PasswordHash, Username: row.Name,
 			Gender: row.Gender, Bio: row.Bio, AvatarImageAssetID: row.AvatarID,
 			Roles:          roleValues(row.Roles),
 			BanIsPermanent: row.BanIsPermanent, BannedUntil: row.BannedUntil,

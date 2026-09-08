@@ -73,7 +73,7 @@ func buildPostAuthor(
 		following = &value
 	}
 	return PostAuthorView{
-		ID: record.AuthorID, Name: name, AvatarURL: avatarURL,
+		ID: record.AuthorID, Username: name, AvatarURL: avatarURL,
 		AvatarThumbURL: avatarThumbURL(avatarURL), IsFollowing: following,
 	}
 }

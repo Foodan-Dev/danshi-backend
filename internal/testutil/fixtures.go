@@ -76,7 +76,7 @@ func (f *Fixtures) CreateUser(overrides ...UserOverride) model.User {
 	user := model.User{
 		Email:        fmt.Sprintf("fixture-user-%04d@fdueat.com", sequence),
 		PasswordHash: fixturePasswordHash,
-		Name:         fmt.Sprintf("夹具用户%04d", sequence),
+		Username:     fmt.Sprintf("夹具用户%04d", sequence),
 	}
 	for _, override := range overrides {
 		override(&user)

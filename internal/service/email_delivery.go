@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
-	"github.com/Foodan-Dev/danshi-backend/internal/pkg/secretbox"
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
@@ -21,7 +20,7 @@ const (
 	defaultVerificationEmailDeliveryRetry     = 30 * time.Second
 )
 
-// VerificationEmailDeliveryQueue 是密码重置写路径依赖的 durable outbox 端口。
+// VerificationEmailDeliveryQueue 是注册和密码重置写路径依赖的 durable outbox 端口。
 type VerificationEmailDeliveryQueue interface {
 	Enqueue(
 		context.Context,
@@ -57,19 +56,17 @@ type VerificationEmailDeliveryWorkerResult struct {
 
 // VerificationEmailDeliveryWorker 负责验证码邮件的提交后投递和失败重试。
 type VerificationEmailDeliveryWorker struct {
-	tx      ImageAccessTxRunner
-	store   repository.VerificationEmailDeliveryRepository
-	sender  VerificationEmailSender
-	box     *secretbox.Box
-	initErr error
-	opts    VerificationEmailDeliveryWorkerOptions
+	tx     ImageAccessTxRunner
+	store  repository.VerificationEmailDeliveryRepository
+	sender VerificationEmailSender
+	opts   VerificationEmailDeliveryWorkerOptions
+	wake   chan struct{}
 }
 
 // NewVerificationEmailDeliveryWorker 创建验证码邮件 outbox worker。
 func NewVerificationEmailDeliveryWorker(
 	tx ImageAccessTxRunner,
 	sender VerificationEmailSender,
-	secret string,
 	opts VerificationEmailDeliveryWorkerOptions,
 ) *VerificationEmailDeliveryWorker {
 	if opts.BatchSize <= 0 || opts.BatchSize > 100 {
@@ -90,13 +87,12 @@ func NewVerificationEmailDeliveryWorker(
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	box, err := secretbox.New(secret)
 	return &VerificationEmailDeliveryWorker{
-		tx: tx, sender: sender, box: box, initErr: err, opts: opts,
+		tx: tx, sender: sender, opts: opts, wake: make(chan struct{}, 1),
 	}
 }
 
-// Enqueue 加密验证码并把投递任务追加到当前事务。
+// Enqueue 将验证码明文和投递任务追加到当前事务。
 func (w *VerificationEmailDeliveryWorker) Enqueue(
 	ctx context.Context,
 	challenge *model.EmailVerificationCode,
@@ -112,31 +108,42 @@ func (w *VerificationEmailDeliveryWorker) Enqueue(
 	if challenge == nil {
 		return 0, errors.New("verification email challenge is nil")
 	}
-	if w.initErr != nil {
-		return 0, w.initErr
-	}
-	ciphertext, err := w.box.Seal([]byte(code))
-	if err != nil {
-		return 0, err
-	}
-	return w.store.Enqueue(ctx, challenge, email, purpose, codeDigest, ciphertext, now)
+	return w.store.Enqueue(ctx, challenge, email, purpose, codeDigest, code, now)
 }
 
-// Kick 在事务成功提交后执行一批投递；失败任务保留在 outbox 等待下一次扫描。
-func (w *VerificationEmailDeliveryWorker) Kick(ctx context.Context) {
-	result, err := w.RunBatch(ctx)
-	if err != nil {
-		if w != nil && w.opts.Log != nil && ctx.Err() == nil {
-			w.opts.Log.WarnContext(ctx, "验证码邮件 outbox 批次失败", slog.Any("err", err))
-		}
-		return
+// Kick 只合并后台唤醒信号，不在 HTTP 请求中等待供应商。
+func (w *VerificationEmailDeliveryWorker) Kick(context.Context) {
+	select {
+	case w.wake <- struct{}{}:
+	default:
 	}
-	if w != nil && w.opts.Log != nil && result.Claimed > 0 {
-		w.opts.Log.InfoContext(ctx, "验证码邮件 outbox 批次完成",
-			slog.Int("claimed", result.Claimed), slog.Int("sent", result.Sent),
-			slog.Int("canceled", result.Canceled), slog.Int("rescheduled", result.Rescheduled),
-			slog.Int("dead_lettered", result.DeadLettered),
-		)
+}
+
+// Run 由进程生命周期管理；启动扫描、定期补偿并在取消时退出。
+func (w *VerificationEmailDeliveryWorker) Run(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	w.Kick(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.wake:
+		case <-ticker.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		result, err := w.RunBatch(ctx)
+		if err != nil && ctx.Err() == nil && w.opts.Log != nil {
+			w.opts.Log.WarnContext(ctx, "验证码邮件 outbox 批次失败")
+		}
+		if w.opts.Log != nil && result.DeadLettered > 0 {
+			w.opts.Log.ErrorContext(ctx, "验证码邮件投递耗尽重试预算", slog.Int("dead_lettered", result.DeadLettered))
+		}
+		if err == nil && result.Claimed == w.opts.BatchSize {
+			w.Kick(ctx)
+		}
 	}
 }
 
@@ -149,9 +156,6 @@ func (w *VerificationEmailDeliveryWorker) RunBatch(
 			"verification email delivery worker dependencies are incomplete",
 		)
 	}
-	if w.initErr != nil {
-		return VerificationEmailDeliveryWorkerResult{}, w.initErr
-	}
 	now := w.opts.Now().UTC()
 	token, err := leaseToken()
 	if err != nil {
@@ -159,6 +163,9 @@ func (w *VerificationEmailDeliveryWorker) RunBatch(
 	}
 	var claims []repository.VerificationEmailDeliveryClaim
 	err = w.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := w.store.ClearInvalidCodes(txCtx, now, w.opts.BatchSize*10); err != nil {
+			return err
+		}
 		claims, err = w.store.ClaimDue(
 			txCtx, now, now.Add(w.opts.LeaseDuration), token, w.opts.BatchSize,
 		)
@@ -169,11 +176,11 @@ func (w *VerificationEmailDeliveryWorker) RunBatch(
 	}
 	result := VerificationEmailDeliveryWorkerResult{Claimed: len(claims)}
 	for _, claim := range claims {
-		if claim.CurrentCodeDigest == "" || claim.CurrentCodeDigest != claim.CodeDigest {
+		if claim.Code == nil || claim.CurrentCodeDigest == "" || claim.CurrentCodeDigest != claim.CodeDigest {
 			updated, err := w.updateClaim(ctx, claim, map[string]any{
 				"state": model.VerificationEmailDeliveryCanceled, "lease_token": nil, "lease_until": nil,
 				"next_attempt_at": nil, "last_error_code": "stale_challenge",
-				"canceled_at": now, "updated_at": now,
+				"canceled_at": now, "updated_at": now, "code": nil,
 			})
 			if err != nil {
 				return result, err
@@ -184,20 +191,8 @@ func (w *VerificationEmailDeliveryWorker) RunBatch(
 			result.Canceled++
 			continue
 		}
-		code, err := w.box.Open(claim.CodeCiphertext)
-		if err != nil {
-			updated, updateErr := w.deadLetter(ctx, claim, now, "decrypt_failed")
-			if updateErr != nil {
-				return result, updateErr
-			}
-			if !updated {
-				continue
-			}
-			result.DeadLettered++
-			continue
-		}
 		deliveryCtx, cancel := context.WithTimeout(ctx, w.opts.DeliveryTimeout)
-		deliveryErr := sendVerificationEmail(deliveryCtx, w.sender, claim.Purpose, claim.Email, string(code))
+		deliveryErr := sendVerificationEmail(deliveryCtx, w.sender, claim.Purpose, claim.Email, *claim.Code)
 		cancel()
 		if deliveryErr == nil {
 			updated, err := w.updateClaim(ctx, claim, map[string]any{
@@ -267,7 +262,7 @@ func (w *VerificationEmailDeliveryWorker) deadLetter(
 	return w.updateClaim(ctx, claim, map[string]any{
 		"state": model.VerificationEmailDeliveryDeadLetter, "attempts": claim.Attempts + 1,
 		"next_attempt_at": nil, "lease_token": nil, "lease_until": nil,
-		"last_error_code": errorCode, "dead_lettered_at": now, "updated_at": now,
+		"last_error_code": errorCode, "dead_lettered_at": now, "updated_at": now, "code": nil,
 	})
 }
 

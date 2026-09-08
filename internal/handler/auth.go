@@ -46,9 +46,27 @@ type registerRequest struct {
 	Email            string  `json:"email"`
 	Password         string  `json:"password"`
 	VerificationCode *string `json:"verification_code"`
-	Name             string  `json:"name" openapi:"required"`
+	Username         string  `json:"username" openapi:"required"`
 	Gender           *string `json:"gender"`
 	DeviceLabel      string  `json:"device_label"`
+}
+
+// UnmarshalJSON 接受旧客户端的 name；两个字段同时出现时必须一致。
+func (r *registerRequest) UnmarshalJSON(data []byte) error {
+	type plain registerRequest
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if err := normalizeUsernameAlias(fields); err != nil {
+		return err
+	}
+
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(encoded, (*plain)(r))
 }
 
 type loginRequest struct {
@@ -142,10 +160,10 @@ func (h *Auth) Register(ctx context.Context, c *app.RequestContext) {
 		httpx.Fail(ctx, c, err)
 		return
 	}
-	name := request.Name
+	name := request.Username
 	result, err := h.service.Register(ctx, service.RegisterInput{
 		Email: request.Email, Password: request.Password,
-		VerificationCode: request.VerificationCode, Name: &name, Gender: request.Gender,
+		VerificationCode: request.VerificationCode, Username: &name, Gender: request.Gender,
 	}, clientInfo(c, request.DeviceLabel))
 	if err != nil {
 		failService(ctx, c, err)
@@ -299,4 +317,28 @@ func failService(ctx context.Context, c *app.RequestContext, err error) {
 		httpx.CommitError(c)
 	}
 	httpx.Fail(ctx, c, err)
+}
+
+// normalizeUsernameAlias maps the legacy input once without creating a second identity.
+func normalizeUsernameAlias(fields map[string]json.RawMessage) error {
+	legacy, ok := fields["name"]
+	if !ok {
+		return nil
+	}
+	current, exists := fields["username"]
+	if !exists {
+		fields["username"] = legacy
+		return nil
+	}
+	var a, b *string
+	if err := json.Unmarshal(current, &a); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(legacy, &b); err != nil {
+		return err
+	}
+	if (a == nil) != (b == nil) || (a != nil && *a != *b) {
+		return errors.New("username 与 name 不一致")
+	}
+	return nil
 }

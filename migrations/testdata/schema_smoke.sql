@@ -876,23 +876,23 @@ END $$;
 \echo ''
 \echo '########## 1g. verification_email_deliveries durable outbox ##########'
 INSERT INTO verification_email_deliveries
-    (challenge_id, email, purpose, code_digest, code_ciphertext, next_attempt_at)
+    (challenge_id, email, purpose, code_digest, code, next_attempt_at)
 VALUES
     ((SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com'),
-     'Foo@fdueat.com', 'registration', repeat('e',64), decode('abcd','hex'), now());
+     'Foo@fdueat.com', 'registration', repeat('e',64), '123456', now());
 DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
-    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
-    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','unknown',repeat('e',64),decode('abcd','hex'),now())$q$,
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','unknown',repeat('e',64),'123456',now())$q$,
     ARRAY['23514'], '验证码投递用途必须是受支持枚举');
   PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
-    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
-    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration','short',decode('abcd','hex'),now())$q$,
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration','short','123456',now())$q$,
     ARRAY['23514'], '验证码投递摘要必须为 64 位');
   PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
-    (challenge_id,email,purpose,code_digest,code_ciphertext,next_attempt_at)
-    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration',repeat('e',64),''::bytea,now())$q$,
-    ARRAY['23514'], '验证码投递密文不得为空');
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration',repeat('e',64),'12x456',now())$q$,
+    ARRAY['23514'], '验证码明文必须是六位数字');
   PERFORM _assert_rejects($q$UPDATE verification_email_deliveries SET state='sent'
     WHERE challenge_id=(SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com')$q$,
     ARRAY['23514'], 'sent 状态必须保留 sent_at');

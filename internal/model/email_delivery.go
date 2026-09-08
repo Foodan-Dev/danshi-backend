@@ -14,18 +14,18 @@ const (
 	VerificationEmailDeliverySent VerificationEmailDeliveryState = "sent"
 	// VerificationEmailDeliveryCanceled 表示任务因挑战失效而取消。
 	VerificationEmailDeliveryCanceled VerificationEmailDeliveryState = "canceled"
-	// VerificationEmailDeliveryDeadLetter 表示任务已耗尽重试预算或无法解密。
+	// VerificationEmailDeliveryDeadLetter 表示任务已耗尽重试预算。
 	VerificationEmailDeliveryDeadLetter VerificationEmailDeliveryState = "dead_letter"
 )
 
-// VerificationEmailDelivery 是验证码邮件的 durable outbox 行；验证码只保存加密密文。
+// VerificationEmailDelivery 是验证码邮件的 durable outbox 行；验证码明文在有效期内保留，消费或失效后清空。
 type VerificationEmailDelivery struct {
 	ID             uint64 `gorm:"primaryKey"`
 	ChallengeID    uint64
 	Email          string
 	Purpose        VerificationPurpose
 	CodeDigest     string
-	CodeCiphertext []byte `gorm:"type:bytea"`
+	Code           *string `json:"-"`
 	State          VerificationEmailDeliveryState
 	Attempts       int32
 	NextAttemptAt  *time.Time

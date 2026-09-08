@@ -20,7 +20,7 @@ type NotificationListInput struct {
 // NotificationSender 是通知发送者的公开信息。
 type NotificationSender struct {
 	ID        uint64  `json:"id"`
-	Name      string  `json:"name"`
+	Username  string  `json:"username"`
 	AvatarURL *string `json:"avatar_url"`
 }
 
@@ -167,7 +167,7 @@ func buildNotificationItem(record *repository.NotificationRecord) NotificationIt
 	}
 	item := NotificationItem{
 		ID: record.ID, Type: record.Type,
-		Sender:  NotificationSender{ID: record.SenderID, Name: name, AvatarURL: avatarURL},
+		Sender:  NotificationSender{ID: record.SenderID, Username: name, AvatarURL: avatarURL},
 		Content: record.Content, IsRead: record.IsRead, CreatedAt: ptime.Time(record.CreatedAt),
 	}
 	if record.RelatedPostID != nil {
