@@ -176,6 +176,18 @@ func (w *VerificationEmailDeliveryWorker) RunBatch(
 	}
 	result := VerificationEmailDeliveryWorkerResult{Claimed: len(claims)}
 	for _, claim := range claims {
+		now = w.opts.Now().UTC()
+		var owned bool
+		err = w.tx.RunInTx(ctx, func(txCtx context.Context) error {
+			claim, owned, err = w.store.RefreshClaim(txCtx, claim, now)
+			return err
+		})
+		if err != nil {
+			return result, err
+		}
+		if !owned {
+			continue
+		}
 		if claim.Code == nil || claim.CurrentCodeDigest == "" || claim.CurrentCodeDigest != claim.CodeDigest {
 			updated, err := w.updateClaim(ctx, claim, map[string]any{
 				"state": model.VerificationEmailDeliveryCanceled, "lease_token": nil, "lease_until": nil,

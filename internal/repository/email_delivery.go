@@ -107,6 +107,29 @@ ORDER BY claimed.next_attempt_at, claimed.id
 	return claims, err
 }
 
+// RefreshClaim 在单封邮件投递前重读挑战与明文；失去租约时不再调用供应商。
+func (VerificationEmailDeliveryRepository) RefreshClaim(
+	ctx context.Context, claim VerificationEmailDeliveryClaim, now time.Time,
+) (VerificationEmailDeliveryClaim, bool, error) {
+	var current VerificationEmailDeliveryClaim
+	result := db.FromContext(ctx).Raw(`
+SELECT d.*,
+       CASE WHEN c.code_digest = d.code_digest
+                  AND c.consumed_at IS NULL AND c.expires_at > ?
+                  AND c.failed_attempts < 5
+                  AND (d.purpose <> 'password_reset' OR EXISTS (
+                      SELECT 1 FROM users
+                      WHERE lower(users.email) = lower(d.email)
+                        AND users.deleted_at IS NULL
+                  ))
+            THEN c.code_digest ELSE '' END AS current_code_digest
+FROM verification_email_deliveries d
+LEFT JOIN email_verification_codes c ON c.id = d.challenge_id
+WHERE d.id = ? AND d.state = 'sending' AND d.lease_token = ? AND d.lease_until > ?
+`, now.UTC(), claim.ID, stringValue(claim.LeaseToken), now.UTC()).Scan(&current)
+	return current, result.RowsAffected == 1, result.Error
+}
+
 // UpdateClaim 以 id + lease token fencing 后更新状态，避免过期 worker 覆盖新状态。
 func (VerificationEmailDeliveryRepository) UpdateClaim(
 	ctx context.Context,
