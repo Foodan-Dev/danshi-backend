@@ -237,6 +237,15 @@ func (s *UserService) Update(
 	fields, moderated := changedUserFields(user, input)
 	usernameChanged := input.UsernameSet && input.Username != nil && user.Username != *input.Username
 	if usernameChanged {
+		changed, err := s.users.HasRecentUsernameChange(ctx, userID)
+		if err != nil {
+			return nil, apierr.Internal(err)
+		}
+		if changed {
+			return nil, usernameChangeLimitedError()
+		}
+	}
+	if usernameChanged {
 		result, reviewErr := s.reviewUserField(ctx, user.ID, model.ModerationFieldName, *input.Username)
 		if reviewErr != nil {
 			return nil, reviewErr
@@ -268,6 +277,9 @@ func (s *UserService) Update(
 		}
 	}
 	if err := s.users.UpdateProfile(ctx, userID, fields); err != nil {
+		if repository.IsCheckViolation(err, "user_name_change_records_cooldown_check") {
+			return nil, usernameChangeLimitedError()
+		}
 		return nil, userNotFoundError(err)
 	}
 	for _, field := range moderated {
@@ -729,4 +741,9 @@ func equalGenders(left, right *model.Gender) bool {
 
 func equalIDs(left, right *uint64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+// usernameChangeLimitedError 只限制实际改名；相同用户名和其他资料更新不消耗额度。
+func usernameChangeLimitedError() error {
+	return apierr.TooManyRequests(apierr.BizUsernameChangeLimited, "修改用户名后需间隔满 30 天才能再次修改")
 }

@@ -69,7 +69,8 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("review and block keep user fields and record evidence", func(t *testing.T) {
-		testUserModerationSemantics(t, gdb, database, owner)
+		reviewOwner := registerPostTestUser(t, engine, sender, "monthly-review@fdueat.com", "审核用户")
+		testUserModerationSemantics(t, gdb, database, reviewOwner)
 	})
 
 	t.Run("posts and favorites visibility", func(t *testing.T) {
@@ -658,7 +659,7 @@ func testUserAvatarSafety(
 			<-start
 			status, response, raw, err := performJSONRequest(
 				concurrentEngine, http.MethodPut, userPath(owner.User.ID), map[string]any{
-					"username": fmt.Sprintf("并发头像昵称%d", index), "avatar_url": asset.PublicURL,
+					"bio": fmt.Sprintf("并发头像简介%d", index), "avatar_url": asset.PublicURL,
 				}, owner.Token,
 			)
 			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}

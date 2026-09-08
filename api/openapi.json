@@ -940,6 +940,7 @@
           "unauthorized",
           "service_unavailable",
           "email_taken",
+          "username_change_limited",
           "username_taken",
           "email_domain_not_allow",
           "credentials_invalid",

@@ -55,17 +55,18 @@ const (
 
 	// 账号与会话
 
-	BizEmailTaken          BizCode = "email_taken"            // 邮箱已被注册
-	BizUsernameTaken       BizCode = "username_taken"         // 用户名已被当前或历史账号占用
-	BizEmailDomainNotAllow BizCode = "email_domain_not_allow" // 域名不在白名单
-	BizCredentialsInvalid  BizCode = "credentials_invalid"    // 邮箱或密码错误
-	BizVerifyCodeInvalid   BizCode = "verify_code_invalid"    // 验证码错误或已失效
-	BizVerifyCodeTooMany   BizCode = "verify_code_too_many"   // 验证码发送或尝试次数超限
-	BizVerifyCodeBusy      BizCode = "verify_code_busy"       // 发验证码在途请求已达服务器上限；不是单邮箱配额超限
-	BizAccountBanned       BizCode = "account_banned"         // 账号被封禁，前端要展示理由与解封时间
-	BizAccountDeleted      BizCode = "account_deleted"        // 账号已注销
-	BizSessionRevoked      BizCode = "session_revoked"        // 会话已被撤销（在别处登出/被踢）
-	BizSessionNotFound     BizCode = "session_not_found"      // 指定设备会话不存在、已失效或不属于当前用户
+	BizEmailTaken            BizCode = "email_taken"             // 邮箱已被注册
+	BizUsernameChangeLimited BizCode = "username_change_limited" // 距上次成功修改用户名未满 30 天
+	BizUsernameTaken         BizCode = "username_taken"          // 用户名已被当前或历史账号占用
+	BizEmailDomainNotAllow   BizCode = "email_domain_not_allow"  // 域名不在白名单
+	BizCredentialsInvalid    BizCode = "credentials_invalid"     // 邮箱或密码错误
+	BizVerifyCodeInvalid     BizCode = "verify_code_invalid"     // 验证码错误或已失效
+	BizVerifyCodeTooMany     BizCode = "verify_code_too_many"    // 验证码发送或尝试次数超限
+	BizVerifyCodeBusy        BizCode = "verify_code_busy"        // 发验证码在途请求已达服务器上限；不是单邮箱配额超限
+	BizAccountBanned         BizCode = "account_banned"          // 账号被封禁，前端要展示理由与解封时间
+	BizAccountDeleted        BizCode = "account_deleted"         // 账号已注销
+	BizSessionRevoked        BizCode = "session_revoked"         // 会话已被撤销（在别处登出/被踢）
+	BizSessionNotFound       BizCode = "session_not_found"       // 指定设备会话不存在、已失效或不属于当前用户
 
 	// 权限
 

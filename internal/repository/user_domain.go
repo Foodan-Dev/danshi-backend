@@ -138,9 +138,21 @@ func (UserRepository) SoftDelete(ctx context.Context, userID uint64, deletedAt t
 	return nil
 }
 
-// CreateModerationRecord 追加昵称或简介的审核流水。
+// CreateModerationRecord 追加用户名或简介的审核流水。
 func (UserRepository) CreateModerationRecord(ctx context.Context, record *model.ModerationRecord) error {
 	return db.FromContext(ctx).Create(record).Error
+}
+
+// HasRecentUsernameChange 查询过去 30 天的已生效改名，与数据库约束共用事务时间。
+// 调用方先锁定用户行，避免同一用户的并发请求同时消耗额度。
+func (UserRepository) HasRecentUsernameChange(ctx context.Context, userID uint64) (bool, error) {
+	var changed bool
+	err := db.FromContext(ctx).Raw(`SELECT EXISTS (
+   SELECT 1 FROM user_name_change_records
+   WHERE user_id = ?
+     AND changed_at > now() - interval '720 hours'
+ )`, userID).Scan(&changed).Error
+	return changed, err
 }
 
 // FindUsernameChangeRecords 返回目标用户的完整用户名变更历史，最新在前。

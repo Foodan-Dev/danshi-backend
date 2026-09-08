@@ -1,4 +1,4 @@
--- name 的公开值只在通过同步机审后才会改变；本表记录已经生效的旧值、新值与时间。
+-- 用户名的公开值只在通过同步机审后才会改变；本表记录已经生效的旧值、新值与时间。
 
 -- +goose Up
 
@@ -24,6 +24,35 @@ CREATE TABLE user_name_change_records (
 
 CREATE INDEX idx_user_name_change_records_user
     ON user_name_change_records (user_id, changed_at DESC, id DESC);
+
+-- 成功改名必须间隔满 30 天。注册不写改名流水，其他资料更新不受影响。
+-- 锁定用户行串行化检查，也保护直接追加审计的路径；恰好 720 小时允许再次修改。
+-- +goose StatementBegin
+CREATE FUNCTION danshi_enforce_username_change_cooldown()
+RETURNS trigger LANGUAGE plpgsql AS $func$
+BEGIN
+    PERFORM 1 FROM users WHERE id = NEW.user_id FOR UPDATE;
+    IF EXISTS (
+        SELECT 1 FROM user_name_change_records
+        WHERE user_id = NEW.user_id
+          AND changed_at > NEW.changed_at - interval '720 hours'
+          AND changed_at < NEW.changed_at + interval '720 hours'
+    ) THEN
+        RAISE EXCEPTION '修改用户名后需间隔满 30 天才能再次修改'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'user_name_change_records_cooldown_check';
+    END IF;
+    RETURN NEW;
+END;
+$func$;
+-- +goose StatementEnd
+
+CREATE TRIGGER trg_user_name_change_records_cooldown
+    BEFORE INSERT ON user_name_change_records
+    FOR EACH ROW EXECUTE FUNCTION danshi_enforce_username_change_cooldown();
+
+COMMENT ON COLUMN user_name_change_records.old_name IS '修改前的用户名，历史归属不释放。';
+COMMENT ON COLUMN user_name_change_records.new_name IS '已审核通过并生效的新用户名。';
+COMMENT ON COLUMN user_name_change_records.changed_at IS '改名事务时间；两次成功改名至少间隔 720 小时（30 天）。';
 
 -- 00018 已经为 users.name 安装了统一占用触发器；在同一触发器中追加审计，保证导入、
 -- 运维脚本等直写路径也不会绕过“修改前/修改后/时间”记录。应用层只负责审核后更新，
@@ -74,13 +103,14 @@ CREATE TRIGGER trg_user_name_change_records_forbid_delete
     FOR EACH ROW EXECUTE FUNCTION danshi_forbid_hard_delete();
 
 COMMENT ON TABLE user_name_change_records IS
-    '已经生效的用户 name 变更审计。审核未通过的候选 name 不写入；历史记录不可修改或删除。';
+    '已生效的用户名变更审计；每用户两次成功改名至少间隔 30 天。注册不计次，失败不记入；历史不可修改或删除。';
 
 -- +goose Down
 
 DROP TRIGGER IF EXISTS trg_user_name_change_records_forbid_delete ON user_name_change_records;
 DROP TRIGGER IF EXISTS trg_user_name_change_records_immutable ON user_name_change_records;
 DROP TABLE IF EXISTS user_name_change_records;
+DROP FUNCTION IF EXISTS danshi_enforce_username_change_cooldown();
 
 -- 恢复 00018 的原始占用触发器，保证回到 version 18 后 users.name 仍可正常写入。
 -- +goose StatementBegin

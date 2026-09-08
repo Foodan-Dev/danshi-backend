@@ -154,6 +154,13 @@ DO $$ BEGIN
 END $$;
 
 UPDATE users SET name='bob2' WHERE id=2;
+DO $$ BEGIN
+  PERFORM _assert_rejects($q$UPDATE users SET name='bob3' WHERE id=2$q$,
+    ARRAY['23514'], '未满 30 天的第二次改名必须被数据库拒绝');
+  PERFORM _assert((SELECT name FROM users WHERE id=2)='bob2', '失败改名不得改变当前用户名');
+  PERFORM _assert(col_description('users'::regclass, (SELECT attnum FROM pg_attribute WHERE attrelid='users'::regclass AND attname='name')) LIKE '%唯一、可登录%', '用户名列注释必须反映当前规则');
+  PERFORM _assert(col_description('email_verification_codes'::regclass, (SELECT attnum FROM pg_attribute WHERE attrelid='email_verification_codes'::regclass AND attname='code_digest')) LIKE '%邮件任务%', '验证码摘要列注释说明明文保存位置');
+END $$;
 
 DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('old-name@fdueat.com','x','bob')$q$,

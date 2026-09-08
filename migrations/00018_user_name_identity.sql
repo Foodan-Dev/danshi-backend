@@ -1,4 +1,4 @@
--- 用户名（username）是用户对外的全局身份标识；存储沿用 users.name。
+-- 用户名是用户对外的全局身份标识；存储沿用 users.name。
 -- Unicode 字符集合从 Go 同源策略生成显式码点范围，避免数据库 locale 的 POSIX 类差异。
 --
 -- user_name_claims 保存每个已经归属过的 name。其唯一约束既保护并发注册，也保证注销与
@@ -70,7 +70,7 @@ INSERT INTO user_name_claims (user_id, name, created_at)
 SELECT id, name, created_at FROM users;
 
 -- 夹具、导入与运维脚本同样可能直接写 users。触发器把“当前 name 必须有归属记录、
--- 旧 name 不可被另一账号接管”落实为数据库防线；应用层仍先显式 ClaimName，以便将
+-- 旧 name 不可被另一账号接管”落实为数据库防线；应用层仍先显式 ClaimUsername，以便将
 -- 冲突转换为稳定业务错误而不是依赖触发器文案。
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION danshi_claim_user_name()
@@ -114,9 +114,16 @@ CREATE TRIGGER trg_user_name_claims_forbid_delete
     FOR EACH ROW EXECUTE FUNCTION danshi_forbid_hard_delete();
 
 COMMENT ON TABLE user_name_claims IS
-    '用户 name 的追加占用记录。当前 name 在 users.name；所有历史 name 永久保留，防止改名或注销后身份被冒用。';
+    '用户名的追加占用记录。users.name 保存当前用户名；所有历史用户名永久保留，防止改名或注销后身份被冒用。';
+
+COMMENT ON COLUMN users.name IS '唯一、可登录的公开用户名；应用字段为 username，规范化后 2–24 个字符；历史名称永久归原账号占用。';
+COMMENT ON COLUMN user_name_claims.name IS '当前或历史用户名；大小写不敏感的唯一归属，改名和注销不释放。';
+COMMENT ON COLUMN moderation_records.field IS '被审的具体字段。用户对象必填（name 用户名 / bio 简介）；用户名审核通过后才写入。帖子可用 title / content 区分，整体送审时留空。评论、标签、图片各自只有一个可审内容，无需本列。';
 
 -- +goose Down
+
+COMMENT ON COLUMN users.name IS '展示昵称，非唯一。空串表示未设置（非 NULL，简化前端处理）。';
+COMMENT ON COLUMN moderation_records.field IS '被审的具体字段。用户对象必填（name 昵称 / bio 简介）；帖子可用 title / content 区分，整体送审时留空。评论、标签、图片各自只有一个可审内容，无需本列。';
 
 DROP TRIGGER IF EXISTS trg_user_name_claims_forbid_delete ON user_name_claims;
 DROP TRIGGER IF EXISTS trg_user_name_claims_forbid_update ON user_name_claims;

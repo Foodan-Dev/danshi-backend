@@ -131,6 +131,12 @@ func IsUniqueViolation(err error, constraint string) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
+// IsCheckViolation 判断指定数据库检查约束，供 service 映射为稳定业务错误。
+func IsCheckViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == constraint
+}
+
 // VerificationCodeRepository 是无状态的邮箱验证码仓储。
 type VerificationCodeRepository struct{}
 
