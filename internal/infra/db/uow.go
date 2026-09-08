@@ -38,11 +38,11 @@ var ErrRollback = errors.New("db: 主动回滚")
 // HTTP 请求由 UoW 中间件统一开事务，处理器里不要再调它。
 func (d *DB) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return d.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := fn(WithTx(ctx, tx))
-		if errors.Is(err, ErrRollback) {
+		txCtx, beforeCommit := WithBeforeCommitQueue(WithTx(ctx, tx))
+		if err := fn(txCtx); err != nil {
 			return err
 		}
-		return err
+		return beforeCommit.Run(txCtx)
 	})
 }
 

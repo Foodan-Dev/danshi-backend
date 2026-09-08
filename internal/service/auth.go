@@ -523,7 +523,7 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (*TokenR
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	if err := s.sessions.Touch(ctx, sessionID, now, sessionTouchThreshold); err != nil {
+	if err := s.deferSessionTouch(ctx, sessionID, now); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return &TokenResult{Token: access, RefreshToken: refreshToken}, nil
@@ -544,10 +544,17 @@ func (s *AuthService) Authenticate(ctx context.Context, accessToken string) (*Pr
 	if err != nil {
 		return nil, sessionLookupError(err)
 	}
-	if err := s.sessions.Touch(ctx, sessionID, now, sessionTouchThreshold); err != nil {
+	if err := s.deferSessionTouch(ctx, sessionID, now); err != nil {
 		return nil, apierr.Internal(err)
 	}
 	return &Principal{User: identity.User, SessionID: identity.Session.ID}, nil
+}
+
+// 鉴权只读会话，业务完成后才更新活跃时间，统一为业务行 → 会话行的锁顺序。
+func (s *AuthService) deferSessionTouch(ctx context.Context, sessionID uint64, now time.Time) error {
+	return dbinfra.BeforeCommit(ctx, func(txCtx context.Context) error {
+		return s.sessions.Touch(txCtx, sessionID, now, sessionTouchThreshold)
+	})
 }
 
 // CurrentUser 返回当前用户自己的账号信息。
