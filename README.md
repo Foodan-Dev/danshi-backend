@@ -150,7 +150,7 @@ make schema-test
 | `TENCENT_SES_SUBJECT` | `旦食注册验证码` | 注册验证码邮件主题；不得包含控制字符 |
 | `TENCENT_SES_TEMPLATE_ID` | `0` | SES 模板 ID；生产环境启用邮箱验证时必须为正数 |
 | `TENCENT_SES_RESET_SUBJECT` | `旦食密码重置验证码` | 密码重置验证码邮件主题；不得包含控制字符 |
-| `TENCENT_SES_RESET_TEMPLATE_ID` | `0` | 密码重置 SES 模板 ID；生产环境启用邮箱验证时必须为正数 |
+| `TENCENT_SES_RESET_TEMPLATE_ID` | `0` | 密码重置专用 SES 模板 ID；0 表示找回暂不可用（503），不影响注册 |
 | `COS_BUCKET` | 无 | COS bucket 名称；生产环境必填 |
 | `COS_REGION` | `ap-shanghai` | COS 区域 |
 | `COS_IMG_DOMAIN` | 无 | 图片公开域名，非空时必须是 HTTPS URL；生产环境必填 |
@@ -208,16 +208,30 @@ worker 用 `FOR UPDATE SKIP LOCKED` 有界领取并始终设置 COS ACL；只有
 `dead_letter`。`/metrics` 每 15 秒最多用一条只读分组查询刷新六个固定状态的缓存计数，
 不把图片 ID、URL、对象键、JobId 或供应商错误正文写入 label。
 
-密码重置验证码通过 durable outbox 在事务提交后投递；外部调度器应周期执行：
+注册和密码重置验证码通过 durable outbox 在事务提交后投递。server 内置邮件 worker，
+启动扫描、每秒补偿扫描，并接受提交后的非阻塞唤醒；HTTP 响应不等待 SES。进程关闭时
+取消并等待 worker，任务保存在数据库中，重启后按租约恢复。可用以下命令手动补偿：
 
 ```bash
 danshi-jobs deliver-verification-emails -batch-size 4
 ```
 
 worker 只在数据库短事务内用 `FOR UPDATE SKIP LOCKED` 领取任务，事务提交后调用 SES，
-失败按固定预算重试，过期或已被新验证码替代的任务取消，无法解密或耗尽重试预算的任务进入
-`dead_letter`。验证码密文使用 `EMAIL_VERIFICATION_SECRET` 加密保存，日志与指标不包含邮箱、
-验证码或供应商错误正文。
+失败按固定预算重试，过期或已被新验证码替代的任务取消，耗尽重试预算的任务进入
+`dead_letter`。邮件任务的 `code` 保存六位验证码明文，挑战表仍保存 HMAC 摘要用于校验；
+`EMAIL_VERIFICATION_SECRET` 仅用于摘要计算，不再用于加密。验证码成功消费、重新申请替换
+或达到错误次数上限时在当前事务清空旧任务明文；周期任务有界清理已过期明文，包含已发送任务。
+取消和死信任务清空明文，投递记录保留。清理依赖内置 worker 或手动补偿任务运行；不删除已产生的数据库备份。
+API 响应、日志和指标不包含验证码或供应商错误正文。
+
+找回密码需要在腾讯云 SES 单独创建并审核通过的模板，然后设置
+`TENCENT_SES_RESET_TEMPLATE_ID`。该配置只引用云端模板，服务不会自动创建模板，也不应
+直接复用措辞为“注册验证码”的模板。模板可使用 `{{code}}`、`{{expires_in_minutes}}`、
+`{{security_notice}}`，正文需说明验证码、10 分钟有效期及“非本人操作请忽略”。缺少重置模板
+时找回请求在查询账号前统一返回 503；已有注册模板继续工作。
+
+注册发信失败不再回滚已保存的验证码：接口成功表示投递任务已持久化，供应商失败由后台
+使用同一验证码重试；未配置投递能力仍返回 503。
 
 图片首次送审失败不会回滚已经验证完成的上传；服务在同一事务登记
 `image_moderation_retries`，图片保持 `moderation=pending`，因此引用它的帖子只能进入
@@ -384,3 +398,26 @@ make schema-test  # schema 回归断言
 ## 许可证
 
 本项目采用 [Apache License 2.0](LICENSE)。
+
+## 用户名与本次 schema 升级
+
+公共用户身份字段统一为 `username`；注册必填，注册及资料更新暂兼容输入别名 `name`，
+响应仅使用 `username`。当前用户、作者、搜索结果、通知发送者、关注列表与管理端用户对象使用同一字段。
+历史查询为 `GET /api/v2/users/{user_id}/username-history`，详情见
+[契约变更记录](api/BREAKING-CHANGES.md)。存储沿用 `users.name`，没有第二个独立昵称字段。
+
+本次目标版本 20 连续承接主线的 17，并非跳号：
+
+| 版本 | 内容 |
+|---|---|
+| 18 | 用户名规范化与唯一归属、历史名称永久占用 |
+| 19 | 已生效用户名变更的不可篡改审计 |
+| 20 | 注册与密码重置邮件 outbox，含验证码明文及重试状态 |
+
+升级前先备份并检查全部既有用户（含已注销用户）的用户名：按应用的 NFKC、去首尾空白、
+Unicode 字母/数字/下划线、2–24 字符及保留名称规则校验，再按数据库不区分大小写的规则
+排除重名。需要修正的身份由维护者确认，迁移不会自动生成替代用户名。发布顺序为数据库
+迁移成功后部署匹配版本的 server/jobs，再验收注册、改名、登录和密码重置。
+
+18–20 是本 PR 尚未发布的迁移，已在本 PR 内修订；已发布的 1–17 保持原样。曾用旧草稿
+应用过 18–20 的开发数据库应先重建或安全回退后重新迁移，不能仅根据相同版本号判断 schema 一致。
