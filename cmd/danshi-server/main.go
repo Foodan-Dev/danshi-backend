@@ -121,7 +121,6 @@ func run() error {
 			deps.ImageModerator = tencentProvider
 		}
 	}
-	emailWorkerDone := startVerificationEmailWorker(ctx, &deps)
 	router.Register(h, deps)
 
 	retryWorkerDone := startImageModerationRetryWorker(
@@ -144,7 +143,7 @@ func run() error {
 	log.Info("服务启动", slog.Int("port", cfg.Port), slog.String("prefix", router.APIPrefix))
 	h.Spin()
 	stop()
-	waitForWorkers(retryWorkerDone, expirationWorkerDone, emailWorkerDone)
+	waitForWorkers(retryWorkerDone, expirationWorkerDone)
 	return nil
 }
 
@@ -421,16 +420,4 @@ func runPendingUploadExpirationLoop(
 			runBatch()
 		}
 	}
-}
-
-func startVerificationEmailWorker(ctx context.Context, deps *router.Deps) <-chan struct{} {
-	worker := service.NewVerificationEmailDeliveryWorker(deps.DB,
-		router.VerificationEmailSender(*deps), service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log})
-	deps.EmailDeliveryWorker = worker
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		worker.Run(ctx)
-	}()
-	return done
 }

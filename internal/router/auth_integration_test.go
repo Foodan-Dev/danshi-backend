@@ -77,34 +77,25 @@ func TestRepositoryAndAuthAgainstPostgres(t *testing.T) {
 		testPostCommitCallbacks(t, database, gdb)
 	})
 
-	t.Run("registration delivery failures remain retryable", func(t *testing.T) {
-		for _, test := range []struct {
-			email string
-			err   error
-		}{
-			{"delivery-fail@fdueat.com", errors.New("test delivery failure")},
-			{"timeout@fdueat.com", context.DeadlineExceeded},
-		} {
+	t.Run("registration delivery failure rolls back and allows retry", func(t *testing.T) {
+		for _, failure := range []error{errors.New("provider rejected"), context.DeadlineExceeded} {
+			email := "sync-failure@fdueat.com"
 			failing := testutil.NewMockEmailSender()
-			failing.SetDefault(testutil.EmailFailure(test.err))
-			failingEngine := authTestEngine(cfg, database, failing)
-			status, response, _ := performJSON(t, failingEngine, http.MethodPost,
-				"/api/v2/auth/email-verification-codes", map[string]any{"email": test.email}, "")
-			require.Equal(t, http.StatusOK, status, response.Message)
-			var delivery model.VerificationEmailDelivery
-			require.NoError(t, gdb.Where("email = ?", test.email).First(&delivery).Error)
-			require.Equal(t, model.VerificationEmailDeliveryPending, delivery.State)
-			require.NotNil(t, delivery.Code)
-			originalCode := *delivery.Code
-			require.Len(t, originalCode, 6)
-			require.NoError(t, gdb.Model(&delivery).Update("next_attempt_at", time.Now().UTC().Add(-time.Second)).Error)
-			worker := service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})
-			_, err := worker.RunBatch(context.Background())
-			require.NoError(t, err)
-			code, ok := sender.LastCode(test.email)
-			require.True(t, ok)
-			require.Equal(t, originalCode, code, "重新创建的 worker 能恢复相同的注册验证码")
+			failing.SetDefault(testutil.EmailFailure(failure))
+			status, response, _ := performJSON(t, authTestEngine(cfg, database, failing), http.MethodPost,
+				"/api/v2/auth/email-verification-codes", map[string]any{"email": email}, "")
+			require.Equal(t, http.StatusServiceUnavailable, status, response.Message)
+			require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
+			var count int64
+			require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ?", email).Count(&count).Error)
+			require.Zero(t, count, "未成功发送的验证码不能落库或消耗冷却配额")
 		}
+		email := "sync-failure@fdueat.com"
+		sendCode(t, engine, email)
+		var saved model.EmailVerificationCode
+		require.NoError(t, gdb.Where("email = ?", email).First(&saved).Error)
+		require.NotNil(t, saved.Code)
+		require.Equal(t, capturedCode(t, sender, email), *saved.Code)
 	})
 
 	t.Run("verification in-flight limit precedes uow", func(t *testing.T) {
@@ -273,12 +264,11 @@ func testPasswordReset(
 		"/api/v2/auth/password-reset-codes", map[string]any{"email": email}, "")
 	require.Equal(t, http.StatusOK, status, response.Message)
 	code := capturedCode(t, sender, email)
-	var delivery model.VerificationEmailDelivery
+	var delivery model.EmailVerificationCode
 	require.NoError(t, gdb.Where("email = ? AND purpose = ?", email,
 		model.VerificationPurposePasswordReset).Order("id DESC").First(&delivery).Error)
-	require.Equal(t, model.VerificationEmailDeliverySent, delivery.State)
 	require.NotNil(t, delivery.Code)
-	require.Equal(t, code, *delivery.Code, "密码重置验证码保存在 outbox 中")
+	require.Equal(t, code, *delivery.Code, "密码重置验证码直接保存在挑战行")
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{
 		"email": email, "password": "password-123", "device_label": "reset-second-device",
 	}, "")
@@ -300,7 +290,7 @@ func testPasswordReset(
 		}, "")
 	require.Equal(t, http.StatusOK, status, response.Message)
 	var remaining int64
-	require.NoError(t, gdb.Model(&model.VerificationEmailDelivery{}).Where("email = ? AND code IS NOT NULL", email).Count(&remaining).Error)
+	require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ? AND code IS NOT NULL", email).Count(&remaining).Error)
 	require.Zero(t, remaining, "注册和重置验证码在成功消费后均已清空")
 	var after model.User
 	require.NoError(t, gdb.Where("id = ?", before.ID).First(&after).Error)
@@ -345,22 +335,17 @@ func testPasswordReset(
 		"/api/v2/auth/password-reset-codes", map[string]any{"email": failureEmail}, "")
 	unknownStatus, unknownResponse, _ := performJSON(t, failureEngine, http.MethodPost,
 		"/api/v2/auth/password-reset-codes", map[string]any{"email": unknownEmail}, "")
-	require.Equal(t, http.StatusOK, failureStatus)
+	require.Equal(t, http.StatusServiceUnavailable, failureStatus)
+	require.Equal(t, apierr.BizServiceUnavailable, failureResponse.ErrorCode)
 	require.Equal(t, http.StatusOK, unknownStatus)
-	require.Equal(t, failureResponse.Message, unknownResponse.Message,
-		"密码找回不得通过响应差异枚举邮箱是否存在")
-	require.Zero(t, failureResponse.ErrorCode)
 	require.Zero(t, unknownResponse.ErrorCode)
-	var failedDelivery model.VerificationEmailDelivery
-	require.NoError(t, gdb.Where("email = ? AND purpose = ?", failureEmail,
-		model.VerificationPurposePasswordReset).First(&failedDelivery).Error)
-	require.Equal(t, model.VerificationEmailDeliveryPending, failedDelivery.State)
-	require.Equal(t, int32(1), failedDelivery.Attempts,
-		"首次供应商失败应保留 outbox 任务并等待重试")
-	var unknownDeliveries int64
-	require.NoError(t, gdb.Model(&model.VerificationEmailDelivery{}).
-		Where("email = ?", unknownEmail).Count(&unknownDeliveries).Error)
-	require.Zero(t, unknownDeliveries, "不存在的邮箱不得创建可投递的验证码任务")
+	var failures int64
+	require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).
+		Where("email = ? AND purpose = ?", failureEmail, model.VerificationPurposePasswordReset).Count(&failures).Error)
+	require.Zero(t, failures, "同步发送失败应回滚新挑战")
+	var unknown model.EmailVerificationCode
+	require.NoError(t, gdb.Where("email = ?", unknownEmail).First(&unknown).Error)
+	require.Nil(t, unknown.Code, "不存在的账号不保存真实验证码")
 }
 
 func testVerificationInFlightLimit(
@@ -389,8 +374,6 @@ func testVerificationInFlightLimit(
 	router.Register(engine, router.Deps{
 		Config: cfg, DB: database,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), EmailSender: blockingSender,
-		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, blockingSender,
-			service.VerificationEmailDeliveryWorkerOptions{BatchSize: 1})},
 	})
 	results := make(chan asyncRequestResult, maxInFlight)
 	for index := range maxInFlight {
@@ -412,7 +395,7 @@ func testVerificationInFlightLimit(
 	require.True(t, blockingSender.WaitForAttempts(waitCtx, maxInFlight),
 		"5 个发信请求未能全部进入阻塞 sender")
 	inUseBeforeReject := sqlDB.Stats().InUse
-	require.Zero(t, inUseBeforeReject, "提交后发信不应持有数据库事务连接")
+	require.Equal(t, maxInFlight, inUseBeforeReject, "同步发信受请求在途上限约束")
 
 	sixthResult := make(chan asyncRequestResult, 1)
 	go func() {
@@ -930,19 +913,13 @@ func testVerificationRateBoundaries(
 	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&before).Error)
 	status, response, _ = performJSON(t, failureEngine, http.MethodPost,
 		"/api/v2/auth/email-verification-codes", map[string]any{"email": failureEmail}, "")
-	require.Equal(t, http.StatusOK, status, response.Message)
+	require.Equal(t, http.StatusServiceUnavailable, status, response.Message)
 	var after model.EmailVerificationCode
 	require.NoError(t, gdb.Where("email = ?", failureEmail).First(&after).Error)
-	require.Equal(t, before.SendCount+1, after.SendCount)
-	require.NotEqual(t, before.CodeDigest, after.CodeDigest)
-	require.True(t, after.LastSentAt.After(*before.LastSentAt))
-	var previous model.VerificationEmailDelivery
-	require.NoError(t, gdb.Where("email = ? AND code_digest = ?", failureEmail, before.CodeDigest).First(&previous).Error)
-	require.Nil(t, previous.Code, "重新申请后清空旧验证码")
-	var retry model.VerificationEmailDelivery
-	require.NoError(t, gdb.Where("email = ? AND code_digest = ?", failureEmail, after.CodeDigest).First(&retry).Error)
-	require.NotNil(t, retry.Code, "发信失败后保留新验证码供重试")
-	require.Equal(t, model.VerificationEmailDeliveryPending, retry.State)
+	require.Equal(t, before.SendCount, after.SendCount)
+	require.Equal(t, before.CodeDigest, after.CodeDigest)
+	require.Equal(t, before.Code, after.Code, "重发失败保留之前成功发送的验证码")
+	require.Equal(t, before.LastSentAt, after.LastSentAt)
 	failureSender.RequireDeliveryCount(t, failureEmail, 1)
 }
 
@@ -1260,7 +1237,6 @@ func authTestEngine(
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	deps := router.Deps{
 		Config: cfg, DB: database, Log: log, EmailSender: sender,
-		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})},
 	}
 	if len(moderators) > 0 {
 		deps.ContentModerator = moderators[0]
@@ -1394,10 +1370,3 @@ func sessionLabelPresent(sessions []service.SessionView, label string) bool {
 	}
 	return false
 }
-
-// drainingEmailQueue 仅供同步业务测试捕获邮件；异步边界另用真实 worker 回归。
-type drainingEmailQueue struct {
-	*service.VerificationEmailDeliveryWorker
-}
-
-func (q drainingEmailQueue) Kick(ctx context.Context) { _, _ = q.RunBatch(ctx) }

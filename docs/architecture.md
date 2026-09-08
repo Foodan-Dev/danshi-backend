@@ -273,13 +273,13 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 
 ### 8.2 表分组
 
-当前业务 schema 有 34 张表：
+当前业务 schema 有 33 张表：
 
 | 领域 | 表 |
 |---|---|
 | 封闭词表 | `canteens`、`canteen_windows`、`cuisines`、`flavors` |
 | 开放标签 | `tags`、`post_tags` |
-| 用户与认证 | `users`、`user_name_claims`、`user_name_change_records`、`email_verification_codes`、`verification_email_deliveries`、`user_sessions` |
+| 用户与认证 | `users`、`user_name_claims`、`user_name_change_records`、`email_verification_codes`、`user_sessions` |
 | 图片 | `image_assets`、`post_images` |
 | 帖子 | `posts`、`post_flavors`、`favorites`、`post_likes` |
 | 评论 | `comments`、`comment_mentions`、`comment_likes` |
@@ -289,7 +289,7 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 | 角色与封禁 | `user_roles`、`user_role_records`、`user_ban_records` |
 | 图片访问收敛 | `image_access_intents`、`image_access_deliveries`、`image_moderation_retries` |
 
-34 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
+33 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
 
 ## 9. 数据模型设计
 
@@ -561,7 +561,7 @@ Unicode Letter/Number/下划线校验和保留名称校验。字符类别由 `us
 当前名称保存在 `users.name`；`user_name_claims` 按规范化且不区分大小写的名称记录永久
 归属，改名与注销不释放，原账号回用幂等。注册和改名先同步审核，仅 `pass` 写入名称。
 `user_name_change_records` 由用户表触发器记录真实的旧值、新值和时间，禁止修改、删除。
-本人通过 username-history 路由查询，具备用户管理能力的管理员通过用户取证详情查询。
+本人通过用户名历史查询接口读取，具备用户管理能力的管理员通过用户取证详情查询。
 迁移前必须处理存量重名及不合规名称；迁移不自动分配替代名称。
 
 注册和密码重置共用 `email_verification_codes` 挑战表，以邮箱和 purpose 区分；摘要计算
@@ -571,20 +571,24 @@ Unicode Letter/Number/下划线校验和保留名称校验。字符类别由 `us
 登录和重置共用用户行锁：登录先定位用户，再加锁、重新确认当前登录标识和密码，
 最后在同一事务创建会话。若登录先取得锁，重置会撤销该会话；若重置先完成，旧密码登录失败。
 
-两种邮件均在当前事务追加 `verification_email_deliveries`，`code` 保存可空的六位验证码
-明文；不采用应用层加密，不需要 secretbox 或加密密钥。挑战表摘要负责校验，任务中的明文
-负责进程重启后的恢复投递。不存在的重置目标、已注册的注册目标不创建可投递任务。
-请求成功表示任务已经持久化；供应商失败保留任务供重试，不回滚挑战状态。
+注册和密码重置均在请求内同步调用邮件供应商，最多等待 10 秒。验证码记录在
+`email_verification_codes.code` 保存六位明文，`code_digest` 保留 HMAC 校验摘要。
+供应商成功受理后提交请求事务；供应商失败或超时返回 503，并回滚本次验证码、冷却和
+配额更新，保留此前成功发送且仍有效的验证码。前端展示错误并允许用户重新申请。
+没有邮件队列、自动补发、邮件后台循环或邮件投递任务命令。
 
-server 管理一个常驻邮件 worker，提交后的 `Kick` 只发送合并的非阻塞唤醒信号；
-HTTP 不等待 SES。worker 启动即扫描，并每秒补偿扫描，退出时取消并等待 worker 结束。
-未注册邮箱仍走相同的挑战限流，但不创建实际邮件；响应不再包含供应商耗时。
-worker 在短事务中使用 `SKIP LOCKED` 领取任务，租约和 token 防止旧 worker 覆盖新状态。
-外部发信不持有数据库事务；过期、消费、替换或超过错误次数的挑战不能继续投递。
-供应商失败按预算退避重试，耗尽预算进入死信。验证码消费、替换及错误次数耗尽时，当前
-事务清空相关旧任务的 `code`；worker 每批有界清理过期明文，含已发送任务。取消和死信
-也清空明文。投递状态及历史保留，验证码不得出现在日志、trace、指标或接口响应中。
-该清理仅作用于在线表，不改变既有备份；内置循环与手动补偿命令见根 README。
+同步发信仍占用请求事务和数据库连接，由既有发信在途上限与调用超时控制资源占用。
+数据库和邮件供应商无法原子提交：供应商已经受理但数据库提交失败，或供应商实际受理但
+响应超时，都可能导致收到的邮件不能用于校验；请求仍报告失败，用户重新申请。
+成功响应表示供应商受理且数据库提交成功，不保证终端收件箱已经收到邮件。
+
+正常成功文案和限流行为不直接揭示账号状态；已注册邮箱不再收到注册验证码，不存在或
+已注销账号不收到重置验证码。同步调用的耗时、供应商失败的 503 与未实际发信的成功响应
+存在差异，这是直接反馈发送失败的边界，不再声明完整防枚举。
+
+验证码消费或错误次数耗尽时清空明文，成功重发替换原值。过期由 `expires_at` 立即阻止
+校验，旧明文在后续状态写入时清理；没有定时清理承诺。验证码不得出现在日志、追踪、
+指标或接口响应中。保留验证码校验的 HMAC 密钥，不使用应用层加密或 `secretbox`。
 
 ### 12.6 图片与帖子发布协议
 

@@ -242,7 +242,7 @@ func (AdminRepository) FindUserBanRecords(
 	return records, err
 }
 
-// FindUsernameChangeRecords 返回目标用户完整 用户名 变更历史，最新动作在前。
+// FindUsernameChangeRecords 返回目标用户完整用户名变更历史，最新动作在前。
 func (AdminRepository) FindUsernameChangeRecords(
 	ctx context.Context,
 	userID uint64,

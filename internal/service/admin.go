@@ -106,7 +106,7 @@ type AdminUserBanRecordView struct {
 	CreatedAt      ptime.Time          `json:"created_at"`
 }
 
-// AdminUsernameChangeView 是管理端用户取证可见的一次 用户名 变更。
+// AdminUsernameChangeView 是管理端用户取证可见的一次用户名变更。
 type AdminUsernameChangeView struct {
 	ID          uint64     `json:"id"`
 	OldUsername string     `json:"old_username"`

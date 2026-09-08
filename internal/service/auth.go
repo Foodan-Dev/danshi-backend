@@ -15,7 +15,6 @@ import (
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/config"
-	dbinfra "github.com/Foodan-Dev/danshi-backend/internal/infra/db"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/jwtx"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
@@ -130,39 +129,19 @@ func ShouldCommitError(err error) bool {
 
 // AuthService 实现 auth 域完整业务闭环。
 type AuthService struct {
-	cfg        config.Config
-	tokens     *jwtx.Codec
-	sender     VerificationEmailSender
-	deliveries VerificationEmailDeliveryQueue
-	moderator  ContentModerator
-	users      repository.UserRepository
-	codes      repository.VerificationCodeRepository
-	sessions   repository.SessionRepository
+	cfg       config.Config
+	tokens    *jwtx.Codec
+	sender    VerificationEmailSender
+	moderator ContentModerator
+	users     repository.UserRepository
+	codes     repository.VerificationCodeRepository
+	sessions  repository.SessionRepository
 }
 
 // NewAuthService 创建 auth 服务；可选注入内容审核器。
 func NewAuthService(
 	cfg config.Config,
 	sender VerificationEmailSender,
-	moderators ...ContentModerator,
-) *AuthService {
-	return newAuthService(cfg, sender, nil, moderators...)
-}
-
-// NewAuthServiceWithDelivery 创建同时支持验证码邮件 durable outbox 的 auth 服务。
-func NewAuthServiceWithDelivery(
-	cfg config.Config,
-	sender VerificationEmailSender,
-	deliveryQueue VerificationEmailDeliveryQueue,
-	moderators ...ContentModerator,
-) *AuthService {
-	return newAuthService(cfg, sender, deliveryQueue, moderators...)
-}
-
-func newAuthService(
-	cfg config.Config,
-	sender VerificationEmailSender,
-	deliveryQueue VerificationEmailDeliveryQueue,
 	moderators ...ContentModerator,
 ) *AuthService {
 	if sender == nil {
@@ -174,7 +153,7 @@ func newAuthService(
 	}
 	return &AuthService{
 		cfg: cfg, tokens: jwtx.NewCodec(cfg.JWTSecretKey), sender: sender,
-		deliveries: deliveryQueue, moderator: moderator,
+		moderator: moderator,
 	}
 }
 
@@ -190,7 +169,7 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if !s.domainAllowed(email) {
 		return nil
 	}
-	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
+	if !emailSenderConfigured(s.sender) {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
 	}
 	registered := false
@@ -221,6 +200,10 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 		return apierr.Internal(err)
 	}
 
+	challenge.Code = nil
+	if code != "" {
+		challenge.Code = &code
+	}
 	challenge.ExpiresAt = now.Add(verificationCodeTTL)
 	challenge.LastSentAt = &now
 	challenge.SendCount++
@@ -232,12 +215,10 @@ func (s *AuthService) SendVerificationCode(ctx context.Context, rawEmail string)
 	if registered {
 		return nil
 	}
-	return s.enqueueVerificationEmail(
-		ctx, challenge, email, model.VerificationPurposeRegistration, challenge.CodeDigest, code, now,
-	)
+	return s.sendVerificationEmail(ctx, email, code, model.VerificationPurposeRegistration)
 }
 
-// SendPasswordResetCode 向存在且未注销的账号发送找回密码验证码；响应不泄露账号状态。
+// SendPasswordResetCode 向存在且未注销的账号同步发送找回密码验证码；正常响应不区分账号状态，供应商错误明确返回。
 func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string) error {
 	email, err := normalizeEmail(rawEmail)
 	if err != nil {
@@ -246,7 +227,7 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if !s.cfg.EmailVerificationRequired {
 		return apierr.ServiceUnavailable("密码重置暂不可用")
 	}
-	if !passwordResetSenderConfigured(s.sender) || s.deliveries == nil {
+	if !passwordResetSenderConfigured(s.sender) {
 		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
 	}
 	user, err := s.users.FindByEmail(ctx, email)
@@ -273,7 +254,7 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 		if !errors.As(err, &rateLimit) {
 			return err
 		}
-		// 找回接口是匿名防枚举入口；限流只阻止刷新挑战和投递，不能把
+		// 找回接口的限流不区分账号状态；限流只阻止刷新挑战和发信，不能把
 		// 某个邮箱是否已有发送状态暴露成 429/Retry-After 差异。
 		return nil
 	}
@@ -289,6 +270,10 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if err != nil {
 		return apierr.Internal(err)
 	}
+	challenge.Code = nil
+	if exists {
+		challenge.Code = &code
+	}
 	challenge.ExpiresAt = now.Add(verificationCodeTTL)
 	challenge.LastSentAt = &now
 	challenge.SendCount++
@@ -300,13 +285,7 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 	if !exists {
 		return nil
 	}
-	if err := s.enqueueVerificationEmail(
-		ctx, challenge, user.Email, model.VerificationPurposePasswordReset,
-		challenge.CodeDigest, code, now,
-	); err != nil {
-		return err
-	}
-	return nil
+	return s.sendVerificationEmail(ctx, user.Email, code, model.VerificationPurposePasswordReset)
 }
 
 // ResetPassword 消费密码重置验证码，更新密码并在同一事务撤销全部会话。
@@ -431,7 +410,7 @@ func (s *AuthService) Register(
 	return s.issueSession(ctx, user, client, time.Now().UTC())
 }
 
-// Login 校验邮箱或 用户名 与密码；邮箱登录还必须满足邮箱域名白名单。
+// Login 校验邮箱或用户名与密码；邮箱登录还必须满足邮箱域名白名单。
 func (s *AuthService) Login(
 	ctx context.Context,
 	input LoginInput,
@@ -700,27 +679,20 @@ func (s *AuthService) domainAllowed(email string) bool {
 	return false
 }
 
-func (s *AuthService) enqueueVerificationEmail(
-	ctx context.Context,
-	challenge *model.EmailVerificationCode,
-	email string,
-	purpose model.VerificationPurpose,
-	codeDigest string,
-	code string,
-	now time.Time,
-) error {
-	if !emailSenderConfigured(s.sender) || s.deliveries == nil {
-		return apierr.ServiceUnavailable("验证码暂时无法发送，请稍后再试")
+// sendVerificationEmail 等待供应商受理；失败让请求返回 503 并回滚本次挑战更新。
+// 数据库与邮件供应商不能原子提交：受理后数据库提交失败时，用户仍需重新申请。
+func (s *AuthService) sendVerificationEmail(ctx context.Context, email, code string, purpose model.VerificationPurpose) error {
+	deliveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var err error
+	if purpose == model.VerificationPurposeRegistration {
+		err = s.sender.SendRegistrationCode(deliveryCtx, email, code)
+	} else {
+		err = s.sender.SendPasswordResetCode(deliveryCtx, email, code)
 	}
-	if _, err := s.deliveries.Enqueue(
-		ctx, challenge, email, purpose, codeDigest, code, now,
-	); err != nil {
-		return apierr.Internal(err)
+	if err != nil {
+		return apierr.ServiceUnavailable("验证码发送失败，请稍后重试").WithCause(err)
 	}
-	// HTTP UoW 提交成功后立刻尝试一次；若没有事务回调队列，则交给后台 job 扫描。
-	dbinfra.AfterCommit(ctx, func(afterCommitCtx context.Context) {
-		s.deliveries.Kick(afterCommitCtx)
-	})
 	return nil
 }
 

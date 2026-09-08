@@ -143,7 +143,7 @@ func (UserRepository) CreateModerationRecord(ctx context.Context, record *model.
 	return db.FromContext(ctx).Create(record).Error
 }
 
-// FindUsernameChangeRecords 返回目标用户的完整 用户名 变更历史，最新在前。
+// FindUsernameChangeRecords 返回目标用户的完整用户名变更历史，最新在前。
 func (UserRepository) FindUsernameChangeRecords(
 	ctx context.Context, userID uint64,
 ) ([]model.UsernameChangeRecord, error) {

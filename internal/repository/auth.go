@@ -36,7 +36,7 @@ func (UserRepository) FindByEmail(
 	return &user, nil
 }
 
-// FindByUsername 按大小写不敏感的公开 用户名 查找可登录用户。
+// FindByUsername 按大小写不敏感的公开用户名查找可登录用户。
 func (UserRepository) FindByUsername(ctx context.Context, name string) (*model.User, error) {
 	var user model.User
 	err := db.FromContext(ctx).
@@ -53,7 +53,7 @@ func (UserRepository) Create(ctx context.Context, user *model.User) error {
 	return db.FromContext(ctx).Create(user).Error
 }
 
-// ClaimUsername 追加一条 用户名 占用记录。同一账号回用自己的历史 用户名 是幂等的；
+// ClaimUsername 追加一条用户名占用记录。同一账号回用自己的历史用户名是幂等的；
 // 其他账号已占用时由唯一约束拒绝。
 func (UserRepository) ClaimUsername(ctx context.Context, userID uint64, name string, now time.Time) error {
 	result := db.FromContext(ctx).Exec(`
@@ -184,9 +184,13 @@ func (VerificationCodeRepository) SaveState(
 	challenge *model.EmailVerificationCode,
 	now time.Time,
 ) error {
-	err := db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
+	if challenge.ConsumedAt != nil || !challenge.ExpiresAt.After(now) || challenge.FailedAttempts >= 5 {
+		challenge.Code = nil
+	}
+	return db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
 		Where("id = ?", challenge.ID).
 		Updates(map[string]any{
+			"code":                   challenge.Code,
 			"code_digest":            challenge.CodeDigest,
 			"expires_at":             challenge.ExpiresAt,
 			"last_sent_at":           challenge.LastSentAt,
@@ -196,15 +200,6 @@ func (VerificationCodeRepository) SaveState(
 			"consumed_at":            challenge.ConsumedAt,
 			"updated_at":             now,
 		}).Error
-	if err != nil {
-		return err
-	}
-	query := db.FromContext(ctx).Model(&model.VerificationEmailDelivery{}).
-		Where("challenge_id = ? AND code IS NOT NULL", challenge.ID)
-	if challenge.ConsumedAt == nil && challenge.ExpiresAt.After(now) && challenge.FailedAttempts < 5 {
-		query = query.Where("code_digest <> ?", challenge.CodeDigest)
-	}
-	return query.UpdateColumn("code", nil).Error
 }
 
 // SessionRepository 是无状态的会话仓储。

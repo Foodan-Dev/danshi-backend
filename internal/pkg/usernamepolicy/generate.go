@@ -1,7 +1,8 @@
 //go:build ignore
 
-// 在尚未发布 migration 18 时运行：go run ./internal/pkg/usernamepolicy/generate.go
-// 已发布后禁止重写旧迁移；Unicode 策略升级必须新增迁移。
+// 本文件仅用于开发时生成数据库字符约束，不参与服务构建或请求处理。
+// 迁移 18 尚未发布时运行：go run ./internal/pkg/usernamepolicy/generate.go
+// 输出由 policy.go 的同一字符集合生成；发布后禁止重写旧迁移，规则升级必须新增迁移。
 package main
 
 import (

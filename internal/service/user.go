@@ -85,7 +85,7 @@ type UserFollowList struct {
 	Pagination pagination.CursorMeta `json:"pagination"`
 }
 
-// UsernameChangeView 是用户本人或用户管理端可见的 用户名 变更记录。
+// UsernameChangeView 是用户本人或用户管理端可见的用户名变更记录。
 type UsernameChangeView struct {
 	ID          uint64     `json:"id"`
 	OldUsername string     `json:"old_username"`
@@ -93,7 +93,7 @@ type UsernameChangeView struct {
 	ChangedAt   ptime.Time `json:"changed_at"`
 }
 
-// UsernameChangeHistory 是 用户名 变更记录列表。
+// UsernameChangeHistory 是用户名变更记录列表。
 type UsernameChangeHistory struct {
 	Changes []UsernameChangeView `json:"changes"`
 }
@@ -192,7 +192,7 @@ func (s *UserService) Profile(ctx context.Context, userID, currentUserID uint64)
 	return &profile, nil
 }
 
-// UsernameHistory 只允许本人读取 用户名 变更历史；管理端通过 AdminService 的用户取证接口读取。
+// UsernameHistory 只允许本人读取用户名变更历史；管理端通过 AdminService 的用户取证接口读取。
 func (s *UserService) UsernameHistory(
 	ctx context.Context, userID, currentUserID uint64,
 ) (*UsernameChangeHistory, error) {

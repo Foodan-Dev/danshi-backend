@@ -24,8 +24,8 @@ type User struct {
 // TableName 返回用户表名。
 func (User) TableName() string { return "users" }
 
-// UsernameClaim 是一个不可篡改的 用户名 占用记录。users.name 保存当前公开身份，
-// 本表保留当前与历史 用户名，避免改名或注销后被其他账号冒用。
+// UsernameClaim 是一个不可篡改的用户名占用记录。users.name 保存当前公开身份，
+// 本表保留当前与历史用户名，避免改名或注销后被其他账号冒用。
 type UsernameClaim struct {
 	ID        uint64 `gorm:"primaryKey"`
 	UserID    uint64
@@ -33,10 +33,10 @@ type UsernameClaim struct {
 	CreatedAt time.Time
 }
 
-// TableName 返回用户 用户名 占用记录表名。
+// TableName 返回用户名占用记录表名。
 func (UsernameClaim) TableName() string { return "user_name_claims" }
 
-// UsernameChangeRecord 是一次已经生效的 用户名 变更事实；审核未通过的候选值不进入本表。
+// UsernameChangeRecord 是一次已经生效的用户名变更事实；审核未通过的候选值不进入本表。
 type UsernameChangeRecord struct {
 	ID          uint64 `gorm:"primaryKey"`
 	UserID      uint64
@@ -45,7 +45,7 @@ type UsernameChangeRecord struct {
 	ChangedAt   time.Time
 }
 
-// TableName 返回 用户名 变更审计表名。
+// TableName 返回用户名变更审计表名。
 func (UsernameChangeRecord) TableName() string { return "user_name_change_records" }
 
 // UserRoleBinding 是用户当前生效的一项管理角色绑定。
@@ -97,11 +97,12 @@ type Follow struct {
 // TableName 返回关注关系表名。
 func (Follow) TableName() string { return "follows" }
 
-// EmailVerificationCode 保存邮箱验证码摘要及频率控制状态。
+// EmailVerificationCode 保存邮箱验证码明文、校验摘要及频率控制状态。
 type EmailVerificationCode struct {
 	ID                  uint64 `gorm:"primaryKey"`
 	Email               string
 	Purpose             VerificationPurpose
+	Code                *string `json:"-"`
 	CodeDigest          string
 	ExpiresAt           time.Time
 	LastSentAt          *time.Time

@@ -319,7 +319,7 @@ func failService(ctx context.Context, c *app.RequestContext, err error) {
 	httpx.Fail(ctx, c, err)
 }
 
-// normalizeUsernameAlias maps the legacy input once without creating a second identity.
+// normalizeUsernameAlias 将旧输入字段映射到用户名，不产生第二份身份数据。
 func normalizeUsernameAlias(fields map[string]json.RawMessage) error {
 	legacy, ok := fields["name"]
 	if !ok {

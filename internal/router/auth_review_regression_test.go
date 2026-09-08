@@ -3,21 +3,17 @@ package router_test
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
-	"github.com/Foodan-Dev/danshi-backend/internal/router"
 	"github.com/Foodan-Dev/danshi-backend/internal/service"
 	"github.com/Foodan-Dev/danshi-backend/internal/testutil"
 )
@@ -127,45 +123,6 @@ func TestAuthReviewRegressions(t *testing.T) {
 		require.Zero(t, sessions, "旧密码不得在重置完成后创建有效会话")
 		status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/login", map[string]any{"identifier": user.Email, "password": "new-password-123"}, "")
 		require.Equal(t, http.StatusOK, status, response.Message)
-	})
-
-	t.Run("provider stalls never block reset responses", func(t *testing.T) {
-		require.NoError(t, gdb.Model(&model.EmailVerificationCode{}).Where("email = ?", user.Email).Update("last_sent_at", time.Now().Add(-2*time.Minute)).Error)
-		blocked := testutil.NewMockEmailSender()
-		release := make(chan struct{})
-		blocked.SetDefault(testutil.EmailBlocked(release))
-		worker := service.NewVerificationEmailDeliveryWorker(database, blocked, service.VerificationEmailDeliveryWorkerOptions{})
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() { defer close(done); worker.Run(ctx) }()
-		defer func() {
-			close(release)
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Error("worker 未能停止")
-			}
-		}()
-		realEngine := server.New(server.WithHandleMethodNotAllowed(true))
-		router.Register(realEngine, router.Deps{Config: cfg, DB: database, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), EmailSender: blocked, EmailDeliveryWorker: worker})
-		for _, email := range []string{user.Email, "unknown-reset@fdueat.com"} {
-			response := make(chan asyncRequestResult, 1)
-			go func() {
-				status, body, raw, err := performJSONRequest(realEngine, http.MethodPost, "/api/v2/auth/password-reset-codes", map[string]any{"email": email}, "")
-				response <- asyncRequestResult{status: status, response: body, raw: raw, err: err}
-			}()
-			select {
-			case result := <-response:
-				require.NoError(t, result.err)
-				require.Equal(t, http.StatusOK, result.status, result.response.Message)
-			case <-time.After(2 * time.Second):
-				t.Fatal("邮件供应商阻塞了 HTTP 响应")
-			}
-		}
-		waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer waitCancel()
-		require.True(t, blocked.WaitForAttempts(waitCtx, 1), "后台 worker 应当执行已提交的任务")
 	})
 }
 

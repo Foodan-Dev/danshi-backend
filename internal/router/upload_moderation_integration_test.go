@@ -598,8 +598,7 @@ func uploadModerationEngine(
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	deps := router.Deps{
 		Config: cfg, DB: database, Log: log, EmailSender: sender,
-		EmailDeliveryWorker: drainingEmailQueue{service.NewVerificationEmailDeliveryWorker(database, sender, service.VerificationEmailDeliveryWorkerOptions{})},
-		ContentModerator:    service.DirectPassContentModerator{}, ImageStorage: storage,
+		ContentModerator: service.DirectPassContentModerator{}, ImageStorage: storage,
 		ImageModerator:    imageModerator,
 		ModerationAlerter: service.DiscardModerationAlerter{},
 	}

@@ -78,7 +78,7 @@ func (h *User) Profile(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
 }
 
-// UsernameHistory 返回当前用户自己的 用户名 修改历史。
+// UsernameHistory 返回当前用户自己的用户名修改历史。
 func (h *User) UsernameHistory(ctx context.Context, c *app.RequestContext) {
 	userID, principal, err := userRequestIdentity(c)
 	var result *service.UsernameChangeHistory
