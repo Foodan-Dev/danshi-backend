@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,10 +169,24 @@ func TestModelsAgainstPostgresSchema(t *testing.T) {
 
 	verification := &model.EmailVerificationCode{
 		Email: "model-verify@fdueat.com", Purpose: model.VerificationPurposeRegistration,
-		Code: ptr("123456"), CodeDigest: "model-code-digest", ExpiresAt: now.Add(10 * time.Minute),
+		CodeDigest: "model-code-digest", ExpiresAt: now.Add(10 * time.Minute),
 		LastSentAt: &now, SendWindowStartedAt: now, SendCount: 1,
 	}
 	insertAndSelect(t, gdb, verification)
+
+	delivery := &model.VerificationEmailDelivery{
+		ChallengeID:   verification.ID,
+		Email:         verification.Email,
+		Purpose:       verification.Purpose,
+		CodeDigest:    strings.Repeat("a", 64),
+		Code:          ptr("123456"),
+		State:         model.VerificationEmailDeliveryPending,
+		Attempts:      0,
+		NextAttemptAt: &now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	insertAndSelect(t, gdb, delivery)
 
 	session := &model.UserSession{
 		UserID: actor.ID, RefreshTokenDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -312,7 +327,7 @@ func tableName(t *testing.T, gdb *gorm.DB, value any) string {
 func assertSchemaColumnParity(t *testing.T, gdb *gorm.DB) {
 	t.Helper()
 	catalog := modelCatalog()
-	require.Len(t, catalog, 33)
+	require.Len(t, catalog, 34)
 
 	var actualTables []string
 	require.NoError(t, gdb.Raw(`
@@ -363,6 +378,7 @@ func modelCatalog() []any {
 		&model.UserSession{}, &model.PostHistory{}, &model.CommentHistory{},
 		&model.ModerationRecord{}, &model.ModerationAlertState{}, &model.DictionarySuggestion{},
 		&model.ImageAccessIntent{}, &model.ImageAccessDelivery{}, &model.ImageModerationRetry{},
+		&model.VerificationEmailDelivery{},
 	}
 }
 

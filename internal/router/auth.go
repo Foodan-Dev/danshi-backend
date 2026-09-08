@@ -11,7 +11,14 @@ import (
 
 func registerAuth(api *route.RouterGroup, deps Deps) {
 	sender := VerificationEmailSender(deps)
-	authService := service.NewAuthService(deps.Config, sender, deps.ContentModerator)
+	delivery := deps.EmailDeliveryWorker
+	if delivery == nil {
+		delivery = service.NewVerificationEmailDeliveryWorker(
+			deps.DB, sender,
+			service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log},
+		)
+	}
+	authService := service.NewAuthServiceWithDelivery(deps.Config, sender, delivery, deps.ContentModerator)
 	authHandler := handler.NewAuth(authService, deps.BusinessMetrics)
 	auth := api.Group("/auth")
 
@@ -30,7 +37,7 @@ func registerAuth(api *route.RouterGroup, deps Deps) {
 	auth.DELETE("/sessions/:id", requireAuth, authHandler.KickSession)
 }
 
-// VerificationEmailSender 装配认证路由同步调用的验证码发送器。
+// VerificationEmailSender 装配路由与后台任务共用的验证码投递器。
 func VerificationEmailSender(deps Deps) service.VerificationEmailSender {
 	if deps.EmailSender != nil {
 		return observeVerificationSender(deps.EmailSender, "unknown", deps.BusinessMetrics)

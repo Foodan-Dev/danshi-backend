@@ -45,6 +45,8 @@ type Deps struct {
 	BusinessMetrics obs.BusinessRecorder
 	// EmailSender 可由测试替换；nil 时 dev 使用日志实现，prod 按配置装配腾讯云 SES。
 	EmailSender service.VerificationEmailSender
+	// EmailDeliveryWorker 可由 server 或测试注入；nil 时由 auth 路由创建默认 outbox worker。
+	EmailDeliveryWorker service.VerificationEmailDeliveryQueue
 	// ContentModerator 可由测试或生产适配器替换；dev 默认直接放行，prod 未配置时 fail-closed。
 	ContentModerator service.ContentModerator
 	// ImageStorage 是上传域使用的对象存储边界。

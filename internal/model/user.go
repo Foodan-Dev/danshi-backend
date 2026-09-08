@@ -97,12 +97,11 @@ type Follow struct {
 // TableName 返回关注关系表名。
 func (Follow) TableName() string { return "follows" }
 
-// EmailVerificationCode 保存邮箱验证码明文、校验摘要及频率控制状态。
+// EmailVerificationCode 保存邮箱验证码摘要及频率控制状态。
 type EmailVerificationCode struct {
 	ID                  uint64 `gorm:"primaryKey"`
 	Email               string
 	Purpose             VerificationPurpose
-	Code                *string `json:"-"`
 	CodeDigest          string
 	ExpiresAt           time.Time
 	LastSentAt          *time.Time

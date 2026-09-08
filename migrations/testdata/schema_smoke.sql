@@ -154,6 +154,7 @@ DO $$ BEGIN
 END $$;
 
 UPDATE users SET name='bob2' WHERE id=2;
+
 DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('old-name@fdueat.com','x','bob')$q$,
     ARRAY['23505'], '历史 name 不得被另一账号接管');
@@ -777,11 +778,11 @@ END $$;
 
 
 \echo ''
-\echo '########## 1d-6. 审核覆盖：标签与用户昵称 ##########'
+\echo '########## 1d-6. 审核覆盖：标签与用户名 ##########'
 DO $$ BEGIN
   PERFORM _assert((SELECT moderation FROM tags WHERE id=301)='pending', '新建标签默认待审（先发后审）');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (user_id,scene,provider,verdict) VALUES (1,'text','tencent_ci','pass')$q$,
-    ARRAY['23514'], '用户对象必须指明审的是昵称还是简介');
+    ARRAY['23514'], '用户对象必须指明审的是用户名还是简介');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (tag_id,scene,provider,verdict) VALUES (301,'image','tencent_ci','pass')$q$,
     ARRAY['23514'], '标签只做文本审核');
   PERFORM _assert_rejects($q$INSERT INTO moderation_records (post_id,tag_id,content_revision,scene,provider,verdict) VALUES (1001,301,2,'text','tencent_ci','pass')$q$,
@@ -802,7 +803,7 @@ UPDATE tags SET moderation='block', deleted_at=now() WHERE id=301;
 DO $$ BEGIN
   PERFORM _assert((SELECT count(*) FROM post_tags WHERE tag_id=301)=1, '标签下架后关联行保留（可恢复）');
   PERFORM _assert((SELECT count(*) FROM tags WHERE id=301 AND deleted_at IS NOT NULL)=1, '违规标签被下架');
-  PERFORM _assert((SELECT count(*) FROM moderation_records WHERE user_id IS NOT NULL AND field='name')=1, '昵称可作为审核对象');
+  PERFORM _assert((SELECT count(*) FROM moderation_records WHERE user_id IS NOT NULL AND field='name')=1, '用户名可作为审核对象');
 END $$;
 -- 恢复误杀
 UPDATE tags SET moderation='pass', deleted_at=NULL WHERE id=301;
@@ -874,14 +875,31 @@ DO $$ BEGIN
 END $$;
 
 \echo ''
-\echo '########## 1g. 验证码明文 ##########'
-UPDATE email_verification_codes SET code='123456';
+\echo '########## 1g. verification_email_deliveries durable outbox ##########'
+INSERT INTO verification_email_deliveries
+    (challenge_id, email, purpose, code_digest, code, next_attempt_at)
+VALUES
+    ((SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com'),
+     'Foo@fdueat.com', 'registration', repeat('e',64), '123456', now());
 DO $$ BEGIN
-  PERFORM _assert_rejects($q$UPDATE email_verification_codes SET code='12x456'$q$,
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','unknown',repeat('e',64),'123456',now())$q$,
+    ARRAY['23514'], '验证码投递用途必须是受支持枚举');
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration','short','123456',now())$q$,
+    ARRAY['23514'], '验证码投递摘要必须为 64 位');
+  PERFORM _assert_rejects($q$INSERT INTO verification_email_deliveries
+    (challenge_id,email,purpose,code_digest,code,next_attempt_at)
+    VALUES ((SELECT id FROM email_verification_codes LIMIT 1),'foo@fdueat.com','registration',repeat('e',64),'12x456',now())$q$,
     ARRAY['23514'], '验证码明文必须是六位数字');
-  PERFORM _assert((SELECT bool_and(code='123456') FROM email_verification_codes), '验证码明文可保存和读取');
+  PERFORM _assert_rejects($q$UPDATE verification_email_deliveries SET state='sent'
+    WHERE challenge_id=(SELECT id FROM email_verification_codes WHERE lower(email)='foo@fdueat.com')$q$,
+    ARRAY['23514'], 'sent 状态必须保留 sent_at');
 END $$;
 
+\echo ''
 \echo '########## 1h. user_sessions 会话与撤销 ##########'
 INSERT INTO user_sessions (id,user_id,refresh_token_digest,device_label,ip,expires_at) VALUES
  (501,1,repeat('a',64),'alice-iphone','203.0.113.9', now()+interval '30 days'),
@@ -1302,7 +1320,7 @@ BEGIN
                     WHERE n.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL) = 0,
                   '所有业务表都有 COMMENT ON TABLE');
   PERFORM _assert((SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relkind='r') = 33, '业务表共 33 张');
+                    WHERE n.nspname='public' AND c.relkind='r') = 34, '业务表共 34 张');
   PERFORM _assert((SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal) >= 20, '触发器数量符合预期下限');
 END $$;
 

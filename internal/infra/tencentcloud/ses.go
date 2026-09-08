@@ -31,7 +31,7 @@ type sesClient interface {
 	) (*ses.SendEmailResponse, error)
 }
 
-// SESVerificationEmailSender 通过腾讯云 SES 模板邮件同步发送注册和密码重置验证码。
+// SESVerificationEmailSender 通过腾讯云 SES 模板邮件投递注册和密码重置验证码。
 type SESVerificationEmailSender struct {
 	client           sesClient
 	fromEmailAddress string

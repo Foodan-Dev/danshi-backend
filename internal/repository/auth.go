@@ -184,13 +184,9 @@ func (VerificationCodeRepository) SaveState(
 	challenge *model.EmailVerificationCode,
 	now time.Time,
 ) error {
-	if challenge.ConsumedAt != nil || !challenge.ExpiresAt.After(now) || challenge.FailedAttempts >= 5 {
-		challenge.Code = nil
-	}
-	return db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
+	err := db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
 		Where("id = ?", challenge.ID).
 		Updates(map[string]any{
-			"code":                   challenge.Code,
 			"code_digest":            challenge.CodeDigest,
 			"expires_at":             challenge.ExpiresAt,
 			"last_sent_at":           challenge.LastSentAt,
@@ -200,6 +196,15 @@ func (VerificationCodeRepository) SaveState(
 			"consumed_at":            challenge.ConsumedAt,
 			"updated_at":             now,
 		}).Error
+	if err != nil {
+		return err
+	}
+	query := db.FromContext(ctx).Model(&model.VerificationEmailDelivery{}).
+		Where("challenge_id = ? AND code IS NOT NULL", challenge.ID)
+	if challenge.ConsumedAt == nil && challenge.ExpiresAt.After(now) && challenge.FailedAttempts < 5 {
+		query = query.Where("code_digest <> ?", challenge.CodeDigest)
+	}
+	return query.UpdateColumn("code", nil).Error
 }
 
 // SessionRepository 是无状态的会话仓储。
