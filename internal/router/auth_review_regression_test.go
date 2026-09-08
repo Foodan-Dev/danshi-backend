@@ -177,3 +177,37 @@ func TestAuthReviewRegressions(t *testing.T) {
 type registrationOnlySender struct{ *testutil.MockEmailSender }
 
 func (registrationOnlySender) PasswordResetConfigured() bool { return false }
+
+func TestRegistrationModerationFailurePreservesVerification(t *testing.T) {
+	h := testutil.NewHarness(t)
+	for _, tc := range []struct {
+		name    string
+		outcome testutil.ContentModerationOutcome
+		status  int
+	}{
+		{"blocked", testutil.ContentVerdict(model.ModerationVerdictBlock, nil, nil), http.StatusConflict},
+		{"review", testutil.ContentVerdict(model.ModerationVerdictReview, nil, nil), http.StatusConflict},
+		{"unavailable", testutil.ContentHTTPFailure(http.StatusServiceUnavailable), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			email := "register-rollback-" + tc.name + "@fdueat.com"
+			sendCode(t, h.Engine, email)
+			code := capturedCode(t, h.Email, email)
+			body := map[string]any{"email": email, "password": "password-123", "username": "rollback_" + tc.name, "verification_code": code}
+			h.Moderation.SetDefaultContent(tc.outcome)
+			status, response, _ := performJSON(t, h.Engine, http.MethodPost, "/api/v2/auth/register", body, "")
+			require.Equal(t, tc.status, status, response.Message)
+			var challenge model.EmailVerificationCode
+			require.NoError(t, h.Database.GORM.Where("email = ?", email).First(&challenge).Error)
+			require.Nil(t, challenge.ConsumedAt)
+			var delivery model.VerificationEmailDelivery
+			require.NoError(t, h.Database.GORM.Where("challenge_id = ?", challenge.ID).First(&delivery).Error)
+			require.NotNil(t, delivery.Code, "审核失败须回滚验证码明文清理")
+			h.Moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictPass, nil, nil))
+			status, response, _ = performJSON(t, h.Engine, http.MethodPost, "/api/v2/auth/register", body, "")
+			require.Equal(t, http.StatusOK, status, response.Message)
+			require.NoError(t, h.Database.GORM.First(&challenge, challenge.ID).Error)
+			require.NotNil(t, challenge.ConsumedAt)
+		})
+	}
+}

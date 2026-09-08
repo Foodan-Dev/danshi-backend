@@ -378,6 +378,12 @@ func (s *AuthService) Register(
 		return nil, apierr.Internal(err)
 	}
 
+	if s.cfg.EmailVerificationRequired {
+		if err := s.consumeVerification(ctx, model.VerificationPurposeRegistration, input.Email, *input.VerificationCode); err != nil {
+			return nil, err
+		}
+	}
+
 	usernameModeration, err := s.moderator.Review(ctx, ModerationRequest{
 		Target: ModerationTargetUser, Field: moderationFieldPtr(model.ModerationFieldName), Text: *input.Username,
 	})
@@ -395,12 +401,6 @@ func (s *AuthService) Register(
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
-	if s.cfg.EmailVerificationRequired {
-		if err := s.consumeVerification(ctx, model.VerificationPurposeRegistration, input.Email, *input.VerificationCode); err != nil {
-			return nil, err
-		}
-	}
-
 	user := &model.User{
 		Email: input.Email, PasswordHash: passwordHash, Username: valueOrEmpty(input.Username),
 		Gender: genderValue(input.Gender),
