@@ -83,7 +83,7 @@ func TestBuildPostViewsExposeImageTiersAndAvatarThumb(t *testing.T) {
 	require.NotNil(t, post.Author.AvatarThumbURL)
 	require.Equal(t, avatar+"?"+imageThumbProcessingQuery, *post.Author.AvatarThumbURL)
 
-	search := searchPostItem(&record, relations, "")
+	search := searchPostItem(&record, relations, "", 1)
 	require.Equal(t, images, search.Images)
 	require.Equal(t, expectedDisplays, search.ImageDisplays)
 	require.Equal(t, expectedThumbs, search.ImageThumbs)
@@ -117,7 +117,7 @@ func TestBuildPostViewsUseEmptyArraysAndNilAvatarThumb(t *testing.T) {
 	require.Equal(t, []any{}, payload["image_displays"])
 	require.Equal(t, []any{}, payload["image_thumbs"])
 
-	search := searchPostItem(&record, repository.PostRelations{}, "")
+	search := searchPostItem(&record, repository.PostRelations{}, "", 1)
 	require.NotNil(t, search.Images)
 	require.NotNil(t, search.ImageDisplays)
 	require.NotNil(t, search.ImageThumbs)

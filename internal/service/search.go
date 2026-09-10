@@ -7,9 +7,7 @@ import (
 	"strings"
 
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
-	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/pagination"
-	"github.com/Foodan-Dev/danshi-backend/internal/pkg/ptime"
 	"github.com/Foodan-Dev/danshi-backend/internal/repository"
 )
 
@@ -21,40 +19,16 @@ type SearchPostsInput struct {
 	Filters ListPostsInput
 }
 
-// SearchPostAuthor 是搜索结果中的作者公开信息。
-type SearchPostAuthor struct {
-	ID             uint64  `json:"id"`
-	Username       string  `json:"username"`
-	AvatarURL      *string `json:"avatar_url"`
-	AvatarThumbURL *string `json:"avatar_thumb_url"`
-}
-
-// SearchPostStats 是搜索卡片使用的帖子计数。
-type SearchPostStats struct {
-	LikeCount    int32 `json:"like_count"`
-	ViewCount    int32 `json:"view_count"`
-	CommentCount int32 `json:"comment_count"`
-}
-
 // SearchHighlight 是经过 HTML 转义后唯一允许包含 em 标签的高亮文本。
 type SearchHighlight struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
 }
 
-// SearchPostItem 是帖子搜索结果项。
+// SearchPostItem 是完整帖子列表项附加搜索高亮；正文仍保留搜索摘要语义。
 type SearchPostItem struct {
-	ID            uint64             `json:"id"`
-	Title         string             `json:"title"`
-	Content       string             `json:"content"`
-	Category      model.PostCategory `json:"category"`
-	Images        []string           `json:"images"`
-	ImageDisplays []string           `json:"image_displays"`
-	ImageThumbs   []string           `json:"image_thumbs"`
-	Author        SearchPostAuthor   `json:"author"`
-	Stats         SearchPostStats    `json:"stats"`
-	Highlight     SearchHighlight    `json:"highlight"`
-	CreatedAt     ptime.Time         `json:"created_at"`
+	PostListItem
+	Highlight SearchHighlight `json:"highlight"`
 }
 
 // SearchPostList 是帖子搜索分页响应。
@@ -125,7 +99,7 @@ func (s *SearchService) Posts(
 	}
 	items := make([]SearchPostItem, 0, len(records))
 	for index := range records {
-		items = append(items, searchPostItem(&records[index], relations, query))
+		items = append(items, searchPostItem(&records[index], relations, query, currentUserID))
 	}
 	return &SearchPostList{Posts: items, Pagination: meta}, nil
 }
@@ -156,28 +130,16 @@ func searchPostItem(
 	record *repository.PostRecord,
 	relations repository.PostRelations,
 	query string,
+	currentUserID uint64,
 ) SearchPostItem {
 	content := searchSnippet(record.Content, searchPostContentRunes)
-	name, avatarURL := record.AuthorName, record.AvatarURL
-	if record.AuthorDeletedAt != nil {
-		name, avatarURL = "已注销用户", nil
-	}
-	images := nonNilStrings(relations.Images[record.ID])
-	imageDisplays, imageThumbs := deriveImageTiers(images)
+	post := buildPostListItem(record, relations, currentUserID)
+	post.Content = content
 	return SearchPostItem{
-		ID: record.ID, Title: record.Title, Content: content, Category: record.Category,
-		Images: images, ImageDisplays: imageDisplays, ImageThumbs: imageThumbs,
-		Author: SearchPostAuthor{
-			ID: record.AuthorID, Username: name, AvatarURL: avatarURL,
-			AvatarThumbURL: avatarThumbURL(avatarURL),
-		},
-		Stats: SearchPostStats{
-			LikeCount: record.LikeCount, ViewCount: record.ViewCount, CommentCount: record.CommentCount,
-		},
+		PostListItem: post,
 		Highlight: SearchHighlight{
 			Title: highlightEscaped(record.Title, query), Content: highlightEscaped(content, query),
 		},
-		CreatedAt: ptime.Time(record.CreatedAt),
 	}
 }
 
