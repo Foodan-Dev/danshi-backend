@@ -5,9 +5,16 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
-// ValidCharacters 接受 Unicode 字母、数字和下划线；规范化、长度和保留名由业务层处理。
+// Normalize 统一 NFKC、首尾空白移除与内部连续普通空格折叠。
+func Normalize(raw string) string {
+	return strings.Join(strings.FieldsFunc(strings.TrimSpace(norm.NFKC.String(raw)), func(r rune) bool { return r == ' ' }), " ")
+}
+
+// ValidCharacters 接受 Unicode 字母、数字、下划线和普通空格；规范化、长度和保留名由业务层处理。
 func ValidCharacters(value string) bool {
 	for _, r := range value {
 		if !allowed(r) {
@@ -17,7 +24,7 @@ func ValidCharacters(value string) bool {
 	return value != ""
 }
 
-func allowed(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) }
+func allowed(r rune) bool { return r == ' ' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) }
 
 // SQLPattern 生成 PostgreSQL U& 字符串内容。显式码点范围配合 C collation，
 // 不使用随数据库 locale 改变含义的 POSIX 字符类别。

@@ -40,7 +40,7 @@ func (UserRepository) FindByEmail(
 func (UserRepository) FindByUsername(ctx context.Context, name string) (*model.User, error) {
 	var user model.User
 	err := db.FromContext(ctx).
-		Where("lower(name) = lower(?) AND deleted_at IS NULL", name).
+		Where("lower(normalize(name, NFKC)) = lower(normalize(?, NFKC)) AND deleted_at IS NULL", name).
 		First(&user).Error
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -66,7 +66,7 @@ func (UserRepository) ClaimUsername(ctx context.Context, userID uint64, name str
 	}
 	var ownerID uint64
 	result = db.FromContext(ctx).Raw(
-		"SELECT user_id FROM user_name_claims WHERE lower(name) = lower(?)", name,
+		"SELECT user_id FROM user_name_claims WHERE lower(normalize(name, NFKC)) = lower(normalize(?, NFKC))", name,
 	).Scan(&ownerID)
 	if result.Error != nil {
 		return result.Error

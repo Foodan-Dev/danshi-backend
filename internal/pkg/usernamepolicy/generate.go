@@ -13,7 +13,12 @@ import (
 )
 
 func main() {
-	const path = "migrations/00018_user_name_identity.sql"
+	for _, path := range []string{"migrations/00018_user_name_identity.sql", "migrations/00022_username_spaces.sql"} {
+		generate(path)
+	}
+}
+
+func generate(path string) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		panic(err)
@@ -25,7 +30,11 @@ func main() {
 	if a < 0 || b < a {
 		panic("missing username policy markers")
 	}
-	sql := "CREATE FUNCTION danshi_valid_username_characters(value text)\nRETURNS boolean LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE\nRETURN (value COLLATE \"C\") ~ U&'" + usernamepolicy.SQLPattern() + "';\n"
+	verb := "CREATE FUNCTION"
+	if strings.Contains(path, "00022") {
+		verb = "CREATE OR REPLACE FUNCTION"
+	}
+	sql := verb + " danshi_valid_username_characters(value text)\nRETURNS boolean LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE\nRETURN (value COLLATE \"C\") ~ U&'" + usernamepolicy.SQLPattern() + "';\n"
 	if err := os.WriteFile(path, []byte(text[:a]+start+sql+text[b:]), 0o644); err != nil {
 		panic(err)
 	}

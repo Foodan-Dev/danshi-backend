@@ -554,7 +554,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 `username_changes`。餐厅、标签等对象的 `name` 不受影响。
 
 注册必填，规范化后长度为 2–24 个 Unicode 字符。应用执行 NFKC、去除首尾空白、
-Unicode Letter/Number/下划线校验和保留名称校验。字符类别由 `usernamepolicy` 的 Go Unicode 表定义，
+内部连续空格折叠、Unicode Letter/Number/下划线/普通空格校验和保留名称校验。字符类别由 `usernamepolicy` 的 Go Unicode 表定义，
 迁移中的 SQL 函数从同一集合生成显式码点范围，并固定 C collation；不依赖数据库 locale
 解释 POSIX 字符类别。数据库同时约束字符、NFKC、首尾空白、长度及唯一归属。
 策略一致性测试检查迁移快照与应用集合；Unicode 集合升级在迁移发布后必须新增迁移。

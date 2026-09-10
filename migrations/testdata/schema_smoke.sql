@@ -109,7 +109,11 @@ DO $$ BEGIN
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-width@fdueat.com','x','Ａlice')$q$,
     ARRAY['23514'], 'users.name 必须先做 NFKC 归一化');
   PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('name-symbol@fdueat.com','x','alice-name')$q$,
-    ARRAY['23514'], 'users.name 只接受文字、数字和下划线');
+    ARRAY['23514'], 'users.name 只接受文字、数字、下划线和普通空格');
+  PERFORM _assert(danshi_normalize_username('  Ut   美食  ') = 'Ut 美食', 'SQL 用户名空格规范化');
+  PERFORM _assert(danshi_valid_username_characters('Ut 美食'), 'SQL 字符规则允许内部普通空格');
+  PERFORM _assert_rejects($q$INSERT INTO users (email,password_hash,name) VALUES ('double-space@fdueat.com','x','Ut  美食')$q$,
+    ARRAY['23514'], 'users.name 必须折叠连续空格');
   PERFORM _assert((SELECT count(*) FROM user_name_claims WHERE user_id IN (1,2,3))=3,
                   '直接创建用户同时追加 name 占用记录');
 

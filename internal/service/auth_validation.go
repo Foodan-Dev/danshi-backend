@@ -5,8 +5,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/Foodan-Dev/danshi-backend/internal/apierr"
 	"github.com/Foodan-Dev/danshi-backend/internal/model"
 	"github.com/Foodan-Dev/danshi-backend/internal/pkg/passwordx"
@@ -79,7 +77,7 @@ func normalizeRegister(input RegisterInput) (RegisterInput, error) {
 }
 
 func normalizeUsername(raw string) (string, error) {
-	name := strings.TrimSpace(norm.NFKC.String(raw))
+	name := usernamepolicy.Normalize(raw)
 	length := utf8.RuneCountInString(name)
 	if length == 0 {
 		return "", apierr.InvalidField("username", apierr.FieldRequired, "用户名不能为空")
@@ -91,7 +89,7 @@ func normalizeUsername(raw string) (string, error) {
 		return "", apierr.InvalidField("username", apierr.FieldTooLong, "用户名不能超过 24 个字符")
 	}
 	if !usernamepolicy.ValidCharacters(name) {
-		return "", apierr.InvalidField("username", apierr.FieldInvalidFormat, "用户名只能包含文字、数字和下划线")
+		return "", apierr.InvalidField("username", apierr.FieldInvalidFormat, "用户名只能包含文字、数字、下划线和空格")
 	}
 	if reservedUsername(name) {
 		return "", apierr.InvalidField("username", apierr.FieldInvalidFormat, "该用户名不可使用")
