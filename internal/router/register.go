@@ -72,8 +72,6 @@ type Deps struct {
 //  2. Recovery     兜住后面所有业务中间件里的 panic
 //  3. RequestID    尽早分配，后续日志才带得上
 //  4. ErrorHandler 在 UoW 之外——UoW 要能看到 abort 状态决定回滚
-//  5. InFlight     只匹配发验证码路径，必须在 UoW 借连接之前拒绝过载请求
-//  6. CORS         在业务之前，预检请求不该进到 UoW
 //  5. InFlight     共享保护两条发验证码路径，必须在 UoW 借连接之前拒绝过载请求
 //  6. CORS         在业务之前，预检请求不该进到 UoW
 //  7. UnitOfWork   只包业务路由，不包探针（探针不该开事务）

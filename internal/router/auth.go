@@ -11,14 +11,8 @@ import (
 
 func registerAuth(api *route.RouterGroup, deps Deps) {
 	sender := VerificationEmailSender(deps)
-	delivery := deps.EmailDeliveryWorker
-	if delivery == nil {
-		delivery = service.NewVerificationEmailDeliveryWorker(
-			deps.DB, sender,
-			service.VerificationEmailDeliveryWorkerOptions{Log: deps.Log},
-		)
-	}
-	authService := service.NewAuthServiceWithDelivery(deps.Config, sender, delivery, deps.ContentModerator)
+	// 投递队列由进程入口显式注入并管理生命周期；缺失时服务返回 503。
+	authService := service.NewAuthServiceWithDelivery(deps.Config, sender, deps.EmailDeliveryWorker, deps.ContentModerator)
 	authHandler := handler.NewAuth(authService, deps.BusinessMetrics)
 	auth := api.Group("/auth")
 

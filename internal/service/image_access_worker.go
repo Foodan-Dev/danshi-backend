@@ -22,11 +22,6 @@ const (
 	defaultImageAccessMaxUnknownChecks = 12
 )
 
-// ImageAccessTxRunner 让 worker 的 claim/finalize 各自使用短事务。
-type ImageAccessTxRunner interface {
-	RunInTx(ctx context.Context, fn func(context.Context) error) error
-}
-
 type imageAccessOutboxStore interface {
 	ClaimDue(context.Context, time.Time, time.Time, string, int) ([]repository.ImageAccessDeliveryClaim, error)
 	UpdateClaim(context.Context, repository.ImageAccessDeliveryClaim, map[string]any) (bool, error)
@@ -58,7 +53,7 @@ type ImageAccessWorkerResult struct {
 
 // ImageAccessWorker 最终收敛 COS ACL 与 EdgeOne 精确刷新任务。
 type ImageAccessWorker struct {
-	tx       ImageAccessTxRunner
+	tx       TxRunner
 	store    imageAccessOutboxStore
 	storage  ImageStorage
 	provider ImageCachePurgeTaskProvider
@@ -67,7 +62,7 @@ type ImageAccessWorker struct {
 
 // NewImageAccessWorker 创建一次性批处理 worker；调用方负责周期调度。
 func NewImageAccessWorker(
-	tx ImageAccessTxRunner,
+	tx TxRunner,
 	storage ImageStorage,
 	provider ImageCachePurgeTaskProvider,
 	options ImageAccessWorkerOptions,

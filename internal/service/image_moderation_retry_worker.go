@@ -56,7 +56,7 @@ type ImageModerationRetryWorkerResult struct {
 
 // ImageModerationRetryWorker 对首次送审失败的图片执行有界补审。
 type ImageModerationRetryWorker struct {
-	tx        ImageAccessTxRunner
+	tx        TxRunner
 	store     imageModerationRetryStore
 	moderator ImageModerator
 	applier   ImageModerationResultApplier
@@ -65,7 +65,7 @@ type ImageModerationRetryWorker struct {
 
 // NewImageModerationRetryWorker 创建一次性批处理 worker；调用方负责周期调度。
 func NewImageModerationRetryWorker(
-	tx ImageAccessTxRunner,
+	tx TxRunner,
 	moderator ImageModerator,
 	applier ImageModerationResultApplier,
 	options ImageModerationRetryWorkerOptions,

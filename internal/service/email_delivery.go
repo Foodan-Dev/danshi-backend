@@ -56,7 +56,7 @@ type VerificationEmailDeliveryWorkerResult struct {
 
 // VerificationEmailDeliveryWorker 负责验证码邮件的提交后投递和失败重试。
 type VerificationEmailDeliveryWorker struct {
-	tx     ImageAccessTxRunner
+	tx     TxRunner
 	store  repository.VerificationEmailDeliveryRepository
 	sender VerificationEmailSender
 	opts   VerificationEmailDeliveryWorkerOptions
@@ -65,7 +65,7 @@ type VerificationEmailDeliveryWorker struct {
 
 // NewVerificationEmailDeliveryWorker 创建验证码邮件 outbox worker。
 func NewVerificationEmailDeliveryWorker(
-	tx ImageAccessTxRunner,
+	tx TxRunner,
 	sender VerificationEmailSender,
 	opts VerificationEmailDeliveryWorkerOptions,
 ) *VerificationEmailDeliveryWorker {
