@@ -258,13 +258,8 @@ func (s *UserService) Update(
 	}
 	if usernameChanged {
 		// ClaimUsername 保留稳定的业务错误；users 上的触发器仍是直写/导入场景的数据库兜底。
-		if err := s.users.ClaimUsername(ctx, userID, *input.Username, time.Now().UTC()); err != nil {
-			if repository.IsUniqueViolation(err, "uq_user_name_claims_name_lower") ||
-				repository.IsUniqueViolation(err, "uq_users_name_lower") ||
-				errors.Is(err, repository.ErrAlreadyExists) {
-				return nil, apierr.Conflict(apierr.BizUsernameTaken, "用户名已被占用")
-			}
-			return nil, apierr.Internal(err)
+		if err := claimUsername(ctx, s.users, userID, *input.Username); err != nil {
+			return nil, err
 		}
 	}
 	if input.AvatarURLSet {
@@ -565,6 +560,14 @@ func (s *UserService) reviewUserField(
 		return ModerationResult{}, err
 	}
 	record := moderationRecordForUser(userID, field, result)
+	if field == model.ModerationFieldName {
+		revision, err := s.users.UsernameRevision(ctx, userID)
+		if err != nil {
+			return ModerationResult{}, apierr.Internal(err)
+		}
+		record.UsernameCandidate = &content
+		record.UsernameRevision = &revision
+	}
 	if err := s.users.CreateModerationRecord(ctx, record); err != nil {
 		return ModerationResult{}, apierr.Internal(err)
 	}

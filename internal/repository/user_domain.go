@@ -288,3 +288,11 @@ const userListColumns = `
 		SELECT 1 FROM follows viewer_follow
 		WHERE viewer_follow.follower_id = ? AND viewer_follow.following_id = u.id
 	) END AS is_following`
+
+// UsernameRevision 返回最近一次已生效改名的审计 ID；注册后的初始版本为 0。
+// 调用方持有用户行锁，使版本检查与审核/改名串行化。
+func (UserRepository) UsernameRevision(ctx context.Context, userID uint64) (uint64, error) {
+	var revision uint64
+	err := db.FromContext(ctx).Raw("SELECT COALESCE(max(id), 0) FROM user_name_change_records WHERE user_id = ?", userID).Scan(&revision).Error
+	return revision, err
+}

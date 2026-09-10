@@ -278,7 +278,7 @@ func (AdminRepository) FindPendingModerationPage(
 				WHEN mr.comment_id IS NOT NULL THEN c.content
 				WHEN mr.image_asset_id IS NOT NULL THEN image.public_url
 				WHEN mr.tag_id IS NOT NULL THEN tag.name
-				WHEN mr.field = 'name' THEN target_user.name
+				WHEN mr.field = 'name' THEN mr.username_candidate
 				WHEN mr.field = 'bio' THEN target_user.bio
 			END AS content
 		FROM queue_items
