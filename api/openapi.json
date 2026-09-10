@@ -10126,6 +10126,37 @@
             },
             "description": "Unprocessable Entity"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -15100,6 +15131,37 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "POST /api/v2/auth/register",
@@ -22714,6 +22776,37 @@
               }
             },
             "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "nullable": true,
+                      "type": "object"
+                    },
+                    "error_code": {
+                      "$ref": "#/components/schemas/BizCode"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "data",
+                    "error_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {

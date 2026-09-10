@@ -27,7 +27,7 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 		binding(http.MethodPost, "/api/v2/auth/password-resets", passwordResetConfirmRequest{}, nil,
 			http.StatusBadRequest),
 		binding(http.MethodPost, "/api/v2/auth/register", registerRequest{}, service.AuthResult{},
-			http.StatusBadRequest, http.StatusConflict),
+			http.StatusBadRequest, http.StatusConflict, http.StatusServiceUnavailable),
 		binding(http.MethodPost, "/api/v2/auth/login", loginRequest{}, service.AuthResult{},
 			http.StatusUnauthorized, http.StatusForbidden),
 		binding(http.MethodPost, "/api/v2/auth/refresh", refreshRequest{}, service.TokenResult{},
@@ -42,7 +42,7 @@ func authAndUserOpenAPIBindings() []apicontract.TypedRoute {
 		getBinding("/api/v2/users/:user_id/username-history", apicontract.NoQuery{}, service.UsernameChangeHistory{},
 			http.StatusForbidden),
 		binding(http.MethodPut, "/api/v2/users/:user_id", updateUserRequest{}, service.UserUpdateResult{},
-			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusServiceUnavailable),
+			http.StatusBadRequest, http.StatusForbidden, http.StatusConflict, http.StatusTooManyRequests, http.StatusServiceUnavailable),
 		queryBinding(http.MethodDelete, "/api/v2/users/:user_id", apicontract.NoQuery{}, nil,
 			service.UserDeleteResult{}, http.StatusForbidden),
 		getBinding("/api/v2/users/:user_id/posts", userPostsQuery{}, service.PostList{},
@@ -218,7 +218,7 @@ func moderationAndAdminOpenAPIBindings() []apicontract.TypedRoute {
 		getBinding("/api/v2/admin/moderation-records/pending", moderationPendingQuery{}, service.AdminModerationList{},
 			http.StatusUnprocessableEntity),
 		binding(http.MethodPut, "/api/v2/admin/moderation-records/:moderation_record_id/review", adminManualReviewRequest{}, service.AdminReviewResult{},
-			http.StatusConflict),
+			http.StatusConflict, http.StatusTooManyRequests),
 	}
 }
 

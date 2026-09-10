@@ -255,7 +255,7 @@ func (s *AuthService) SendPasswordResetCode(ctx context.Context, rawEmail string
 		return apierr.Internal(err)
 	}
 	if exists {
-		// 与注销串行化，避免账号在状态落库后、发信前被软删除。
+		// 请求事务内与注销串行化；异步投递前由 worker 再检查账号及验证码有效性。
 		user, err = s.users.LockByID(ctx, user.ID)
 		if errors.Is(err, repository.ErrNotFound) {
 			exists = false
@@ -315,7 +315,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, input PasswordResetInpu
 	if err != nil {
 		return err
 	}
-	if err := validatePassword(input.NewPassword, true); err != nil {
+	if err := validatePasswordField("new_password", input.NewPassword, true); err != nil {
 		return err
 	}
 	if err := validateVerificationCode(&input.VerificationCode); err != nil {
@@ -724,7 +724,7 @@ func (s *AuthService) enqueueVerificationEmail(
 	); err != nil {
 		return apierr.Internal(err)
 	}
-	// HTTP UoW 提交成功后立刻尝试一次；若没有事务回调队列，则交给后台 job 扫描。
+	// 事务提交后唤醒 worker；Kick 不等待发信，周期扫描补偿丢失的唤醒信号。
 	dbinfra.AfterCommit(ctx, func(afterCommitCtx context.Context) {
 		s.deliveries.Kick(afterCommitCtx)
 	})

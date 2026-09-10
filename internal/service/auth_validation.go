@@ -33,18 +33,22 @@ func emailDomain(email string) string {
 }
 
 func validatePassword(password string, registering bool) error {
+	return validatePasswordField("password", password, registering)
+}
+
+func validatePasswordField(field, password string, registering bool) error {
 	if password == "" {
-		return apierr.InvalidField("password", apierr.FieldRequired, "密码不能为空")
+		return apierr.InvalidField(field, apierr.FieldRequired, "密码不能为空")
 	}
 	if !registering {
 		return nil
 	}
 	length := utf8.RuneCountInString(password)
 	if length < 8 {
-		return apierr.InvalidField("password", apierr.FieldTooShort, "密码不能少于 8 个字符")
+		return apierr.InvalidField(field, apierr.FieldTooShort, "密码不能少于 8 个字符")
 	}
 	if length > 64 || len(password) > passwordx.MaxLen {
-		return apierr.InvalidField("password", apierr.FieldTooLong, "密码不能超过 64 个字符且不能超过 72 字节")
+		return apierr.InvalidField(field, apierr.FieldTooLong, "密码不能超过 64 个字符且不能超过 72 字节")
 	}
 	return nil
 }
