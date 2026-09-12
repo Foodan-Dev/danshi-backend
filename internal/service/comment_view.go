@@ -76,11 +76,11 @@ func buildCommentAuthor(
 	user, exists := relations.Users[userID]
 	if !exists || user.DeletedAt != nil {
 		return CommentAuthorView{
-			ID: userID, Name: "已注销用户", IsFollowing: relations.Following[userID],
+			ID: userID, Username: "已注销用户", IsFollowing: relations.Following[userID],
 		}
 	}
 	return CommentAuthorView{
-		ID: userID, Name: user.Name, AvatarURL: user.AvatarURL,
+		ID: userID, Username: user.Name, AvatarURL: user.AvatarURL,
 		IsFollowing: relations.Following[userID],
 	}
 }

@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -159,6 +160,19 @@ func NewEngine(t testing.TB, dependencies router.Deps) *server.Hertz {
 		server.WithHandleMethodNotAllowed(true),
 		hertzconfig.Option{F: func(_ *hertzconfig.Options) {}},
 	)
+	if dependencies.EmailDeliveryWorker == nil {
+		dependencies.EmailDeliveryWorker = synchronousEmailQueue{service.NewVerificationEmailDeliveryWorker(
+			dependencies.DB, router.VerificationEmailSender(dependencies), service.VerificationEmailDeliveryWorkerOptions{},
+		)}
+	}
 	router.Register(engine, dependencies)
 	return engine
 }
+
+// synchronousEmailQueue 让业务测试在响应后直接断言捕获邮件。
+// 生产异步边界使用真实 worker 单独回归，不能依赖该测试适配器推断请求耗时。
+type synchronousEmailQueue struct {
+	*service.VerificationEmailDeliveryWorker
+}
+
+func (q synchronousEmailQueue) Kick(ctx context.Context) { _, _ = q.RunBatch(ctx) }

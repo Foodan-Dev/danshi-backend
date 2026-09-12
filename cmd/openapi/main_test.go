@@ -18,7 +18,7 @@ import (
 
 const repositoryCodesPath = "../../internal/apierr/codes.go"
 
-func TestRepositoryRegistryGenerates99ValidOperations(t *testing.T) {
+func TestRepositoryRegistryGenerates102ValidOperations(t *testing.T) {
 	hlog.SetOutput(io.Discard)
 	encoded, err := generateSpec(repositoryCodesPath)
 	require.NoError(t, err)
@@ -32,7 +32,7 @@ func TestRepositoryRegistryGenerates99ValidOperations(t *testing.T) {
 	for _, item := range document.Paths.Map() {
 		operations += len(item.Operations())
 	}
-	require.Equal(t, 99, operations)
+	require.Equal(t, 102, operations)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts").Post.RequestBody)
 	require.NotNil(t, document.Paths.Value("/api/v2/posts/{post_id}").Get.Security)
 	deleteUser := document.Paths.Value("/api/v2/users/{user_id}").Delete
@@ -40,6 +40,10 @@ func TestRepositoryRegistryGenerates99ValidOperations(t *testing.T) {
 	require.Nil(t, deleteUser.RequestBody)
 	require.NotNil(t, deleteUser.Responses.Value("403"))
 	require.Nil(t, document.Paths.Value("/api/v2/config").Get.Security)
+	passwordResetRequest := document.Components.Schemas["passwordResetRequest"].Value
+	require.Equal(t, []string{"email"}, passwordResetRequest.Required)
+	passwordResetConfirm := document.Components.Schemas["passwordResetConfirmRequest"].Value
+	require.Equal(t, []string{"email", "verification_code", "new_password"}, passwordResetConfirm.Required)
 	require.Equal(t,
 		[]string{"200", "400", "401", "403", "404", "409", "422", "500", "503"},
 		document.Paths.Value("/api/v2/posts").Post.Responses.Keys(),

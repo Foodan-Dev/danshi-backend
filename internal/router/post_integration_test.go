@@ -1191,7 +1191,7 @@ func testPostListMatrix(
 	decodeData(t, response, &departedList)
 	require.Len(t, departedList.Posts, 1)
 	require.Equal(t, departedPost.Post.ID, departedList.Posts[0].ID)
-	require.Equal(t, "已注销用户", departedList.Posts[0].Author.Name)
+	require.Equal(t, "已注销用户", departedList.Posts[0].Author.Username)
 	require.Nil(t, departedList.Posts[0].Author.AvatarURL)
 }
 

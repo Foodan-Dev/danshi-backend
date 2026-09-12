@@ -126,6 +126,7 @@ func (s *ModerationService) ManualReview(
 		PostID: original.PostID, CommentID: original.CommentID,
 		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
 		Field: original.Field, ContentRevision: original.ContentRevision, Scene: original.Scene,
+		UsernameCandidate: original.UsernameCandidate, UsernameRevision: original.UsernameRevision,
 		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
 		Labels: labels, Score: input.Score, RawResponse: input.RawResponse,
 		ReviewerID: &input.ReviewerID, ReviewedAt: &now,
@@ -137,15 +138,21 @@ func (s *ModerationService) ManualReview(
 		}
 		return nil, apierr.Internal(err)
 	}
-	if original.ImageAssetID != nil {
-		if err := s.applyManualImageVerdict(
-			ctx, *original.ImageAssetID, imagePostIDs, imageAssets, record.ID, input.Verdict,
-		); err != nil {
+	switch {
+	case original.ImageAssetID != nil:
+		if err := s.applyManualImageVerdict(ctx, *original.ImageAssetID, imagePostIDs, imageAssets, record.ID, input.Verdict); err != nil {
 			return nil, apierr.Internal(err)
 		}
-	} else if err := s.moderation.ApplyManualTextVerdict(ctx, original, input.Verdict); err != nil {
-		return nil, apierr.Internal(err)
+	case original.UserID != nil && original.Field != nil && *original.Field == model.ModerationFieldName:
+		if err := applyManualUsernameVerdict(ctx, original, input.Verdict); err != nil {
+			return nil, err
+		}
+	default:
+		if err := s.moderation.ApplyManualTextVerdict(ctx, original, input.Verdict); err != nil {
+			return nil, apierr.Internal(err)
+		}
 	}
+
 	if input.Verdict != model.ModerationVerdictPass {
 		s.alerter.Alert(ctx, manualReviewAlert(original, input, record))
 	}
@@ -359,6 +366,7 @@ func postManualRecord(
 		PostID: original.PostID, CommentID: original.CommentID,
 		ImageAssetID: original.ImageAssetID, TagID: original.TagID, UserID: original.UserID,
 		Field: original.Field, ContentRevision: original.ContentRevision, Scene: original.Scene,
+		UsernameCandidate: original.UsernameCandidate, UsernameRevision: original.UsernameRevision,
 		Provider: model.ModerationProviderManual, Verdict: input.Verdict,
 		Labels: pq.StringArray{}, RawResponse: input.RawResponse,
 		ReviewerID: &input.ReviewerID, ReviewedAt: &now,

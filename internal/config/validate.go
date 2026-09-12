@@ -220,6 +220,9 @@ func validateSESSubject(c Config, add func(string, ...any)) {
 	if !validEmailHeaderValue(c.TencentSESSubject) {
 		add("TENCENT_SES_SUBJECT 不能为空且不能包含控制字符")
 	}
+	if !validEmailHeaderValue(c.TencentSESResetSubject) {
+		add("TENCENT_SES_RESET_SUBJECT 不能为空且不能包含控制字符")
+	}
 }
 
 func validBareEmail(value string) bool {

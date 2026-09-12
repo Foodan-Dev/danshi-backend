@@ -69,7 +69,8 @@ func TestUserDomainAgainstPostgres(t *testing.T) {
 	})
 
 	t.Run("review and block keep user fields and record evidence", func(t *testing.T) {
-		testUserModerationSemantics(t, gdb, database, owner)
+		reviewOwner := registerPostTestUser(t, engine, sender, "monthly-review@fdueat.com", "审核用户")
+		testUserModerationSemantics(t, gdb, database, reviewOwner)
 	})
 
 	t.Run("posts and favorites visibility", func(t *testing.T) {
@@ -103,6 +104,7 @@ func testUserRouteInventory(t *testing.T, engine *server.Hertz) {
 	}
 	require.ElementsMatch(t, []string{
 		"GET /api/v2/users/:user_id",
+		"GET /api/v2/users/:user_id/username-history",
 		"PUT /api/v2/users/:user_id",
 		"DELETE /api/v2/users/:user_id",
 		"GET /api/v2/users/:user_id/posts",
@@ -213,13 +215,13 @@ func testUserProfileUpdate(
 		Update("avatar_image_asset_id", oldAvatar.ID).Error)
 
 	status, response, _ := performJSON(t, engine, http.MethodPut, userPath(owner.User.ID), map[string]any{
-		"name": "更新昵称", "bio": "更新简介", "gender": model.GenderOther,
+		"username": "更新昵称", "bio": "更新简介", "gender": model.GenderOther,
 		"avatar_url": newAvatar.PublicURL, "hometown": "已删除字段",
 	}, owner.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var result service.UserUpdateResult
 	decodeData(t, response, &result)
-	require.Equal(t, "更新昵称", result.User.Name)
+	require.Equal(t, "更新昵称", result.User.Username)
 	require.Equal(t, "更新简介", *result.User.Bio)
 	require.Equal(t, newAvatar.PublicURL, *result.User.AvatarURL)
 	require.Equal(t, owner.User.Email, *result.User.Email)
@@ -236,8 +238,26 @@ func testUserProfileUpdate(
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
 		Where("user_id = ?", owner.User.ID).Order("id").Pluck("field", &fields).Error)
 	require.ElementsMatch(t, []model.ModerationField{
-		model.ModerationFieldName, model.ModerationFieldBio,
+		model.ModerationFieldName, model.ModerationFieldName, model.ModerationFieldBio,
 	}, fields)
+
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(owner.User.ID)+"/username-history", nil, owner.Token)
+	require.Equal(t, http.StatusOK, status)
+	var history service.UsernameChangeHistory
+	decodeData(t, response, &history)
+	require.Len(t, history.Changes, 1)
+	require.Equal(t, "资料主人", history.Changes[0].OldUsername)
+	require.Equal(t, "更新昵称", history.Changes[0].NewUsername)
+	var nameChange model.UsernameChangeRecord
+	require.NoError(t, gdb.First(&nameChange, history.Changes[0].ID).Error)
+	require.Error(t, gdb.Model(&model.UsernameChangeRecord{}).
+		Where("id = ?", nameChange.ID).Update("new_name", "篡改").Error)
+	require.Error(t, gdb.Delete(&model.UsernameChangeRecord{}, nameChange.ID).Error)
+	status, response, _ = performJSON(t, engine, http.MethodGet,
+		userPath(owner.User.ID)+"/username-history", nil, viewer.Token)
+	require.Equal(t, http.StatusForbidden, status)
+	require.Equal(t, apierr.BizNotOwner, response.ErrorCode)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(owner.User.ID), map[string]any{
 		"bio": nil,
@@ -245,13 +265,19 @@ func testUserProfileUpdate(
 	require.Equal(t, http.StatusOK, status)
 	decodeData(t, response, &result)
 	require.Nil(t, result.User.Bio)
-	require.Equal(t, "更新昵称", result.User.Name, "未提交字段必须保持原值")
+	require.Equal(t, "更新昵称", result.User.Username, "未提交字段必须保持原值")
 	require.Equal(t, newAvatar.PublicURL, *result.User.AvatarURL)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(owner.User.ID), map[string]any{
-		"name": "越权更新",
+		"username": "越权更新",
 	}, viewer.Token)
 	require.Equal(t, http.StatusForbidden, status)
+
+	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(viewer.User.ID), map[string]any{
+		"username": "资料主人",
+	}, viewer.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizUsernameTaken, response.ErrorCode, "旧 name 必须继续归原账号占用")
 }
 
 func testUserSelfDeletion(
@@ -315,7 +341,7 @@ func testUserSelfDeletion(
 	require.Equal(t, http.StatusUnauthorized, status, "注销账号不得再次登录")
 
 	status, response, _ = performJSON(t, engine, http.MethodPost, "/api/v2/auth/register", map[string]any{
-		"email": email, "password": "password-123", "verification_code": "123456",
+		"email": email, "password": "password-123", "verification_code": "123456", "username": "deleted_name",
 	}, "")
 	require.Equal(t, http.StatusConflict, status, "注销不得释放邮箱唯一性")
 	require.Equal(t, apierr.BizEmailTaken, response.ErrorCode)
@@ -343,7 +369,7 @@ func testUserSelfDeletion(
 	require.Equal(t, http.StatusOK, status)
 	var detail service.PostDetail
 	decodeData(t, response, &detail)
-	require.Equal(t, "已注销用户", detail.Author.Name)
+	require.Equal(t, "已注销用户", detail.Author.Username)
 	require.Nil(t, detail.Author.AvatarURL)
 }
 
@@ -354,21 +380,23 @@ func testUserModerationSemantics(
 	owner service.AuthResult,
 ) {
 	t.Helper()
+	var before model.User
+	require.NoError(t, gdb.First(&before, owner.User.ID).Error)
+	moderation := testutil.NewMockModeration()
+	moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictReview, nil, nil))
 	alerter := &captureUserModerationAlerter{}
-	reviewService := service.NewUserService(
-		fixedVerdictModerator(model.ModerationVerdictReview), alerter,
-	)
-	reviewName := "需人工复核昵称"
-	err := database.RunInTx(context.Background(), func(ctx context.Context) error {
-		_, updateErr := reviewService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{
-			Name: &reviewName, NameSet: true,
-		})
-		return updateErr
+	reviewEngine := testutil.NewEngine(t, appRouter.Deps{
+		Config: authTestConfig(), DB: database, ContentModerator: moderation,
+		UserModerationAlerter: alerter,
 	})
-	require.NoError(t, err)
+	reviewName := "需人工复核昵称"
+	status, response, _ := performJSON(t, reviewEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"username": reviewName}, owner.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentUnderAudit, response.ErrorCode)
 	var stored model.User
 	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
-	require.Equal(t, reviewName, stored.Name, "review 必须保持新昵称")
+	require.Equal(t, before.Username, stored.Username, "review 不得写入候选 name")
 	var reviewCount int64
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).Where(
 		"user_id = ? AND field = ? AND verdict = ?",
@@ -377,17 +405,23 @@ func testUserModerationSemantics(
 	require.EqualValues(t, 1, reviewCount)
 	require.Empty(t, alerter.all())
 
-	blockService := service.NewUserService(
-		fixedVerdictModerator(model.ModerationVerdictBlock), alerter,
-	)
-	blockBio := "机审违规但等待管理员处置"
-	err = database.RunInTx(context.Background(), func(ctx context.Context) error {
-		_, updateErr := blockService.Update(ctx, owner.User.ID, owner.User.ID, service.UpdateUserInput{
-			Bio: &blockBio, BioSet: true,
-		})
-		return updateErr
+	moderation.SetDefaultContent(testutil.ContentVerdict(model.ModerationVerdictBlock, nil, nil))
+	blockEngine := testutil.NewEngine(t, appRouter.Deps{
+		Config: authTestConfig(), DB: database, ContentModerator: moderation,
+		UserModerationAlerter: alerter,
 	})
-	require.NoError(t, err)
+	blockName := "违规昵称"
+	status, response, _ = performJSON(t, blockEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"username": blockName}, owner.Token)
+	require.Equal(t, http.StatusConflict, status)
+	require.Equal(t, apierr.BizContentRejected, response.ErrorCode)
+	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
+	require.Equal(t, before.Username, stored.Username, "block 不得写入候选 name")
+
+	blockBio := "机审违规但等待管理员处置"
+	status, response, _ = performJSON(t, blockEngine, http.MethodPut,
+		userPath(owner.User.ID), map[string]any{"bio": blockBio}, owner.Token)
+	require.Equal(t, http.StatusOK, status)
 	require.NoError(t, gdb.First(&stored, owner.User.ID).Error)
 	require.Equal(t, blockBio, *stored.Bio, "block 不得自行重置简介或封禁用户")
 	var blockCount int64
@@ -397,6 +431,9 @@ func testUserModerationSemantics(
 	).Count(&blockCount).Error)
 	require.EqualValues(t, 1, blockCount)
 	require.Equal(t, []service.UserModerationAlert{{
+		UserID: owner.User.ID, Field: model.ModerationFieldName,
+		Verdict: model.ModerationVerdictBlock, Labels: []string{},
+	}, {
 		UserID: owner.User.ID, Field: model.ModerationFieldBio,
 		Verdict: model.ModerationVerdictBlock, Labels: []string{},
 	}}, alerter.all())
@@ -470,15 +507,15 @@ func testUserProfileBoundaries(
 	moderation := testutil.NewMockModeration()
 	engine := newUserTestEngine(t, cfg, database, sender, moderation)
 
-	maxName := strings.Repeat("界", 100)
+	maxName := strings.Repeat("界", 24)
 	maxBio := strings.Repeat("文", 500)
 	status, response, _ := performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
-		"name": maxName, "bio": maxBio, "gender": model.GenderOther,
+		"username": maxName, "bio": maxBio, "gender": model.GenderOther,
 	}, actor.Token)
 	require.Equal(t, http.StatusOK, status, "error_code=%s message=%s", response.ErrorCode, response.Message)
 	var updated service.UserUpdateResult
 	decodeData(t, response, &updated)
-	require.Equal(t, maxName, updated.User.Name)
+	require.Equal(t, maxName, updated.User.Username)
 	require.Equal(t, maxBio, *updated.User.Bio)
 	require.Equal(t, model.GenderOther, *updated.User.Gender)
 	moderation.RequireContentCalls(t, 2)
@@ -503,11 +540,10 @@ func testUserProfileBoundaries(
 	moderation.RequireContentCalls(t, 2)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
-		"name": "   ",
+		"username": "   ",
 	}, actor.Token)
-	require.Equal(t, http.StatusOK, status)
-	decodeData(t, response, &updated)
-	require.Empty(t, updated.User.Name, "昵称空白输入按现有契约归一为空字符串")
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	requireAuthFieldError(t, response, "username", apierr.FieldRequired)
 	moderation.RequireContentCalls(t, 2)
 
 	status, response, _ = performJSON(t, engine, http.MethodPut, userPath(actor.User.ID), map[string]any{
@@ -525,14 +561,14 @@ func testUserProfileBoundaries(
 	failureEngine := newUserTestEngine(t, cfg, database, sender, failureModeration)
 	status, response, _ = performJSON(t, failureEngine, http.MethodPut,
 		userPath(failureActor.User.ID), map[string]any{
-			"name": "第一字段已通过", "bio": "第二字段失败",
+			"username": "第一字段已通过", "bio": "第二字段失败",
 		}, failureActor.Token)
 	require.Equal(t, http.StatusServiceUnavailable, status)
 	require.Equal(t, apierr.BizServiceUnavailable, response.ErrorCode)
 	failureModeration.RequireContentCalls(t, 2)
 	var stored model.User
 	require.NoError(t, gdb.First(&stored, failureActor.User.ID).Error)
-	require.Equal(t, failureActor.User.Name, stored.Name,
+	require.Equal(t, failureActor.User.Username, stored.Username,
 		"第二个审核调用失败时，用户字段更新必须整体回滚")
 	require.Nil(t, stored.Bio)
 	require.NoError(t, gdb.Model(&model.ModerationRecord{}).
@@ -623,7 +659,7 @@ func testUserAvatarSafety(
 			<-start
 			status, response, raw, err := performJSONRequest(
 				concurrentEngine, http.MethodPut, userPath(owner.User.ID), map[string]any{
-					"name": fmt.Sprintf("并发头像昵称 %d", index), "avatar_url": asset.PublicURL,
+					"bio": fmt.Sprintf("并发头像简介%d", index), "avatar_url": asset.PublicURL,
 				}, owner.Token,
 			)
 			results <- asyncRequestResult{status: status, response: response, raw: raw, err: err}

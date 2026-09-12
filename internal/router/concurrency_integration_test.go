@@ -444,7 +444,7 @@ func testConcurrentVerificationUse(t *testing.T, harness *testutil.Harness) {
 	registrations := runHTTPBarrier(t, harness.Engine, concurrencyWidth, func(index int) (string, string, any, string) {
 		return http.MethodPost, "/api/v2/auth/register", map[string]any{
 			"email": email, "password": "password-123", "verification_code": code,
-			"name": fmt.Sprintf("并发消费验证码 %02d", index),
+			"name": fmt.Sprintf("并发消费验证码%02d", index),
 		}, ""
 	})
 	registered, rejected := 0, 0

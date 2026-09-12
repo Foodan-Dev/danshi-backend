@@ -23,14 +23,14 @@ type PendingUploadExpirationWorkerResult struct {
 
 // PendingUploadExpirationWorker 在事务内复用 UploadService.ExpirePending 执行一个有界批次。
 type PendingUploadExpirationWorker struct {
-	tx      ImageAccessTxRunner
+	tx      TxRunner
 	uploads *UploadService
 	options PendingUploadExpirationWorkerOptions
 }
 
 // NewPendingUploadExpirationWorker 创建一次性批处理 worker；调用方负责周期调度。
 func NewPendingUploadExpirationWorker(
-	tx ImageAccessTxRunner,
+	tx TxRunner,
 	uploads *UploadService,
 	options PendingUploadExpirationWorkerOptions,
 ) *PendingUploadExpirationWorker {

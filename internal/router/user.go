@@ -23,6 +23,7 @@ func registerUser(api *route.RouterGroup, deps Deps) {
 	users := api.Group("/users")
 
 	users.GET("/:user_id", requireAuth, userHandler.Profile)
+	users.GET("/:user_id/username-history", requireAuth, userHandler.UsernameHistory)
 	users.PUT("/:user_id", requireAuth, userHandler.Update)
 	users.DELETE("/:user_id", requireAuth, userHandler.Delete)
 	users.GET("/:user_id/posts", requireAuth, userHandler.Posts)

@@ -125,6 +125,30 @@ func (s observedVerificationSender) SendRegistrationCode(
 	return nil
 }
 
+func (s observedVerificationSender) SendPasswordResetCode(ctx context.Context, email, code string) error {
+	err := s.next.SendPasswordResetCode(ctx, email, code)
+	if err != nil {
+		s.metrics.RecordVerification(ctx, s.provider, "provider_failure", "provider_error")
+		return err
+	}
+	s.metrics.RecordVerification(ctx, s.provider, "send", "none")
+	return nil
+}
+
+// PasswordResetConfigured 透传独立的找回密码能力。
+func (s observedVerificationSender) PasswordResetConfigured() bool {
+	if available, ok := s.next.(interface{ PasswordResetConfigured() bool }); ok {
+		return available.PasswordResetConfigured()
+	}
+	return s.Configured()
+}
+
+// Configured 透传底层投递器的可用性，避免 fail-closed 适配器被观测包装层遮蔽。
+func (s observedVerificationSender) Configured() bool {
+	available, ok := s.next.(interface{ Configured() bool })
+	return !ok || available.Configured()
+}
+
 func moderationProvider(value any) string {
 	switch value.(type) {
 	case *tencentcloud.Provider:

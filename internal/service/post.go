@@ -97,7 +97,7 @@ type CanteenWindowView struct {
 // PostAuthorView 是帖子作者的公开信息。
 type PostAuthorView struct {
 	ID             uint64  `json:"id"`
-	Name           string  `json:"name"`
+	Username       string  `json:"username"`
 	AvatarURL      *string `json:"avatar_url"`
 	AvatarThumbURL *string `json:"avatar_thumb_url"`
 	IsFollowing    *bool   `json:"is_following"`

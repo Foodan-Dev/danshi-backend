@@ -258,7 +258,7 @@ func (s *CommentService) normalizeCommentPayload(
 		)
 	}
 	for _, user := range found {
-		if user.Name == "" || !strings.Contains(content, "@"+user.Name) {
+		if user.Username == "" || !strings.Contains(content, "@"+user.Username) {
 			return "", nil, apierr.InvalidField(
 				"mentioned_user_ids", apierr.FieldConflict,
 				"被提及用户必须以 @昵称 的形式出现在评论正文中",

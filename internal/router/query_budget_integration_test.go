@@ -46,17 +46,18 @@ var hotPathSelectBudgets = map[string]int64{
 }
 
 var queryBudgetExemptGETRoutes = map[string]string{
-	"GET /api/v2/auth/me":                      "单资源读取，不接受分页参数",
-	"GET /api/v2/auth/sessions":                "当前用户的小型设备集合，不接受分页参数",
-	"GET /api/v2/users/:user_id":               "单资源读取，不接受分页参数",
-	"GET /api/v2/posts/:post_id":               "单资源读取，不接受分页参数",
-	"GET /api/v2/posts/:post_id/history":       "单资源的完整版本历史，不接受分页参数",
-	"GET /api/v2/comments/:comment_id/history": "单资源的完整版本历史，不接受分页参数",
-	"GET /api/v2/notifications/unread-count":   "单值聚合，不接受分页参数",
-	"GET /api/v2/uploads/:upload_id":           "上传者单图片详情，不接受分页参数",
-	"GET /api/v2/config":                       "公共静态配置，不接受分页参数",
-	"GET /api/v2/admin/images/:image_asset_id": "管理端单图片详情，不接受分页参数",
-	"GET /api/v2/admin/users/:user_id":         "单用户取证详情，不接受分页参数",
+	"GET /api/v2/auth/me":                         "单资源读取，不接受分页参数",
+	"GET /api/v2/auth/sessions":                   "当前用户的小型设备集合，不接受分页参数",
+	"GET /api/v2/users/:user_id":                  "单资源读取，不接受分页参数",
+	"GET /api/v2/users/:user_id/username-history": "单用户的 name 追加审计历史，不接受分页参数",
+	"GET /api/v2/posts/:post_id":                  "单资源读取，不接受分页参数",
+	"GET /api/v2/posts/:post_id/history":          "单资源的完整版本历史，不接受分页参数",
+	"GET /api/v2/comments/:comment_id/history":    "单资源的完整版本历史，不接受分页参数",
+	"GET /api/v2/notifications/unread-count":      "单值聚合，不接受分页参数",
+	"GET /api/v2/uploads/:upload_id":              "上传者单图片详情，不接受分页参数",
+	"GET /api/v2/config":                          "公共静态配置，不接受分页参数",
+	"GET /api/v2/admin/images/:image_asset_id":    "管理端单图片详情，不接受分页参数",
+	"GET /api/v2/admin/users/:user_id":            "单用户取证详情，不接受分页参数",
 }
 
 type queryBudgetCase struct {
@@ -138,7 +139,7 @@ func seedQueryBudgetFixture(
 
 		user := model.User{
 			Email: fmt.Sprintf("query-budget-user-%d@fdueat.com", index), PasswordHash: "$2b$12$test",
-			Name: fmt.Sprintf("查询预算用户 %d", index),
+			Username: fmt.Sprintf("查询预算用户%d", index),
 		}
 		require.NoError(t, gdb.Create(&user).Error)
 		require.NoError(t, gdb.Create(&model.Follow{
@@ -157,7 +158,7 @@ func seedQueryBudgetFixture(
 	var firstRoot uint64
 	for rootIndex := range 6 {
 		root := createComment(t, engine, actors.Commenter.Token, approved[0].ID, map[string]any{
-			"content":            fmt.Sprintf("@%s 查询预算楼主 %d", actors.Ordinary.User.Name, rootIndex),
+			"content":            fmt.Sprintf("@%s 查询预算楼主 %d", actors.Ordinary.User.Username, rootIndex),
 			"mentioned_user_ids": []uint64{actors.Ordinary.User.ID},
 		})
 		if firstRoot == 0 {
@@ -165,7 +166,7 @@ func seedQueryBudgetFixture(
 		}
 		for replyIndex := range 6 {
 			createComment(t, engine, actors.Author.Token, approved[0].ID, map[string]any{
-				"content":            fmt.Sprintf("@%s 查询预算回复 %d-%d", actors.Ordinary.User.Name, rootIndex, replyIndex),
+				"content":            fmt.Sprintf("@%s 查询预算回复 %d-%d", actors.Ordinary.User.Username, rootIndex, replyIndex),
 				"parent_id":          root.Comment.ID,
 				"mentioned_user_ids": []uint64{actors.Ordinary.User.ID},
 			})

@@ -24,8 +24,8 @@ type User struct {
 func NewUser(userService *service.UserService) *User { return &User{service: userService} }
 
 type updateUserRequest struct {
-	Name         *string `json:"name"`
-	NameSet      bool    `json:"-"`
+	Username     *string `json:"username"`
+	UsernameSet  bool    `json:"-"`
 	Bio          *string `json:"bio"`
 	BioSet       bool    `json:"-"`
 	Gender       *string `json:"gender"`
@@ -48,7 +48,11 @@ func (r *updateUserRequest) UnmarshalJSON(data []byte) error {
 		*present = true
 		return json.Unmarshal(raw, target)
 	}
-	if err := decode("name", &r.Name, &r.NameSet); err != nil {
+	if err := normalizeUsernameAlias(fields); err != nil {
+		return err
+	}
+
+	if err := decode("username", &r.Username, &r.UsernameSet); err != nil {
 		return err
 	}
 	if err := decode("bio", &r.Bio, &r.BioSet); err != nil {
@@ -74,6 +78,20 @@ func (h *User) Profile(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
 }
 
+// UsernameHistory 返回当前用户自己的用户名修改历史。
+func (h *User) UsernameHistory(ctx context.Context, c *app.RequestContext) {
+	userID, principal, err := userRequestIdentity(c)
+	var result *service.UsernameChangeHistory
+	if err == nil {
+		result, err = h.service.UsernameHistory(ctx, userID, principal.User.ID)
+	}
+	if err != nil {
+		failService(ctx, c, err)
+		return
+	}
+	c.JSON(consts.StatusOK, envelope.OK("请求成功", result))
+}
+
 // Update 局部更新本人资料。
 func (h *User) Update(ctx context.Context, c *app.RequestContext) {
 	userID, principal, err := userRequestIdentity(c)
@@ -84,7 +102,7 @@ func (h *User) Update(ctx context.Context, c *app.RequestContext) {
 	var result *service.UserUpdateResult
 	if err == nil {
 		result, err = h.service.Update(ctx, userID, principal.User.ID, service.UpdateUserInput{
-			Name: request.Name, NameSet: request.NameSet, Bio: request.Bio, BioSet: request.BioSet,
+			Username: request.Username, UsernameSet: request.UsernameSet, Bio: request.Bio, BioSet: request.BioSet,
 			Gender: request.Gender, GenderSet: request.GenderSet,
 			AvatarURL: request.AvatarURL, AvatarURLSet: request.AvatarURLSet,
 		})

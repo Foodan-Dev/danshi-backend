@@ -87,6 +87,10 @@ func (s fixedVerificationSender) SendRegistrationCode(context.Context, string, s
 	return s.err
 }
 
+func (s fixedVerificationSender) SendPasswordResetCode(context.Context, string, string) error {
+	return s.err
+}
+
 type businessMetricEvent struct {
 	kind     string
 	provider string

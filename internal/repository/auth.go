@@ -36,9 +36,62 @@ func (UserRepository) FindByEmail(
 	return &user, nil
 }
 
+// FindByUsername 按大小写不敏感的公开用户名查找可登录用户。
+func (UserRepository) FindByUsername(ctx context.Context, name string) (*model.User, error) {
+	var user model.User
+	err := db.FromContext(ctx).
+		Where("lower(normalize(name, NFKC)) = lower(normalize(?, NFKC)) AND deleted_at IS NULL", name).
+		First(&user).Error
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &user, nil
+}
+
 // Create 创建用户，唯一性依赖 schema 的 lower(email) 唯一索引。
 func (UserRepository) Create(ctx context.Context, user *model.User) error {
 	return db.FromContext(ctx).Create(user).Error
+}
+
+// ClaimUsername 追加一条用户名占用记录。同一账号回用自己的历史用户名是幂等的；
+// 其他账号已占用时由唯一约束拒绝。
+func (UserRepository) ClaimUsername(ctx context.Context, userID uint64, name string, now time.Time) error {
+	result := db.FromContext(ctx).Exec(`
+		INSERT INTO user_name_claims (user_id, name, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT DO NOTHING
+	`, userID, name, now)
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.Error
+	}
+	var ownerID uint64
+	result = db.FromContext(ctx).Raw(
+		"SELECT user_id FROM user_name_claims WHERE lower(normalize(name, NFKC)) = lower(normalize(?, NFKC))", name,
+	).Scan(&ownerID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	if ownerID != userID {
+		return ErrAlreadyExists
+	}
+	return nil
+}
+
+// UpdatePassword 在调用方已锁定用户行后更新密码摘要。
+func (UserRepository) UpdatePassword(ctx context.Context, userID uint64, passwordHash string) error {
+	result := db.FromContext(ctx).Model(&model.User{}).
+		Where("id = ? AND deleted_at IS NULL", userID).
+		UpdateColumn("password_hash", passwordHash)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // FindRoles 返回用户当前绑定的全部管理角色，顺序稳定。
@@ -76,6 +129,12 @@ func (UserRepository) FindAvatarURL(ctx context.Context, userID uint64) (*string
 func IsUniqueViolation(err error, constraint string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
+}
+
+// IsCheckViolation 判断指定数据库检查约束，供 service 映射为稳定业务错误。
+func IsCheckViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == constraint
 }
 
 // VerificationCodeRepository 是无状态的邮箱验证码仓储。
@@ -131,7 +190,7 @@ func (VerificationCodeRepository) SaveState(
 	challenge *model.EmailVerificationCode,
 	now time.Time,
 ) error {
-	return db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
+	err := db.FromContext(ctx).Model(&model.EmailVerificationCode{}).
 		Where("id = ?", challenge.ID).
 		Updates(map[string]any{
 			"code_digest":            challenge.CodeDigest,
@@ -143,6 +202,15 @@ func (VerificationCodeRepository) SaveState(
 			"consumed_at":            challenge.ConsumedAt,
 			"updated_at":             now,
 		}).Error
+	if err != nil {
+		return err
+	}
+	query := db.FromContext(ctx).Model(&model.VerificationEmailDelivery{}).
+		Where("challenge_id = ? AND code IS NOT NULL", challenge.ID)
+	if challenge.ConsumedAt == nil && challenge.ExpiresAt.After(now) && challenge.FailedAttempts < 5 {
+		query = query.Where("code_digest <> ?", challenge.CodeDigest)
+	}
+	return query.UpdateColumn("code", nil).Error
 }
 
 // SessionRepository 是无状态的会话仓储。
@@ -326,7 +394,7 @@ func (row identityRow) identity() *Identity {
 			ExpiresAt: row.SessionExpiresAt, RevokedAt: row.SessionRevokedAt,
 		},
 		User: model.User{
-			ID: row.UserID, Email: row.Email, PasswordHash: row.PasswordHash, Name: row.Name,
+			ID: row.UserID, Email: row.Email, PasswordHash: row.PasswordHash, Username: row.Name,
 			Gender: row.Gender, Bio: row.Bio, AvatarImageAssetID: row.AvatarID,
 			Roles:          roleValues(row.Roles),
 			BanIsPermanent: row.BanIsPermanent, BannedUntil: row.BannedUntil,

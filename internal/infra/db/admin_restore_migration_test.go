@@ -27,7 +27,7 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 	}
 	require.EqualValues(t, 6, version)
 
-	user := model.User{Email: "restore-migration@fdueat.com", PasswordHash: "x", Name: "迁移操作人"}
+	user := model.User{Email: "restore-migration@fdueat.com", PasswordHash: "x", Username: "迁移操作人"}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	tag := model.Tag{Name: "迁移恢复", Moderation: model.ModerationStatusPending}
 	require.NoError(t, database.GORM.Create(&tag).Error)
@@ -39,7 +39,7 @@ func TestAdminRestoreReviewerMigrationRoundTripAndConstraints(t *testing.T) {
 		Provider: "admin_restore", Verdict: model.ModerationVerdictPass,
 		Labels: pq.StringArray{}, RawResponse: json.RawMessage(`{"action":"restore"}`),
 	}
-	require.NoError(t, database.GORM.Omit("ContentRevision").Create(&legacy).Error,
+	require.NoError(t, database.GORM.Omit("ContentRevision", "UsernameCandidate", "UsernameRevision").Create(&legacy).Error,
 		"v6 允许的无操作人恢复流水必须可作为存量数据迁移")
 
 	require.NoError(t, dbinfra.Up(ctx, database.SQL))

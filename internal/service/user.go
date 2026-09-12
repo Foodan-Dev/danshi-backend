@@ -31,7 +31,7 @@ type UserStats struct {
 type UserProfile struct {
 	ID          uint64            `json:"id"`
 	Email       *string           `json:"email,omitempty"`
-	Name        string            `json:"name"`
+	Username    string            `json:"username"`
 	AvatarURL   *string           `json:"avatar_url"`
 	Bio         *string           `json:"bio"`
 	Gender      *model.Gender     `json:"gender"`
@@ -43,8 +43,8 @@ type UserProfile struct {
 
 // UpdateUserInput 是带字段存在性的局部资料更新输入。
 type UpdateUserInput struct {
-	Name         *string
-	NameSet      bool
+	Username     *string
+	UsernameSet  bool
 	Bio          *string
 	BioSet       bool
 	Gender       *string
@@ -72,7 +72,7 @@ type FollowActionResult struct {
 // UserListItem 是关注/粉丝列表的公开用户项。
 type UserListItem struct {
 	ID          uint64    `json:"id"`
-	Name        string    `json:"name"`
+	Username    string    `json:"username"`
 	AvatarURL   *string   `json:"avatar_url"`
 	Bio         *string   `json:"bio"`
 	Stats       UserStats `json:"stats"`
@@ -83,6 +83,19 @@ type UserListItem struct {
 type UserFollowList struct {
 	Users      []UserListItem        `json:"users"`
 	Pagination pagination.CursorMeta `json:"pagination"`
+}
+
+// UsernameChangeView 是用户本人或用户管理端可见的用户名变更记录。
+type UsernameChangeView struct {
+	ID          uint64     `json:"id"`
+	OldUsername string     `json:"old_username"`
+	NewUsername string     `json:"new_username"`
+	ChangedAt   ptime.Time `json:"changed_at"`
+}
+
+// UsernameChangeHistory 是用户名变更记录列表。
+type UsernameChangeHistory struct {
+	Changes []UsernameChangeView `json:"changes"`
 }
 
 // UserService 实现用户资料、个人列表与关注关系。
@@ -179,7 +192,31 @@ func (s *UserService) Profile(ctx context.Context, userID, currentUserID uint64)
 	return &profile, nil
 }
 
-// Update 局部更新本人资料，昵称与简介发生变化时分别送审并追加流水。
+// UsernameHistory 只允许本人读取用户名变更历史；管理端通过 AdminService 的用户取证接口读取。
+func (s *UserService) UsernameHistory(
+	ctx context.Context, userID, currentUserID uint64,
+) (*UsernameChangeHistory, error) {
+	if userID != currentUserID {
+		return nil, apierr.Forbidden(apierr.BizNotOwner, "只能查看自己的用户名修改记录")
+	}
+	if _, err := s.users.FindByID(ctx, userID); err != nil {
+		return nil, userNotFoundError(err)
+	}
+	records, err := s.users.FindUsernameChangeRecords(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
+	changes := make([]UsernameChangeView, 0, len(records))
+	for _, record := range records {
+		changes = append(changes, UsernameChangeView{
+			ID: record.ID, OldUsername: record.OldUsername, NewUsername: record.NewUsername,
+			ChangedAt: ptime.Time(record.ChangedAt),
+		})
+	}
+	return &UsernameChangeHistory{Changes: changes}, nil
+}
+
+// Update 局部更新本人资料，用户名与简介发生变化时分别送审并追加流水。
 func (s *UserService) Update(
 	ctx context.Context,
 	userID uint64,
@@ -198,6 +235,33 @@ func (s *UserService) Update(
 		return nil, userNotFoundError(err)
 	}
 	fields, moderated := changedUserFields(user, input)
+	usernameChanged := input.UsernameSet && input.Username != nil && user.Username != *input.Username
+	if usernameChanged {
+		changed, err := s.users.HasRecentUsernameChange(ctx, userID)
+		if err != nil {
+			return nil, apierr.Internal(err)
+		}
+		if changed {
+			return nil, usernameChangeLimitedError()
+		}
+	}
+	if usernameChanged {
+		result, reviewErr := s.reviewUserField(ctx, user.ID, model.ModerationFieldName, *input.Username)
+		if reviewErr != nil {
+			return nil, reviewErr
+		}
+		if result.Verdict != model.ModerationVerdictPass {
+			return nil, &persistedError{
+				err: moderationVerdictError(result.Verdict, "用户名"),
+			}
+		}
+	}
+	if usernameChanged {
+		// ClaimUsername 保留稳定的业务错误；users 上的触发器仍是直写/导入场景的数据库兜底。
+		if err := claimUsername(ctx, s.users, userID, *input.Username); err != nil {
+			return nil, err
+		}
+	}
 	if input.AvatarURLSet {
 		avatarID, avatarErr := s.resolveAvatar(ctx, user, input.AvatarURL)
 		if avatarErr != nil {
@@ -208,9 +272,15 @@ func (s *UserService) Update(
 		}
 	}
 	if err := s.users.UpdateProfile(ctx, userID, fields); err != nil {
+		if repository.IsCheckViolation(err, "user_name_change_records_cooldown_check") {
+			return nil, usernameChangeLimitedError()
+		}
 		return nil, userNotFoundError(err)
 	}
 	for _, field := range moderated {
+		if field.Field == model.ModerationFieldName {
+			continue
+		}
 		if err := s.moderateUserField(ctx, userID, field.Field, field.Text); err != nil {
 			return nil, err
 		}
@@ -358,10 +428,10 @@ type moderatedUserField struct {
 func changedUserFields(user *model.User, input UpdateUserInput) (map[string]any, []moderatedUserField) {
 	fields := make(map[string]any)
 	moderated := make([]moderatedUserField, 0, 2)
-	if input.NameSet && input.Name != nil && user.Name != *input.Name {
-		fields["name"] = *input.Name
-		if *input.Name != "" {
-			moderated = append(moderated, moderatedUserField{Field: model.ModerationFieldName, Text: *input.Name})
+	if input.UsernameSet && input.Username != nil && user.Username != *input.Username {
+		fields["name"] = *input.Username
+		if *input.Username != "" {
+			moderated = append(moderated, moderatedUserField{Field: model.ModerationFieldName, Text: *input.Username})
 		}
 	}
 	if input.BioSet && !equalStrings(user.Bio, input.Bio) {
@@ -380,15 +450,15 @@ func changedUserFields(user *model.User, input UpdateUserInput) (map[string]any,
 }
 
 func normalizeUserUpdate(input UpdateUserInput) (UpdateUserInput, error) {
-	if input.NameSet {
-		if input.Name == nil {
-			return input, apierr.InvalidField("name", apierr.FieldInvalidFormat, "name 不能是 null")
+	if input.UsernameSet {
+		if input.Username == nil {
+			return input, apierr.InvalidField("username", apierr.FieldInvalidFormat, "用户名不能是 null")
 		}
-		value := strings.TrimSpace(*input.Name)
-		if utf8.RuneCountInString(value) > 100 {
-			return input, apierr.InvalidField("name", apierr.FieldTooLong, "昵称不能超过 100 个字符")
+		value, err := normalizeUsername(*input.Username)
+		if err != nil {
+			return input, err
 		}
-		input.Name = &value
+		input.Username = &value
 	}
 	if input.BioSet && input.Bio != nil {
 		value := strings.TrimSpace(*input.Bio)
@@ -473,34 +543,64 @@ func (s *UserService) moderateUserField(
 	field model.ModerationField,
 	content string,
 ) error {
+	_, err := s.reviewUserField(ctx, userID, field, content)
+	return err
+}
+
+func (s *UserService) reviewUserField(
+	ctx context.Context, userID uint64, field model.ModerationField, content string,
+) (ModerationResult, error) {
 	result, err := s.moderator.Review(ctx, ModerationRequest{
 		Target: ModerationTargetUser, Field: &field, Text: content,
 	})
 	if err != nil {
-		return err
+		return ModerationResult{}, err
 	}
 	if err := validateModerationResult(result); err != nil {
-		return err
+		return ModerationResult{}, err
 	}
-	labels := pq.StringArray(result.Labels)
-	if labels == nil {
-		labels = pq.StringArray{}
-	}
-	record := &model.ModerationRecord{
-		UserID: &userID, Field: &field, Scene: model.ModerationSceneText,
-		Provider: result.Provider, ProviderJobID: result.ProviderJobID,
-		Verdict: result.Verdict, Labels: labels, Score: result.Score,
-		RawResponse: result.RawResponse, CreatedAt: time.Now().UTC(),
+	record := moderationRecordForUser(userID, field, result)
+	if field == model.ModerationFieldName {
+		revision, err := s.users.UsernameRevision(ctx, userID)
+		if err != nil {
+			return ModerationResult{}, apierr.Internal(err)
+		}
+		record.UsernameCandidate = &content
+		record.UsernameRevision = &revision
 	}
 	if err := s.users.CreateModerationRecord(ctx, record); err != nil {
-		return apierr.Internal(err)
+		return ModerationResult{}, apierr.Internal(err)
 	}
 	if result.Verdict == model.ModerationVerdictBlock {
 		s.alerter.AlertUserContent(ctx, UserModerationAlert{
 			UserID: userID, Field: field, Verdict: result.Verdict, Labels: append([]string{}, result.Labels...),
 		})
 	}
-	return nil
+	return result, nil
+}
+
+func moderationRecordForUser(
+	userID uint64, field model.ModerationField, result ModerationResult,
+) *model.ModerationRecord {
+	labels := pq.StringArray(result.Labels)
+	if labels == nil {
+		labels = pq.StringArray{}
+	}
+	return &model.ModerationRecord{
+		UserID: &userID, Field: &field, Scene: model.ModerationSceneText,
+		Provider: result.Provider, ProviderJobID: result.ProviderJobID,
+		Verdict: result.Verdict, Labels: labels, Score: result.Score,
+		RawResponse: result.RawResponse, CreatedAt: time.Now().UTC(),
+	}
+}
+
+func moderationFieldPtr(field model.ModerationField) *model.ModerationField { return &field }
+
+func moderationVerdictError(verdict model.ModerationVerdict, field string) error {
+	if verdict == model.ModerationVerdictReview {
+		return apierr.Conflict(apierr.BizContentUnderAudit, field+" 正在审核")
+	}
+	return apierr.Conflict(apierr.BizContentRejected, field+" 未通过内容审核")
 }
 
 func (s *UserService) postList(
@@ -548,7 +648,7 @@ func userFollowList(
 	items := make([]UserListItem, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, UserListItem{
-			ID: row.ID, Name: row.Name, AvatarURL: row.AvatarURL, Bio: row.Bio,
+			ID: row.ID, Username: row.Name, AvatarURL: row.AvatarURL, Bio: row.Bio,
 			Stats: userStats(row.PostCount, row.LikeCount, row.FavoriteCount,
 				row.FollowerCount, row.FollowingCount),
 			IsFollowing: row.IsFollowing,
@@ -582,7 +682,7 @@ func userFollowCursorMeta(
 
 func buildUserProfile(record *repository.UserProfileRecord) UserProfile {
 	return UserProfile{
-		ID: record.ID, Name: record.Name, AvatarURL: record.AvatarURL,
+		ID: record.ID, Username: record.Username, AvatarURL: record.AvatarURL,
 		Bio: record.Bio, Gender: record.Gender,
 		Stats: userStats(record.PostCount, record.LikeCount, record.FavoriteCount,
 			record.FollowerCount, record.FollowingCount),
@@ -644,4 +744,9 @@ func equalGenders(left, right *model.Gender) bool {
 
 func equalIDs(left, right *uint64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+// usernameChangeLimitedError 只限制实际改名；相同用户名和其他资料更新不消耗额度。
+func usernameChangeLimitedError() error {
+	return apierr.TooManyRequests(apierr.BizUsernameChangeLimited, "修改用户名后需间隔满 30 天才能再次修改")
 }

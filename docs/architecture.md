@@ -119,6 +119,10 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 
 业务路由由 UoW 中间件包裹。成功响应提交，错误或 panic 回滚。repository 一律通过 `db.FromContext(ctx)` 取得当前事务句柄。
 
+鉴权与刷新只读取会话，活跃时间更新登记为 before-commit 操作，在业务完成后、同一事务
+提交前执行，避免提前锁住会话再等待用户行而与密码重置反向加锁。HTTP UoW 和后台
+`RunInTx` 都执行收尾队列；收尾失败回滚整个事务，HTTP 已写出的成功响应改为错误响应。
+
 禁止把独立 `*gorm.DB` 注入 repository 方法。否则一个请求中的部分写入可能绕开 UoW 提前提交，产生“一半成功、一半回滚”的状态。
 
 公开配置、探针和外部审核回调是否经过 UoW 由路由定义决定；`/health` 与 `/ready` 不进入业务事务。
@@ -273,13 +277,13 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 
 ### 8.2 表分组
 
-当前业务 schema 有 30 张表：
+当前业务 schema 有 34 张表：
 
 | 领域 | 表 |
 |---|---|
 | 封闭词表 | `canteens`、`canteen_windows`、`cuisines`、`flavors` |
 | 开放标签 | `tags`、`post_tags` |
-| 用户与认证 | `users`、`email_verification_codes`、`user_sessions` |
+| 用户与认证 | `users`、`user_name_claims`、`user_name_change_records`、`email_verification_codes`、`verification_email_deliveries`、`user_sessions` |
 | 图片 | `image_assets`、`post_images` |
 | 帖子 | `posts`、`post_flavors`、`favorites`、`post_likes` |
 | 评论 | `comments`、`comment_mentions`、`comment_likes` |
@@ -287,9 +291,9 @@ Handler 不自行写业务错误响应，也不开始或提交事务。
 | 内容版本 | `post_histories`、`comment_histories` |
 | 审核与提议 | `moderation_records`、`dictionary_suggestions`、`moderation_alert_states` |
 | 角色与封禁 | `user_roles`、`user_role_records`、`user_ban_records` |
-| 图片访问收敛 | `image_access_intents`、`image_access_deliveries` |
+| 图片访问收敛 | `image_access_intents`、`image_access_deliveries`、`image_moderation_retries` |
 
-30 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
+34 张表只是当前结构的核对值，不应在业务逻辑中硬编码。新增 migration 时同步更新 schema smoke 的结构断言。
 
 ## 9. 数据模型设计
 
@@ -526,7 +530,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 
 登录：
 
-1. 验证邮箱、密码和用户封禁状态；
+1. 通过邮箱或当前用户名定位账号，验证密码和用户封禁状态；
 2. 插入 `user_sessions`，保存 refresh token 摘要、设备和有效期；
 3. 为 access 与 refresh 签入相同 `sub` 和 `sid`；
 4. 返回令牌。
@@ -542,7 +546,75 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 
 刷新必须额外比对 refresh 摘要。登出更新 `revoked_at`，不删除会话行。登出全部设备和封禁用户都批量撤销该用户仍有效的会话。
 
-### 12.5 图片与帖子发布协议
+### 12.5 用户名与验证码投递
+
+用户名是唯一公开身份，Go 模型与公共接口统一使用 `Username` / `username`，存储映射到
+已有的 `users.name` 列。注册、资料更新兼容旧输入 `name`；两个字段同时提交时必须一致。
+响应只返回 `username`；历史项使用 `old_username`、`new_username`，管理员历史列表使用
+`username_changes`。餐厅、标签等对象的 `name` 不受影响。
+
+注册必填，规范化后长度为 2–24 个 Unicode 字符。应用执行 NFKC、去除首尾空白、
+内部连续空格折叠、Unicode Letter/Number/下划线/普通空格校验和保留名称校验。字符类别由 `usernamepolicy` 的 Go Unicode 表定义，
+迁移中的 SQL 函数从同一集合生成显式码点范围，并固定 C collation；不依赖数据库 locale
+解释 POSIX 字符类别。数据库同时约束字符、NFKC、首尾空白、长度及唯一归属。
+策略一致性测试检查迁移快照与应用集合；Unicode 集合升级在迁移发布后必须新增迁移。
+直接导入数据仍须按应用规则预检保留名称等业务要求。
+保留名称为 `admin`、`administrator`、`official`、`support`、`system`、`security`、`danshi`，
+按大小写不敏感比较。
+
+当前名称保存在 `users.name`；`user_name_claims` 按规范化且不区分大小写的名称记录永久
+归属，改名与注销不释放，原账号回用幂等。注册须同步机审通过；改名机审通过或人工复核通过后才写入名称。
+`user_name_change_records` 由用户表触发器记录真实的旧值、新值和时间，禁止修改、删除。
+本人通过用户名历史查询接口读取，具备用户管理能力的管理员通过用户取证详情查询。
+每次成功修改用户名后须间隔满 30 天（连续 720 小时）。应用在用户行锁内、调用审核
+供应商之前查询最近的已生效改名；未满 30 天返回 429 `username_change_limited`。
+注册不产生改名流水，规范化后未变化不写流水，失败事务回滚，因此均不消耗额度；
+大小写修改和回用历史用户名属于实际改名。数据库在追加改名流水前锁定同一用户行，
+拒绝间隔不足 720 小时的两条记录，也保护直接写入路径。查询和审计使用数据库事务时间；
+恰好满 720 小时可再次修改，不依赖自然月、部署时区或夏令时。
+迁移前必须处理存量重名及不合规名称；迁移不自动分配替代名称。
+
+用户名机审流水以 `username_candidate` 保存实际候选文本，以 `username_revision` 保存提交时最近一次已生效改名的审计 ID（初始为 0）。管理端从快照读取候选；人工流水必须继承相同快照，数据库触发器禁止改绑。正式用户名与审核流水分别保存当前状态和不可变证据，历史缺失快照不以当前值补写。
+
+人工通过由 service 编排：先锁用户、再锁审核记录，在同一事务检查改名版本、账号状态、冷却期和名称占用，再写正式值、改名历史与人工裁决。失败全部回滚，旧候选不能覆盖后续成功改名；拒绝只追加裁决。数据库保留唯一占用及冷却约束作为最终防线。
+
+注册和密码重置共用 `email_verification_codes` 挑战表，以邮箱和 purpose 区分；摘要计算
+包含用途，使用 `EMAIL_VERIFICATION_SECRET` 计算 HMAC-SHA256。六位数字验证码有效期为
+十分钟，不能跨用途消费。正确消费、密码更新及撤销会话必须原子提交；重置不自动登录。
+错误验证码累计次数也必须提交，业务失败不能回滚安全计数。
+登录和重置共用用户行锁：登录先定位用户，再加锁、重新确认当前登录标识和密码，
+最后在同一事务创建会话。若登录先取得锁，重置会撤销该会话；若重置先完成，旧密码登录失败。
+
+启用邮箱验证时，注册先实际校验并消费验证码，再调用用户名审核；不能仅凭六位数字的
+格式校验调用供应商。审核拒绝、审核不可用或注册写入失败都会回滚消费，原验证码仍可重试。
+
+两种邮件均在当前事务追加 `verification_email_deliveries`，`code` 保存可空的六位验证码
+明文；不采用应用层加密，不需要 secretbox 或加密密钥。挑战表摘要负责校验，任务中的明文
+负责进程重启后的恢复投递。不存在的重置目标、已注册的注册目标不创建可投递任务。
+请求成功表示任务已经持久化；供应商失败保留任务供重试，不回滚挑战状态。
+
+邮件 worker 由进程启动入口显式注入并管理 Run 的生命周期，路由不创建未启动的默认 worker。未注入投递队列时发码请求返回 503；提交后的 Kick 只发唤醒信号，周期扫描负责补偿。邮件、图片及上传清理 worker 共用领域无关的 `service.TxRunner` 短事务端口。
+
+server 管理一个常驻邮件 worker，提交后的 `Kick` 只发送合并的非阻塞唤醒信号；
+HTTP 不等待 SES。worker 启动即扫描，并每秒补偿扫描，退出时取消并等待 worker 结束。
+未注册邮箱仍走相同的挑战限流，但不创建实际邮件；响应不再包含供应商耗时。
+worker 在短事务中使用 `SKIP LOCKED` 领取任务，租约和 token 防止旧 worker 覆盖新状态。
+每封邮件发送前用新的短事务重读挑战、明文、账号状态和租约，取消等待期间已过期、消费、
+替换或超过错误次数的任务；已注销的重置目标也取消，租约失效或被接管的任务不再发送。
+外部发信不持有数据库事务。供应商调用与数据库状态不构成原子操作，最后一次检查之后
+发生的消费或替换无法撤回已经开始的外部投递，接收端仍以当前挑战校验为准。
+供应商失败按预算退避重试，耗尽预算进入死信。验证码消费、替换及错误次数耗尽时，当前
+事务清空相关旧任务的 `code`；worker 每批有界清理过期明文，含已发送任务。取消和死信
+也清空明文。投递状态及历史保留，验证码不得出现在日志、trace、指标或接口响应中。
+该清理仅作用于在线表，不改变既有备份；内置循环与手动补偿命令见根 README。
+
+验证码异步响应边界：成功表示挑战与 outbox 任务已提交；HTTP 不等待 SES，也不因供应商
+失败而改变响应或继续占用发信在途额度。后台唤醒仅写入非阻塞信号，实际发信由受服务
+生命周期管理的 worker 执行。该设计消除供应商延迟造成的明显时间侧信道，不宣称所有
+数据库路径严格等时。
+
+### 12.6 图片与帖子发布协议
+
 
 图片审核异步进行，因此允许帖子先引用审核中的图片。发布状态变化必须在事务内检查：
 
@@ -566,7 +638,7 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 - `block`：违规。
 
 帖子先审后发；评论先写入但只有 `pass` 才公开，作者始终可见自己的待审或违规原文；
-标签和用户字段先发后审；图片上传完成后异步审核。
+标签和用户简介先发后审；用户名审核通过后写入；图片上传完成后异步审核。
 
 ### 13.2 追加流水
 
@@ -604,7 +676,8 @@ SET LOCAL danshi.allow_hard_delete = 'on';
 - 评论：当前审核状态写回 `comments.moderation`；只有 `pass` 进入公开列表和计数，
   `review` 进入人工队列且仅作者可见，`block` 软删除并标记审核来源；
 - 标签：block 下架，保留帖子关联；
-- 用户字段：违规时通知管理员，由管理员重置或封禁；
+- 用户名：候选独立保存，通过后更新正式值；人工通过遵守版本、占用和冷却约束；
+- 用户简介：违规时通知管理员，由管理员重置或封禁；
 - 图片：block 后不支持帖子进入公开状态；同事务写 durable 访问意图，后台 worker 把 COS ACL 收敛为私有并确认 EdgeOne 精确刷新终态，人工改判可恢复公开 ACL。
 - 管理员下架帖子：按“帖子未软删除”的有效引用口径检查每张附图，不要求引用帖已经审核通过。仍被其他未软删除帖子（包括待审核帖子）引用的图片保持原状；已无未软删除帖子引用的图片在下架事务内追加 `provider=admin_post_delete`、`verdict=block`、带 reviewer 且无 `supersedes_id` 的独立流水，写回 `image_assets.moderation=block`，并写入 `desired_public=false`、`purge_required=true` 的访问意图。外部 COS/EdgeOne 调用仍只由事务外 worker 执行。
 
@@ -781,7 +854,7 @@ process_*
 
 `route` 只允许 Hertz 路由模板或固定值 `unmatched`，绝不回退到实际 path；`method` 只允许已知 HTTP 方法或 `OTHER`；`status` 只允许 100–599 或 `OTHER`；数据库 `state` 仅为 `in_use` / `idle`。业务指标的 `provider`、`scene`、`outcome`、`reason` 也全部在代码中收敛为固定枚举，未知值统一降为 `unknown`，不会透传用户、对象、任务、邮箱、正文或错误文本。
 
-审核提交和供应商调用失败按真实调用即时计数。`pass`、`review`、`block` 与带 `provider_failed` 标签的失败终态，以及成功处理的回调和成功发信，只在当前 UoW 事务提交后计数；事务回滚不会制造业务成功。重复回调计入 `callbacks_total{outcome="processed",reason="duplicate"}`，但不会重复增加终态。
+审核提交和供应商调用失败按真实调用即时计数。`pass`、`review`、`block` 与带 `provider_failed` 标签的失败终态，以及成功处理的回调，只在当前 UoW 事务提交后计数；事务回滚不会制造业务成功。发信 `send` 记录供应商调用成功：后台发送处于事务外，成功时即时计数，不表示随后 outbox 状态回写已经成功；若调用方带有 UoW 则延后到提交。重复回调计入 `callbacks_total{outcome="processed",reason="duplicate"}`，但不会重复增加终态。
 
 待复核队列不把无界 scrape 并发传给数据库。进程内 collector 以 15 秒为最小刷新间隔，并用 try-lock 语义保证同一时刻至多一个调用方执行查询；并发 scrape 立即返回最近成功缓存，不等待刷新。刷新复用应用连接池，在只读事务中执行，与管理端分页、积压告警使用完全相同的 `queue_items` 口径，并同时受 2.5 秒 PostgreSQL `statement_timeout` 和 3 秒调用 context 超时约束。collector 不启动后台 goroutine，也不创建独立连接池。
 

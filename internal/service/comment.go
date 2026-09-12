@@ -74,7 +74,7 @@ func newCommentService(
 // CommentAuthorView 是评论作者的公开信息。
 type CommentAuthorView struct {
 	ID          uint64  `json:"id"`
-	Name        string  `json:"name"`
+	Username    string  `json:"username"`
 	AvatarURL   *string `json:"avatar_url"`
 	IsFollowing bool    `json:"is_following"`
 }

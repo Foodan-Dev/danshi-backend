@@ -109,10 +109,16 @@ func TestEditHistoryAndCurrentRevisionMigrationsPreserveVersionSemantics(t *test
 		`SELECT count(*) FROM moderation_records WHERE id IN (8601, 8602)`).Scan(&count))
 	require.Equal(t, 2, count, "解除版本锚定不得删除审核流水")
 
+	// 回滚到 00017 后验证其仍拒绝破坏现存内容；未来新增迁移时测试无需再改固定次数。
+	for version > 17 {
+		require.NoError(t, dbinfra.DownOne(ctx, database.SQL))
+		version, err = dbinfra.Version(ctx, database.SQL)
+		require.NoError(t, err)
+	}
 	err = dbinfra.DownOne(ctx, database.SQL)
 	require.ErrorContains(t, err,
 		"cannot remove current revision pointers while posts or comments exist")
 	version, versionErr := dbinfra.Version(ctx, database.SQL)
 	require.NoError(t, versionErr)
-	require.EqualValues(t, dbinfra.ExpectedVersion, version)
+	require.EqualValues(t, 17, version)
 }

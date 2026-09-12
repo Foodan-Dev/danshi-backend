@@ -289,7 +289,7 @@ func (ModerationRepository) ApplyManualTextVerdict(
 	case original.TagID != nil:
 		return applyManualTagVerdict(ctx, *original.TagID, verdict)
 	case original.UserID != nil:
-		return nil // 用户表没有审核状态；昵称/简介按设计保持现值并告警管理员。
+		return nil // 简介保持现值；用户名候选的校验和应用由 service 在同一事务编排。
 	default:
 		return ErrNotFound
 	}

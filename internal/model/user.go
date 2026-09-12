@@ -7,7 +7,7 @@ type User struct {
 	ID                 uint64 `gorm:"primaryKey"`
 	Email              string
 	PasswordHash       string
-	Name               string
+	Username           string `gorm:"column:name"`
 	Gender             *Gender
 	Bio                *string
 	AvatarImageAssetID *uint64
@@ -23,6 +23,30 @@ type User struct {
 
 // TableName 返回用户表名。
 func (User) TableName() string { return "users" }
+
+// UsernameClaim 是一个不可篡改的用户名占用记录。users.name 保存当前公开身份，
+// 本表保留当前与历史用户名，避免改名或注销后被其他账号冒用。
+type UsernameClaim struct {
+	ID        uint64 `gorm:"primaryKey"`
+	UserID    uint64
+	Username  string `gorm:"column:name"`
+	CreatedAt time.Time
+}
+
+// TableName 返回用户名占用记录表名。
+func (UsernameClaim) TableName() string { return "user_name_claims" }
+
+// UsernameChangeRecord 是一次已经生效的用户名变更事实；审核未通过的候选值不进入本表。
+type UsernameChangeRecord struct {
+	ID          uint64 `gorm:"primaryKey"`
+	UserID      uint64
+	OldUsername string `gorm:"column:old_name"`
+	NewUsername string `gorm:"column:new_name"`
+	ChangedAt   time.Time
+}
+
+// TableName 返回用户名变更审计表名。
+func (UsernameChangeRecord) TableName() string { return "user_name_change_records" }
 
 // UserRoleBinding 是用户当前生效的一项管理角色绑定。
 type UserRoleBinding struct {

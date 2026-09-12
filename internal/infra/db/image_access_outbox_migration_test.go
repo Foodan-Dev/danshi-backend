@@ -26,7 +26,7 @@ func TestImageAccessOutboxMigrationGrandfathersTerminalAssets(t *testing.T) {
 
 	require.NoError(t, database.GORM.Exec(`
 INSERT INTO users (id, email, password_hash, name)
-VALUES (9101, 'outbox-migration@fdueat.com', 'x', 'outbox migration');
+VALUES (9101, 'outbox-migration@fdueat.com', 'x', 'outbox_migration');
 
 INSERT INTO image_assets
     (id, uploader_id, purpose, object_key, public_url, content_type, status, moderation)

@@ -46,7 +46,8 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 			}
 		}()
 
-		requestCtx, afterCommit := db.WithAfterCommitQueue(db.WithTx(ctx, tx))
+		requestCtx, beforeCommit := db.WithBeforeCommitQueue(db.WithTx(ctx, tx))
+		requestCtx, afterCommit := db.WithAfterCommitQueue(requestCtx)
 		c.Next(requestCtx)
 
 		if (httpx.HasError(c) || c.Response.StatusCode() >= 400) && !shouldCommitError(c) {
@@ -55,6 +56,13 @@ func UnitOfWork(database *db.DB, log *slog.Logger) app.HandlerFunc {
 			return
 		}
 
+		if err := beforeCommit.Run(requestCtx); err != nil {
+			rollback(ctx, tx, log, "事务收尾失败")
+			committed = true
+			c.Response.ResetBody()
+			httpx.Fail(ctx, c, err)
+			return
+		}
 		if err := tx.Commit().Error; err != nil {
 			log.ErrorContext(ctx, "事务提交失败", slog.Any("err", err))
 			// handler 已经写入成功响应；提交失败时必须清空旧 body，避免错误中间件

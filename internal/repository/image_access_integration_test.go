@@ -19,7 +19,7 @@ func TestImageAccessOutboxIdempotencyGenerationAndFencingAgainstPostgres18(t *te
 	ctx := context.Background()
 	outbox := repository.ImageAccessOutboxRepository{}
 	user := model.User{
-		Email: "image-outbox@fdueat.com", PasswordHash: "x", Name: "outbox",
+		Email: "image-outbox@fdueat.com", PasswordHash: "x", Username: "outbox",
 	}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	size := int64(128)
@@ -96,7 +96,7 @@ func TestImageAccessOutboxConcurrentClaimUsesSkipLockedAgainstPostgres18(t *test
 	database := testutil.OpenPostgres(t)
 	ctx := context.Background()
 	outbox := repository.ImageAccessOutboxRepository{}
-	user := model.User{Email: "image-claim@fdueat.com", PasswordHash: "x", Name: "claim"}
+	user := model.User{Email: "image-claim@fdueat.com", PasswordHash: "x", Username: "claim"}
 	require.NoError(t, database.GORM.Create(&user).Error)
 	size := int64(64)
 	now := time.Now().UTC()

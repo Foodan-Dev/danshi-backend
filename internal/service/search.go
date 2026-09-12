@@ -43,10 +43,10 @@ type SearchUserStats struct {
 	FollowerCount int64 `json:"follower_count"`
 }
 
-// SearchUserItem 是昵称搜索结果项。
+// SearchUserItem 是用户名搜索结果项。
 type SearchUserItem struct {
 	ID          uint64          `json:"id"`
-	Name        string          `json:"name"`
+	Username    string          `json:"username"`
 	AvatarURL   *string         `json:"avatar_url"`
 	Bio         *string         `json:"bio"`
 	Stats       SearchUserStats `json:"stats"`
@@ -118,7 +118,7 @@ func (s *SearchService) Users(
 	items := make([]SearchUserItem, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, SearchUserItem{
-			ID: row.ID, Name: row.Name, AvatarURL: row.AvatarURL, Bio: row.Bio,
+			ID: row.ID, Username: row.Name, AvatarURL: row.AvatarURL, Bio: row.Bio,
 			Stats:       SearchUserStats{PostCount: row.PostCount, FollowerCount: row.FollowerCount},
 			IsFollowing: row.IsFollowing,
 		})

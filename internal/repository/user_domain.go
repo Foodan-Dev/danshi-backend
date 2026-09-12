@@ -138,9 +138,31 @@ func (UserRepository) SoftDelete(ctx context.Context, userID uint64, deletedAt t
 	return nil
 }
 
-// CreateModerationRecord 追加昵称或简介的审核流水。
+// CreateModerationRecord 追加用户名或简介的审核流水。
 func (UserRepository) CreateModerationRecord(ctx context.Context, record *model.ModerationRecord) error {
 	return db.FromContext(ctx).Create(record).Error
+}
+
+// HasRecentUsernameChange 查询过去 30 天的已生效改名，与数据库约束共用事务时间。
+// 调用方先锁定用户行，避免同一用户的并发请求同时消耗额度。
+func (UserRepository) HasRecentUsernameChange(ctx context.Context, userID uint64) (bool, error) {
+	var changed bool
+	err := db.FromContext(ctx).Raw(`SELECT EXISTS (
+   SELECT 1 FROM user_name_change_records
+   WHERE user_id = ?
+     AND changed_at > now() - interval '720 hours'
+ )`, userID).Scan(&changed).Error
+	return changed, err
+}
+
+// FindUsernameChangeRecords 返回目标用户的完整用户名变更历史，最新在前。
+func (UserRepository) FindUsernameChangeRecords(
+	ctx context.Context, userID uint64,
+) ([]model.UsernameChangeRecord, error) {
+	records := make([]model.UsernameChangeRecord, 0)
+	err := db.FromContext(ctx).Where("user_id = ?", userID).
+		Order("changed_at DESC, id DESC").Find(&records).Error
+	return records, err
 }
 
 // Follow 幂等创建关注关系，并报告本次是否真正插入。
@@ -266,3 +288,11 @@ const userListColumns = `
 		SELECT 1 FROM follows viewer_follow
 		WHERE viewer_follow.follower_id = ? AND viewer_follow.following_id = u.id
 	) END AS is_following`
+
+// UsernameRevision 返回最近一次已生效改名的审计 ID；注册后的初始版本为 0。
+// 调用方持有用户行锁，使版本检查与审核/改名串行化。
+func (UserRepository) UsernameRevision(ctx context.Context, userID uint64) (uint64, error) {
+	var revision uint64
+	err := db.FromContext(ctx).Raw("SELECT COALESCE(max(id), 0) FROM user_name_change_records WHERE user_id = ?", userID).Scan(&revision).Error
+	return revision, err
+}

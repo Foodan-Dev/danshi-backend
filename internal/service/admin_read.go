@@ -111,12 +111,23 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 	if err != nil {
 		return nil, apierr.Internal(err)
 	}
+	nameRecords, err := s.admin.FindUsernameChangeRecords(ctx, userID)
+	if err != nil {
+		return nil, apierr.Internal(err)
+	}
 	views := make([]AdminUserBanRecordView, 0, len(records))
 	for _, record := range records {
 		views = append(views, AdminUserBanRecordView{
 			ID: record.ID, Action: record.Action, BanIsPermanent: record.BanIsPermanent,
 			BannedUntil: ptime.Ptr(record.BannedUntil), Reason: record.Reason,
 			ActorID: record.ActorID, CreatedAt: ptime.Time(record.CreatedAt),
+		})
+	}
+	nameChanges := make([]AdminUsernameChangeView, 0, len(nameRecords))
+	for _, record := range nameRecords {
+		nameChanges = append(nameChanges, AdminUsernameChangeView{
+			ID: record.ID, OldUsername: record.OldUsername, NewUsername: record.NewUsername,
+			ChangedAt: ptime.Time(record.ChangedAt),
 		})
 	}
 	userView := adminUserView(row, time.Now().UTC())
@@ -127,7 +138,9 @@ func (s *AdminService) User(ctx context.Context, userID uint64) (*AdminUserDetai
 		}
 		userView.AvatarURL = &avatarURL
 	}
-	return &AdminUserDetail{AdminUserView: userView, BanRecords: views}, nil
+	return &AdminUserDetail{
+		AdminUserView: userView, BanRecords: views, UsernameChanges: nameChanges,
+	}, nil
 }
 
 // Image 返回单张图片资产详情；路由层用既有内容审核能力保护该入口。
@@ -384,7 +397,7 @@ func adminRole(raw string, optional bool) (*model.UserRole, error) {
 func adminUserView(row *repository.AdminUserRecord, now time.Time) AdminUserView {
 	banned := isCurrentlyBanned(&row.User, now)
 	return AdminUserView{
-		ID: row.ID, Name: row.Name, Email: row.Email, Roles: roleStrings(row.Roles),
+		ID: row.ID, Username: row.Username, Email: row.Email, Roles: roleStrings(row.Roles),
 		IsActive: row.DeletedAt == nil && !banned, IsBanned: banned,
 		BanIsPermanent: row.BanIsPermanent, BannedUntil: ptime.Ptr(row.BannedUntil),
 		BanReason: row.BanReason, BannedBy: row.BannedBy, AvatarURL: row.AvatarURL, Bio: row.Bio,

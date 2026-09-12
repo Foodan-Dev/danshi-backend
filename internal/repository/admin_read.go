@@ -242,6 +242,17 @@ func (AdminRepository) FindUserBanRecords(
 	return records, err
 }
 
+// FindUsernameChangeRecords 返回目标用户完整用户名变更历史，最新动作在前。
+func (AdminRepository) FindUsernameChangeRecords(
+	ctx context.Context,
+	userID uint64,
+) ([]model.UsernameChangeRecord, error) {
+	records := make([]model.UsernameChangeRecord, 0)
+	err := db.FromContext(ctx).Where("user_id = ?", userID).
+		Order("changed_at DESC, id DESC").Find(&records).Error
+	return records, err
+}
+
 // FindPendingModerationPage 返回尚未处理且绑定当前内容版本的机审未通过记录。
 func (AdminRepository) FindPendingModerationPage(
 	ctx context.Context,
@@ -267,7 +278,7 @@ func (AdminRepository) FindPendingModerationPage(
 				WHEN mr.comment_id IS NOT NULL THEN c.content
 				WHEN mr.image_asset_id IS NOT NULL THEN image.public_url
 				WHEN mr.tag_id IS NOT NULL THEN tag.name
-				WHEN mr.field = 'name' THEN target_user.name
+				WHEN mr.field = 'name' THEN mr.username_candidate
 				WHEN mr.field = 'bio' THEN target_user.bio
 			END AS content
 		FROM queue_items

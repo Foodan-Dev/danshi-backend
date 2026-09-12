@@ -129,7 +129,8 @@ func (m *Metrics) RecordModerationCallback(
 	record()
 }
 
-// RecordVerification 对成功发信等待事务提交；失败、限流和在途拒绝即时计数。
+// RecordVerification 记录供应商调用结果；带事务时成功计数延后提交，后台事务外发送即时计数。
+// send 不代表 outbox 结果已落库；失败、限流和在途拒绝即时计数。
 func (m *Metrics) RecordVerification(
 	ctx context.Context,
 	provider string,

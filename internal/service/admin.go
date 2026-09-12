@@ -73,7 +73,7 @@ type AdminCommentList struct {
 // AdminUserView 是管理端用户项，兼容 is_active 并暴露完整封禁形态。
 type AdminUserView struct {
 	ID             uint64           `json:"id"`
-	Name           string           `json:"name"`
+	Username       string           `json:"username"`
 	Email          string           `json:"email"`
 	Roles          []model.UserRole `json:"roles"`
 	IsActive       bool             `json:"is_active"`
@@ -106,10 +106,19 @@ type AdminUserBanRecordView struct {
 	CreatedAt      ptime.Time          `json:"created_at"`
 }
 
+// AdminUsernameChangeView 是管理端用户取证可见的一次用户名变更。
+type AdminUsernameChangeView struct {
+	ID          uint64     `json:"id"`
+	OldUsername string     `json:"old_username"`
+	NewUsername string     `json:"new_username"`
+	ChangedAt   ptime.Time `json:"changed_at"`
+}
+
 // AdminUserDetail 是单用户取证详情及其完整封禁历史。
 type AdminUserDetail struct {
 	AdminUserView
-	BanRecords []AdminUserBanRecordView `json:"ban_records"`
+	BanRecords      []AdminUserBanRecordView  `json:"ban_records"`
+	UsernameChanges []AdminUsernameChangeView `json:"username_changes"`
 }
 
 // AdminImageView 是具备内容审核能力的角色可见的单张图片详情。
